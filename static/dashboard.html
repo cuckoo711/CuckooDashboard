@@ -6,15 +6,16 @@
     <title>Cuckoo Dashboard</title>
     <style>
         :root {
-            --border: rgba(120,100,180,0.3);
+            /* 配色取自背景插画：靛蓝夜色 + 珊瑚玫瑰 + 暖金 + 紫罗兰 + 月光青 */
+            --border: rgba(150,120,190,0.3);
             --text: #ffffff;
-            --text2: rgba(220,210,240,0.95);
-            --crimson: #d4483e;
-            --crimson-light: #e8605a;
-            --gold: #e8c46a;
-            --accent: #7b6cc4;
-            --accent2: #b09de0;
-            --green: #4caf7a;
+            --text2: rgba(228,218,240,0.95);
+            --crimson: #cf5b68;
+            --crimson-light: #e0808c;
+            --gold: #e8c98f;
+            --accent: #8a7cc4;
+            --accent2: #c2a8e0;
+            --green: #5fa89e;
             --ts: 0 1px 4px rgba(0,0,0,0.8), 0 0 12px rgba(0,0,0,0.5);
             --ts2: 0 1px 3px rgba(0,0,0,0.7);
         }
@@ -215,10 +216,10 @@
             background:var(--text2); transition:background 0.25s, box-shadow 0.25s;
         }
         .vibe-toggle.active {
-            background:rgba(76,175,122,0.18); border-color:rgba(76,175,122,0.45); color:var(--green);
+            background:rgba(95,168,158,0.18); border-color:rgba(95,168,158,0.45); color:var(--green);
         }
         .vibe-toggle.active .dot {
-            background:var(--green); box-shadow:0 0 6px rgba(76,175,122,0.8);
+            background:var(--green); box-shadow:0 0 6px rgba(95,168,158,0.8);
             animation:vibe-pulse 1.4s ease-in-out infinite;
         }
         @keyframes vibe-pulse {
@@ -278,7 +279,7 @@
         .stacked-seg { height:100%; transition:width 1s ease; min-width:0; }
         .stacked-seg.s-in { background:var(--accent); }
         .stacked-seg.s-out { background:var(--crimson); }
-        .stacked-seg.s-cache { background:#5a4da6; }
+        .stacked-seg.s-cache { background:#5e4f96; }
 
         .legend { display:flex; flex-direction:column; gap:2px; }
         .leg-row { display:flex; align-items:center; gap:6px; font-size:10px; color:var(--text2); text-shadow:var(--ts2); }
@@ -339,9 +340,9 @@
         .dk-part-letter { width:14px; font-size:9px; color:var(--text2); text-shadow:var(--ts2); text-align:center; flex-shrink:0; font-weight:600; }
         .dk-part-track { flex:1; height:4px; background:rgba(255,255,255,0.06); border-radius:3px; overflow:hidden; }
         .dk-part-fill { height:100%; border-radius:3px; transition:width 2s ease; }
-        .dk-part-fill.ok { background:linear-gradient(90deg, #4caf7a, #6dd5a0); }
-        .dk-part-fill.warn { background:linear-gradient(90deg, #e8a44c, #e8c46a); }
-        .dk-part-fill.danger { background:linear-gradient(90deg, #d4483e, #e8605a); }
+        .dk-part-fill.ok { background:linear-gradient(90deg, #5fa89e, #83c4bb); }
+        .dk-part-fill.warn { background:linear-gradient(90deg, #d1a15c, #e8c98f); }
+        .dk-part-fill.danger { background:linear-gradient(90deg, #cf5b68, #e0808c); }
         .dk-part-info { font-size:8px; color:var(--text2); text-shadow:var(--ts2); font-variant-numeric:tabular-nums; white-space:nowrap; flex-shrink:0; }
 
         /* ── 歌词播放器（左栏，行12-16）── */
@@ -387,10 +388,10 @@
         .gh-cells { display:flex; gap:2px; flex-shrink:0; }
         .gh-week { display:flex; flex-direction:column; gap:2px; flex-shrink:0; }
         .gh-cell { border-radius:2px; background:rgba(255,255,255,0.06); flex-shrink:0; }
-        .gh-l1 { background:rgba(123,108,196,0.5); }
-        .gh-l2 { background:rgba(123,108,196,0.7); }
-        .gh-l3 { background:rgba(123,108,196,0.88); }
-        .gh-l4 { background:#b09de0; }
+        .gh-l1 { background:rgba(138,124,196,0.5); }
+        .gh-l2 { background:rgba(138,124,196,0.7); }
+        .gh-l3 { background:rgba(138,124,196,0.88); }
+        .gh-l4 { background:#c2a8e0; }
         #ghTotal { color:var(--gold); font-weight:600; }
 
         .ld { display:flex; align-items:center; justify-content:center; height:100%; color:var(--text2); font-size:12px; }
@@ -515,7 +516,7 @@
                 </div>
             </div>
             <div class="legend">
-                <div class="leg-row"><span class="leg-dot" style="background:#5a4da6"></span>缓存命中<b id="todayCache">--</b><span class="leg-pct" id="todayCachePct"></span></div>
+                <div class="leg-row"><span class="leg-dot" style="background:#5e4f96"></span>缓存命中<b id="todayCache">--</b><span class="leg-pct" id="todayCachePct"></span></div>
                 <div class="leg-row"><span class="leg-dot" style="background:var(--accent)"></span>未命中<b id="todayIn">--</b><span class="leg-pct" id="todayInPct"></span></div>
                 <div class="leg-row"><span class="leg-dot" style="background:var(--crimson)"></span>输出<b id="todayOut">--</b><span class="leg-pct" id="todayOutPct"></span></div>
             </div>
@@ -675,7 +676,7 @@ function drawRing(pct, used, limit) {
     var remainAmt = Math.max(0, limit - used);
     var fg = document.getElementById('ringFg');
     fg.style.strokeDashoffset = C*(1-remain/100);
-    fg.style.stroke = pct>=90?'#d4483e':pct>=70?'#c9a84c':'#e8c46a';
+    fg.style.stroke = pct>=90?'#cf5b68':pct>=70?'#d1a15c':'#e8c98f';
     document.getElementById('ringPct').textContent = remain.toFixed(1)+'%';
     document.getElementById('ringLabel').textContent = fmtTok(remainAmt)+' 剩余';
 }
@@ -701,7 +702,7 @@ function drawSystem(sys) {
     if (!sys) return;
     var R = 30, C = 2 * Math.PI * R;
 
-    function ringColor(pct) { return pct >= 90 ? '#d4483e' : pct >= 80 ? '#e8a44c' : '#4caf7a'; }
+    function ringColor(pct) { return pct >= 90 ? '#cf5b68' : pct >= 80 ? '#d1a15c' : '#5fa89e'; }
     function mainRing(pct, name, sub, color) {
         // 半开口仪表盘：270度弧（底部留90度缺口），从左下(135deg)顺时针到右下
         var SVG = 84, cx = SVG/2, cy = SVG/2, RV = 34;
