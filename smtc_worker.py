@@ -2,26 +2,72 @@
 """
 独立的 SMTC + UI Automation 常驻监听脚本（避免主进程 COM 冲突）
 持续运行，每隔 0.5 秒向 stdout 输出一行 JSON，格式：
-{"status": "playing", "title": "...", "artist": "...", "progress_ratio": 0.52, "smtc_position": 0}
+{"status": "playing", "title": "...", "artist": "...", "progress_ratio": 0.52}
 
-说明：
-- title / artist / status 来自 SMTC（GlobalSystemMediaTransportControlsSessionManager），可靠。
-- 网易云音乐客户端不会向 SMTC 写入 timeline（position 永远为 0），这是网易云自身的实现限制，
-  已通过 winrt 和原生 PowerShell WinRT 调用双重验证确认，不是本脚本的读取问题。
-- 因此播放进度改用 UI Automation 读取网易云播放器窗口里的进度条控件，
-  取"已播放宽度 / 总轨道宽度"的比例（progress_ratio），比 SMTC 更可靠。
-  后端结合网易云 API 查到的歌曲总时长，换算出真实的当前播放秒数。
+数据来源优先级：
+1. YesPlayMusic 本地 API（http://127.0.0.1:27232/player）— 直接返回 position + duration
+2. SMTC title/artist/status + UIA progress_ratio（fallback）
 """
 import asyncio
 import json
 import sys
 import time
+import urllib.request
 
 try:
     import uiautomation as auto
     HAS_UIA = True
 except ImportError:
     HAS_UIA = False
+
+# ============================================================
+# YesPlayMusic 本地 API
+# ============================================================
+
+_YPM_API = "http://127.0.0.1:27232/player"
+_ym_cache = {"ts": 0, "ok": False}  # 缓存 API 可用性，避免频繁探测不可用的端口
+
+
+def _get_ypm_progress() -> dict | None:
+    """查询 YesPlayMusic 本地 API，返回 {"position": float, "duration": float, "title": str, "artist": str} 或 None"""
+    now = time.time()
+    # 如果上次探测失败，每 5 秒重试一次（避免每 0.5s 都打一个不可用的端口）
+    if not _ym_cache["ok"] and (now - _ym_cache["ts"]) < 5:
+        return None
+
+    try:
+        req = urllib.request.Request(_YPM_API, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=1) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        _ym_cache["ok"] = True
+        _ym_cache["ts"] = now
+
+        track = data.get("currentTrack") or {}
+        progress = data.get("progress")  # 秒
+        duration_ms = track.get("dt")    # 毫秒
+
+        if progress is None or not duration_ms:
+            return None
+
+        # 提取艺人名（ar 数组拼接）
+        artists = " / ".join(a.get("name", "") for a in (track.get("ar") or []))
+
+        return {
+            "position": float(progress),
+            "duration": duration_ms / 1000.0,
+            "title": track.get("name", ""),
+            "artist": artists,
+            "song_id": track.get("id"),
+        }
+    except Exception:
+        _ym_cache["ok"] = False
+        _ym_cache["ts"] = now
+        return None
+
+
+# ============================================================
+# UIA 进度条读取（fallback）
+# ============================================================
 
 _uia_cache = {"window": None, "ts": 0}
 
@@ -59,7 +105,7 @@ def _find_by_name(ctrl, name, depth=0, max_depth=15):
     return None
 
 
-def get_progress_ratio():
+def _get_uia_progress_ratio():
     """通过 UI Automation 读取网易云播放进度条的已播放比例（0.0~1.0），失败返回 None"""
     if not HAS_UIA:
         return None
@@ -80,25 +126,35 @@ def get_progress_ratio():
         if not slider:
             return None
         children = slider.GetChildren()
-        if len(children) < 2:
+        if not children:
             return None
 
-        # 注意：slider 自身的宽度才是稳定的总轨道宽度（1022px 量级，不随播放变化）。
-        # children[0] 是背景轨道容器（宽度也稳定，但更保险用 slider 自身）。
-        # children[1] 才是"已播放进度"条，宽度随播放进度平滑增长。
-        # 之前误把 children[1]/children[2] 当作 track/played，
-        # 而 children[2] 实际是固定 4px 的拖动手柄圆点，不代表进度——这是导致播放进度读数
-        # 时而正常时而跳变的根本原因（已通过连续采样验证修正）。
         total_rect = slider.BoundingRectangle
-        played_rect = children[1].BoundingRectangle
         total_w = total_rect.right - total_rect.left
-        played_w = played_rect.right - played_rect.left
         if total_w <= 0:
             return None
+
+        played_w = 0
+        for c in children:
+            try:
+                r = c.BoundingRectangle
+                w = r.right - r.left
+                if 6 < w < total_w and w > played_w:
+                    played_w = w
+            except Exception:
+                continue
+
+        if played_w <= 0:
+            return 0.0
         ratio = played_w / total_w
         return max(0.0, min(1.0, ratio))
     except Exception:
         return None
+
+
+# ============================================================
+# SMTC（title / artist / status）
+# ============================================================
 
 
 async def get_smtc_info(manager):
@@ -119,6 +175,11 @@ async def get_smtc_info(manager):
     }
 
 
+# ============================================================
+# 主循环
+# ============================================================
+
+
 async def main_loop():
     from winrt.windows.media.control import (
         GlobalSystemMediaTransportControlsSessionManager as MediaManager,
@@ -127,8 +188,25 @@ async def main_loop():
     manager = await MediaManager.request_async()
     while True:
         try:
-            info = await get_smtc_info(manager)
-            info["progress_ratio"] = get_progress_ratio()
+            # 优先尝试 YesPlayMusic 本地 API
+            ypm = _get_ypm_progress()
+
+            if ypm:
+                # API 成功：直接用 position + duration 计算 ratio
+                info = {
+                    "status": "playing",
+                    "title": ypm["title"],
+                    "artist": ypm["artist"],
+                    "progress_ratio": ypm["position"] / ypm["duration"] if ypm["duration"] > 0 else None,
+                    "position": ypm["position"],
+                    "duration": ypm["duration"],
+                    "song_id": ypm.get("song_id"),
+                }
+            else:
+                # fallback: SMTC + UIA
+                info = await get_smtc_info(manager)
+                ratio = _get_uia_progress_ratio()
+                info["progress_ratio"] = ratio
         except Exception as e:
             info = {"status": "error", "title": "", "artist": "", "progress_ratio": None, "error": str(e)}
         line = json.dumps(info, ensure_ascii=False)

@@ -10,6 +10,8 @@ cookies.txt
 config.json
 local_tokens.json
 github_cache.json
+display_theme.json
+lyric_offset.json
 
 # Python
 __pycache__/

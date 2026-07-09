@@ -27,7 +27,7 @@ import sys
 import time
 import webbrowser
 from pathlib import Path
-from urllib.parse import urlencode
+import urllib.parse
 
 try:
     import requests
@@ -96,19 +96,6 @@ def cookie_dict_to_str(cookies: dict) -> str:
     return "; ".join(f"{k}={v}" for k, v in cookies.items() if v and v != "EXPIRED")
 
 
-def parse_cookie_str(cs: str) -> dict:
-    """将 Cookie 字符串解析为字典"""
-    cookies = {}
-    if not cs:
-        return cookies
-    for pair in cs.split(";"):
-        pair = pair.strip()
-        if "=" in pair:
-            key, val = pair.split("=", 1)
-            cookies[key.strip()] = val.strip()
-    return cookies
-
-
 def build_platform_cookies(redirect_cookies: dict, auth_cookies: dict) -> str:
     """从所有收集的 Cookie 中构建平台所需的 Cookie 字符串"""
     all_cookies = {**auth_cookies, **redirect_cookies}
@@ -153,6 +140,7 @@ class QRCodeLogin:
         self._login_url = None
         self._long_polling_url = None
         self._timeout = None
+        self._last_login_data = None  # 保存最近一次扫码返回的原始数据
 
     def get_qr_code(self) -> bool:
         """步骤1: 获取 QR 码（带重试）"""
@@ -315,6 +303,7 @@ class QRCodeLogin:
 
         self.show_qr_code()
         login_data = self.wait_for_scan()
+        self._last_login_data = login_data  # 保存供外部读取 passToken 等
         return self.get_service_token(login_data)
 
 
@@ -556,7 +545,125 @@ def load_cookies() -> dict:
 
 
 # ============================================================
-# Cookie 自动刷新
+# Cookie 自动刷新（基于 passToken）
+# ============================================================
+
+
+def _extract_cookie_field(cookie_str: str, name: str) -> str:
+    """从 cookie 字符串中提取指定字段的值"""
+    for part in cookie_str.split(";"):
+        part = part.strip()
+        if part.startswith(f"{name}="):
+            val = part[len(name) + 1:]
+            # 去掉可能的引号
+            if val.startswith('"') and val.endswith('"'):
+                val = val[1:-1]
+            return val
+    return ""
+
+
+def refresh_mimo_cookie(cookie_str: str) -> str | None:
+    """
+    用 passToken 刷新 MiMo 平台的 serviceToken。
+    返回新的 cookie 字符串，失败返回 None。
+
+    流程（参考 mijiaAPI_V2 + MiMo STS 机制）：
+    1. 先探测获取 loginUrl（包含正确的 callback + sign）
+    2. 用 passToken 访问 serviceLogin（带 callback 参数）
+    3. 跟随 STS 重定向获取新的 api-platform_serviceToken
+    4. 构建新 cookie 字符串
+    """
+    pass_token = _extract_cookie_field(cookie_str, "passToken")
+    user_id = _extract_cookie_field(cookie_str, "userId")
+
+    if not pass_token or not user_id:
+        print("[MiMo] 缺少 passToken 或 userId，无法自动刷新", flush=True)
+        return None
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+
+    try:
+        # Step 0: 探测获取 loginUrl（从 401 响应中提取 callback）
+        test_api = MiMoAPI(cookie_str)
+        test_resp = test_api.get_user_profile()
+        login_url = test_resp.get("loginUrl", "")
+
+        if not login_url:
+            print("[MiMo] 无法获取 loginUrl", flush=True)
+            return None
+
+        # 从 loginUrl 中提取 callback 参数
+        parsed = urllib.parse.urlparse(login_url)
+        login_params = urllib.parse.parse_qs(parsed.query)
+        callback = login_params.get("callback", [""])[0]
+
+        if not callback:
+            print("[MiMo] loginUrl 中无 callback", flush=True)
+            return None
+
+        # Step 1: 设置 passToken cookie，请求 serviceLogin（带 callback）
+        session.cookies.set("passToken", pass_token, domain="xiaomi.com")
+        session.cookies.set("userId", user_id, domain="xiaomi.com")
+
+        params = {
+            "callback": callback,
+            "sid": MIMO_LOGIN_SID,
+            "_json": "true",
+            "_group": "DEFAULT",
+        }
+        resp = session.get(
+            "https://account.xiaomi.com/pass/serviceLogin",
+            params=params,
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        text = resp.text.replace("&&&START&&&", "").strip()
+        data = json.loads(text)
+
+        if data.get("code") != 0:
+            print(f"[MiMo] passToken 刷新失败 (code={data.get('code')}): {data.get('desc', '')}", flush=True)
+            return None
+
+        location = data.get("location", "")
+        if not location:
+            print("[MiMo] passToken 刷新失败: 无 location", flush=True)
+            return None
+
+        # Step 2: 跟随 location → STS 重定向获取新 serviceToken
+        redirect_cookies = {}
+        url = location
+        for _ in range(15):
+            resp = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=False)
+            new_cookies = parse_set_cookies(resp.headers)
+            redirect_cookies.update(new_cookies)
+            session.cookies.update(new_cookies)
+
+            redirect_url = resp.headers.get("location")
+            if redirect_url and resp.status_code in (301, 302, 303, 307):
+                url = redirect_url if redirect_url.startswith("http") else \
+                    f"https://account.xiaomi.com{redirect_url}"
+            else:
+                break
+
+        # Step 3: 构建新 cookie
+        all_cookies = {**session.cookies.get_dict(), **redirect_cookies}
+        new_cookie = build_platform_cookies(redirect_cookies, all_cookies)
+
+        if "api-platform_serviceToken" not in new_cookie and "serviceToken" not in new_cookie:
+            print("[MiMo] 刷新后未获取到 serviceToken", flush=True)
+            return None
+
+        print("[MiMo] Cookie 刷新成功 [OK]", flush=True)
+        return new_cookie
+
+    except Exception as e:
+        print(f"[MiMo] Cookie 刷新异常: {e}", flush=True)
+        return None
+
+
+# ============================================================
+# 旧的 re_login（向后兼容）
 # ============================================================
 
 
@@ -592,7 +699,7 @@ def re_login(cache_info: dict) -> str | None:
 def get_cookie_with_refresh(cookie_str: str, cache_info: dict) -> str:
     """
     先探测 Cookie 是否有效，如果 401 则自动重新获取。
-    仅对 browser / password 方式有效（有自动重登能力）。
+    支持 browser / password / qr（passToken 刷新）方式。
     """
     api = MiMoAPI(cookie_str)
     test = api.get_user_profile()
@@ -600,10 +707,19 @@ def get_cookie_with_refresh(cookie_str: str, cache_info: dict) -> str:
         return cookie_str  # Cookie 仍然有效
 
     method = cache_info.get("method", "")
+
+    # 所有方式都先尝试 passToken 刷新
+    print("Cookie 已过期，尝试 passToken 刷新...")
+    new_cookie = refresh_mimo_cookie(cookie_str)
+    if new_cookie:
+        print("  passToken 刷新成功！")
+        save_cookies(new_cookie, method, cache_info)
+        return new_cookie
+
+    # passToken 刷新失败，browser/password 方式可以重登
     if method not in ("browser", "password"):
-        # qr / manual 方式无法自动刷新
-        print("Cookie 已过期，请重新登录。")
-        print("  提示: 使用 --login browser 或 --login password --save 可启用自动刷新。")
+        print("passToken 刷新失败，请重新登录。")
+        print("  运行: python mimo_usage.py --login qr --save")
         sys.exit(1)
 
     print("Cookie 已过期，尝试自动重新获取...")
@@ -684,9 +800,6 @@ class MiMoAPI:
         if year is None:
             year = time.localtime().tm_year
         return self._get(f"usage/detail?year={year}")
-
-    def get_api_keys(self) -> dict:
-        return self._get("apiKeys")
 
 
 # ============================================================
@@ -1036,7 +1149,15 @@ def get_cookie_interactively() -> tuple:
         try:
             qr = QRCodeLogin()
             cookie_str = qr.login()
-            return cookie_str, "qr"
+            extra = {}
+            if qr._last_login_data:
+                ld = qr._last_login_data
+                extra = {
+                    "passToken": ld.get("passToken", ""),
+                    "userId": str(ld.get("userId", "")),
+                    "ssecurity": ld.get("ssecurity", ""),
+                }
+            return cookie_str, "qr", extra
         except XiaomiLoginError as e:
             print(f"\n扫码登录失败: {e}")
             sys.exit(1)
@@ -1045,7 +1166,7 @@ def get_cookie_interactively() -> tuple:
     if method == "browser":
         cookie_str = try_browser_cookies()
         if cookie_str:
-            return cookie_str, "browser"
+            return cookie_str, "browser", {}
         print("\n自动读取失败。请尝试其他登录方式。")
         sys.exit(1)
 
@@ -1064,7 +1185,7 @@ def get_cookie_interactively() -> tuple:
         try:
             pl = PasswordLogin()
             cookie_str = pl.login(username, password)
-            return cookie_str, "password"
+            return cookie_str, "password", {}
         except XiaomiLoginError as e:
             print(f"\n登录失败: {e}")
             sys.exit(1)
@@ -1159,6 +1280,14 @@ Cookie 自动刷新:
                 qr = QRCodeLogin()
                 cookie_str = qr.login()
                 cache_info = {"method": "qr"}
+                # 保存 passToken 等字段，供自动刷新使用
+                if qr._last_login_data:
+                    ld = qr._last_login_data
+                    extra_save = {
+                        "passToken": ld.get("passToken", ""),
+                        "userId": str(ld.get("userId", "")),
+                        "ssecurity": ld.get("ssecurity", ""),
+                    }
             except XiaomiLoginError as e:
                 print(f"扫码登录失败: {e}")
                 sys.exit(1)
@@ -1181,7 +1310,7 @@ Cookie 自动刷新:
                 sys.exit(1)
         else:
             # 交互式选择
-            cookie_str, method = get_cookie_interactively()
+            cookie_str, method, extra_save = get_cookie_interactively()
             cache_info = {"method": method}
 
         # 默认保存 Cookie（支持自动刷新）

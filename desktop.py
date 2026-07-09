@@ -20,7 +20,7 @@ import time
 import webview
 
 # 导入Flask应用
-from dashboard import app, get_mimo_api
+from dashboard import app, get_mimo_api, _ws_broadcaster
 
 
 def enable_dpi_awareness():
@@ -77,6 +77,10 @@ def main():
         print(f"[FAIL] Error: {e}")
         sys.exit(1)
 
+    # 启动 WebSocket 广播线程
+    ws_thread = threading.Thread(target=_ws_broadcaster, daemon=True)
+    ws_thread.start()
+
     # 在后台线程启动Flask
     flask_thread = threading.Thread(
         target=start_flask,
@@ -91,8 +95,8 @@ def main():
         print("[FAIL] Server failed to start within 10 seconds")
         sys.exit(1)
 
-    # 创建原生窗口
-    url = f"http://127.0.0.1:{args.port}"
+    # 创建原生窗口（加时间戳避免缓存旧页面）
+    url = f"http://127.0.0.1:{args.port}?_t={int(time.time())}"
     print(f"[OK] Server ready: {url}")
 
     window = webview.create_window(
@@ -104,6 +108,19 @@ def main():
         frameless=True,
         text_select=True,
     )
+
+    def on_loaded():
+        """页面加载完成后注入快捷键：Ctrl+R / F5 刷新"""
+        window.evaluate_js("""
+            document.addEventListener('keydown', function(e) {
+                if ((e.ctrlKey && e.key === 'r') || e.key === 'F5') {
+                    e.preventDefault();
+                    location.reload();
+                }
+            });
+        """)
+
+    window.events.loaded += on_loaded
 
     print("[OK] Window created, opening...")
     webview.start(debug=args.dev)

@@ -12,23 +12,28 @@ Web 看板服务器，用于副屏显示 MiMo 使用情况。
 import argparse
 import json
 import platform
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from collections import defaultdict
-
 import psutil
 
 try:
-    from flask import Flask, jsonify, send_from_directory
+    from flask import Flask, jsonify, send_from_directory, request
 except ImportError:
     print("错误: 缺少 Flask 库，请运行: pip install flask")
     sys.exit(1)
 
+try:
+    from flask_sock import Sock
+except ImportError:
+    print("错误: 缺少 flask-sock 库，请运行: pip install flask-sock")
+    sys.exit(1)
+
 # 从 mimo_usage.py 导入 MiMoAPI
 try:
-    from mimo_usage import MiMoAPI, load_cookies
+    from mimo_usage import MiMoAPI, load_cookies, refresh_mimo_cookie, save_cookies
 except ImportError:
     print("错误: 无法导入 mimo_usage.py，请确保文件存在")
     sys.exit(1)
@@ -36,6 +41,105 @@ except ImportError:
 import requests as _requests
 
 app = Flask(__name__, static_folder="static")
+sock = Sock(app)
+
+# ============================================================
+# WebSocket 统一数据推送
+# ============================================================
+
+import threading as _ws_threading
+
+_ws_clients = []
+_ws_clients_lock = _ws_threading.Lock()
+_ws_vibe_coding = False  # 前端 Vibe Coding 状态（任一客户端开启即生效）
+
+
+def _ws_broadcast(msg: dict):
+    """向所有连接的客户端广播消息，失败时自动清理"""
+    data = json.dumps(msg, ensure_ascii=False)
+    dead = []
+    with _ws_clients_lock:
+        clients = list(_ws_clients)
+    for ws in clients:
+        try:
+            ws.send(data)
+        except Exception:
+            dead.append(ws)
+    if dead:
+        with _ws_clients_lock:
+            for ws in dead:
+                if ws in _ws_clients:
+                    _ws_clients.remove(ws)
+
+
+@sock.route("/ws")
+def ws_handler(ws):
+    """WebSocket 端点：前端建立连接后接收后端推送 + 前端指令"""
+    global _ws_vibe_coding
+    with _ws_clients_lock:
+        _ws_clients.append(ws)
+    print(f"[ws] client connected (total: {len(_ws_clients)})", flush=True)
+    try:
+        while ws.connected:
+            raw = ws.receive(timeout=30)
+            if raw:
+                try:
+                    msg = json.loads(raw)
+                    if msg.get("type") == "vibe":
+                        _ws_vibe_coding = bool(msg.get("active"))
+                        print(f"[ws] vibe coding: {'ON' if _ws_vibe_coding else 'OFF'}", flush=True)
+                except (json.JSONDecodeError, KeyError):
+                    pass
+    except Exception:
+        pass
+    finally:
+        with _ws_clients_lock:
+            if ws in _ws_clients:
+                _ws_clients.remove(ws)
+        print(f"[ws] client disconnected (total: {len(_ws_clients)})", flush=True)
+
+
+def _ws_broadcaster():
+    """后台线程：并行获取 system + media，定时广播"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    _executor = ThreadPoolExecutor(max_workers=4)
+    _nug_counter = 0
+    while True:
+        t0 = time.time()
+        try:
+            if _ws_clients:
+                # system + media 并行获取
+                futs = {
+                    _executor.submit(get_system_info): "system",
+                    _executor.submit(get_media_info): "media",
+                }
+                for fut in as_completed(futs):
+                    msg_type = futs[fut]
+                    try:
+                        _ws_broadcast({"type": msg_type, "data": fut.result()})
+                    except Exception as e:
+                        print(f"[ws] {msg_type} broadcast error: {e}", flush=True)
+
+                # mimo + nug：Coding 模式 20 秒，Chilling 模式 60 秒
+                _nug_counter += 1
+                mimo_interval = 20 if _ws_vibe_coding else 60
+                if _nug_counter >= mimo_interval:
+                    _nug_counter = 0
+                    try:
+                        _ws_broadcast({"type": "mimo", "data": fetch_all_data()})
+                    except Exception as e:
+                        print(f"[ws] mimo broadcast error: {e}", flush=True)
+                    try:
+                        nug = get_nug_api()
+                        nug_data = nug.get_data() if nug else None
+                        _ws_broadcast({"type": "nug", "data": {"enabled": bool(nug), **(nug_data or {})}})
+                    except Exception as e:
+                        print(f"[ws] nug broadcast error: {e}", flush=True)
+        except Exception as e:
+            print(f"[ws] broadcaster error: {e}", flush=True)
+        # 精确计时：扣除执行耗时，保证 1 秒间隔
+        elapsed = time.time() - t0
+        time.sleep(max(0, 1.0 - elapsed))
 
 # 配置
 GITHUB_USER = "cuckoo711"
@@ -52,6 +156,72 @@ _github_cache = {
 CACHE_TTL = 55  # 缓存55秒（前端60秒刷新）
 GITHUB_CACHE_TTL = 600  # GitHub 缓存10分钟
 CONFIG_FILE = Path(__file__).parent / "config.json"
+
+# ============================================================
+# 显示主题管理
+# ============================================================
+
+THEME_FILE = Path(__file__).parent / "display_theme.json"
+
+# 每个主题包含 name + 背景配置（bg_type: "image" | "color"）
+_THEMES = [
+    {
+        "name": "dark",
+        "bg_type": "image",
+        "bg_image": "/static/bg/101b3e01db1548b96ea5413ce9bbe1d8.jpg",
+        "bg_color": "#0a0618",
+    },
+    {
+        "name": "mono",
+        "bg_type": "color",
+        "bg_color": "#f8f8fa",
+    },
+]
+
+
+def _theme_response(idx: int) -> dict:
+    """构建标准的主题 API 响应"""
+    t = _THEMES[idx]
+    return {
+        "theme": t["name"],
+        "index": idx,
+        "themes": [t["name"] for t in _THEMES],
+        "bg": {k: t[k] for k in ("bg_type", "bg_image", "bg_color") if k in t},
+    }
+
+
+def _load_theme() -> int:
+    """读取当前主题索引"""
+    try:
+        data = json.loads(THEME_FILE.read_text(encoding="utf-8"))
+        idx = data.get("index", 0)
+        if 0 <= idx < len(_THEMES):
+            return idx
+    except (json.JSONDecodeError, OSError, KeyError):
+        pass
+    return 0
+
+
+def _save_theme(index: int):
+    """持久化主题索引到磁盘"""
+    try:
+        THEME_FILE.write_text(json.dumps({"index": index}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+@app.route("/api/theme")
+def api_theme_get():
+    """返回当前主题信息"""
+    return jsonify(_theme_response(_load_theme()))
+
+
+@app.route("/api/theme/next", methods=["POST"])
+def api_theme_next():
+    """循环切换到下一个主题"""
+    idx = (_load_theme() + 1) % len(_THEMES)
+    _save_theme(idx)
+    return jsonify(_theme_response(idx))
 
 
 # ============================================================
@@ -306,13 +476,57 @@ def get_nug_api() -> NUGApi | None:
     return _nug_api
 
 
-def get_mimo_api() -> MiMoAPI:
-    """获取 MiMoAPI 实例"""
+_mimo_cookie_valid = None  # None=未检测, True=有效, False=过期
+_mimo_cookie_last_check = 0  # 上次检测时间戳
+
+
+def get_mimo_api() -> MiMoAPI | None:
+    """获取 MiMoAPI 实例，自动检测 Cookie 有效性。
+    过期时尝试用 passToken 自动刷新，刷新失败才返回 None。
+    """
+    global _mimo_cookie_valid, _mimo_cookie_last_check
     cache_info = load_cookies()
     cookie_str = cache_info.get("cookie")
     if not cookie_str:
-        raise ValueError("未找到 Cookie，请先运行 mimo_usage.py 登录")
-    return MiMoAPI(cookie_str)
+        print("[MiMo] 未找到 Cookie，请先运行 mimo_usage.py --login qr --save 登录", flush=True)
+        _mimo_cookie_valid = False
+        return None
+
+    api = MiMoAPI(cookie_str)
+
+    # 每 5 分钟最多检测一次
+    now = time.time()
+    if _mimo_cookie_valid is not None and (now - _mimo_cookie_last_check) < 300:
+        return api if _mimo_cookie_valid else None
+
+    _mimo_cookie_last_check = now
+
+    try:
+        test = api.get_user_profile()
+        if test.get("code") == 401:
+            # Cookie 过期，尝试用 passToken 自动刷新
+            print("[MiMo] Cookie 已过期，尝试自动刷新...", flush=True)
+            new_cookie = refresh_mimo_cookie(cookie_str)
+            if new_cookie:
+                # 刷新成功，保存新 cookie
+                save_cookies(new_cookie, cache_info.get("method", "qr"), {
+                    k: v for k, v in cache_info.items()
+                    if k not in ("cookie", "method", "saved_at")
+                })
+                api = MiMoAPI(new_cookie)
+                _mimo_cookie_valid = True
+                print("[MiMo] 自动刷新成功，已保存新 Cookie [OK]", flush=True)
+            else:
+                print("[MiMo] 自动刷新失败，请手动运行: python mimo_usage.py --login qr --save", flush=True)
+                _mimo_cookie_valid = False
+        else:
+            _mimo_cookie_valid = True
+            print("[MiMo] Cookie 有效 [OK]", flush=True)
+    except Exception as e:
+        print(f"[MiMo] Cookie 检测失败: {e}", flush=True)
+        _mimo_cookie_valid = False
+
+    return api if _mimo_cookie_valid else None
 
 
 GITHUB_DISK_CACHE = Path(__file__).parent / "github_cache.json"
@@ -336,7 +550,6 @@ def fetch_github_contributions() -> dict:
         except (json.JSONDecodeError, OSError):
             pass
 
-    import re
 
     def _do_fetch() -> dict:
         resp = _requests.get(
@@ -414,6 +627,24 @@ def fetch_all_data() -> dict:
 
     try:
         api = get_mimo_api()
+        if api is None:
+            # Cookie 过期，返回最小数据 + 过期标记
+            return {
+                "success": False,
+                "mimo_expired": True,
+                "profile": {},
+                "plan": {},
+                "usage": {},
+                "balance": {},
+                "payg_usage": {},
+                "daily_detail": {},
+                "tp_usage_detail": [],
+                "local_usage": {},
+                "mimo_inMiss": 0,
+                "github": {},
+                "system": {},
+                "timestamp": time.time(),
+            }
 
         # 获取按天明细（本月）- 先获取以避免 session 状态问题
         # 注意：MiMo 平台按 UTC（世界时）分组统计每日用量，
@@ -506,197 +737,18 @@ def fetch_all_data() -> dict:
         }
 
 
+@app.after_request
+def no_cache_static(response):
+    """禁止浏览器缓存静态文件，改了 HTML/CSS/JS 刷新即生效，不用重启"""
+    if request.path.startswith("/static/") or request.path == "/":
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
+
+
 @app.route("/")
 def index():
     """返回看板页面"""
     return send_from_directory("static", "dashboard.html")
-
-
-def _get_gpus() -> list:
-    """通过 PowerShell 获取 GPU 信息 + 利用率"""
-    import subprocess, re as _re
-    ps_path = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-    if not Path(ps_path).exists():
-        return []
-    try:
-        # 1. 获取 GPU 基本信息
-        r = subprocess.run(
-            [ps_path, "-NoProfile", "-Command",
-             "Get-CimInstance Win32_VideoController | Select-Object Name, AdapterRAM, PNPDeviceID | ConvertTo-Json"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
-        )
-        raw = json.loads(r.stdout) if r.stdout.strip() else []
-        if isinstance(raw, dict):
-            raw = [raw]
-        gpus = []
-        for g in raw:
-            name = g.get("Name", "")
-            if "Idd" in name or "Microsoft" in name:
-                continue
-            vram = g.get("AdapterRAM", 0)
-            if isinstance(vram, str):
-                vram = int(vram) if vram.isdigit() else 0
-            pnp = g.get("PNPDeviceID", "")
-            vram = g.get("AdapterRAM", 0)
-            if isinstance(vram, str):
-                vram = int(vram) if vram.isdigit() else 0
-            # WMI AdapterRAM 对很多显卡不准确，用已知型号映射修正
-            _VRAM_MAP = {
-                "9070 XT": 16 * 1024**3,   # RX 9070 XT = 16GB
-                "9070": 16 * 1024**3,
-                "7900 XTX": 24 * 1024**3,
-                "7900 XT": 20 * 1024**3,
-                "7900 GRE": 16 * 1024**3,
-                "7800 XT": 16 * 1024**3,
-                "7700 XT": 12 * 1024**3,
-                "7600": 8 * 1024**3,
-                "4090": 24 * 1024**3,
-                "4080": 16 * 1024**3,
-                "4070 Ti": 12 * 1024**3,
-                "4070": 12 * 1024**3,
-                "4060 Ti": 16 * 1024**3,
-                "4060": 8 * 1024**3,
-            }
-            for key, val in _VRAM_MAP.items():
-                if key.lower() in name.lower():
-                    vram = val
-                    break
-            gpus.append({"name": name, "vram": vram, "util": None, "pnp": pnp})
-
-        # 2. 通过 GPU Adapter Memory 计数器获取 LUID 映射
-        #    每个 adapter 有独立的 LUID，可以用来匹配引擎利用率
-        r_adpm = subprocess.run(
-            [ps_path, "-NoProfile", "-Command",
-             r'Get-Counter "\GPU Adapter Memory(*)\Dedicated Usage" -ErrorAction SilentlyContinue '
-             r'| ForEach-Object { $_.CounterSamples | Select-Object Path, CookedValue | ConvertTo-Json }'],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-        )
-        luid_vram = {}  # low_luid -> vram_bytes
-        if r_adpm.stdout.strip():
-            adpm_data = json.loads(r_adpm.stdout)
-            if isinstance(adpm_data, dict):
-                adpm_data = [adpm_data]
-            for d in adpm_data:
-                m = _re.search(r"luid_0x[0-9a-fA-F]+_0x([0-9a-fA-F]+)", d.get("Path", ""))
-                if m:
-                    low_luid = m.group(1).lower()
-                    luid_vram[low_luid] = luid_vram.get(low_luid, 0) + int(d.get("CookedValue", 0))
-
-        # 3. 匹配 LUID -> GPU adapter
-        #    通过 PCI 设备 ID 识别独显（非 APU 集成显卡的 Device ID 范围）
-        #    独显优先匹配显存用量最高的 LUID
-        _APU_DEVS = {"13c0", "13e0", "15bf", "1681", "164f", "15e4"}  # 常见 AMD APU iGPU 设备 ID
-        def _is_discrete(gpu):
-            pnp = gpu.get("pnp", "")
-            m = _re.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
-            return m and m.group(1).lower() not in _APU_DEVS
-
-        luid_to_gpu = {}
-        sorted_luids = sorted(luid_vram.items(), key=lambda x: -x[1])
-        # 优先分配显存最高的 LUID 给独显
-        for low_luid, vram_bytes in sorted_luids:
-            if vram_bytes <= 0:
-                continue
-            matched_ids = [id(v) for v in luid_to_gpu.values()]
-            # 优先匹配独显
-            target = None
-            for gpu in gpus:
-                if id(gpu) not in matched_ids and _is_discrete(gpu):
-                    target = gpu
-                    break
-            if target is None:
-                # fallback: 匹配任意未匹配的 GPU
-                for gpu in gpus:
-                    if id(gpu) not in matched_ids:
-                        target = gpu
-                        break
-            if target:
-                luid_to_gpu[low_luid] = target
-                # 用实际显存占用替换 AdapterRAM（AMD 新卡的 AdapterRAM 不准）
-                target["vram_used"] = vram_bytes
-
-        # 4. 从 GPU Engine 计数器获取利用率，按 LUID 聚合
-        r_engine = subprocess.run(
-            [ps_path, "-NoProfile", "-Command",
-             "Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine"
-             " | Select-Object Name, UtilizationPercentage | ConvertTo-Json"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-        )
-        if r_engine.stdout.strip():
-            engines = json.loads(r_engine.stdout)
-            if isinstance(engines, dict):
-                engines = [engines]
-            # 按 LUID 聚合，取每个 LUID 的最大利用率
-            luid_util = {}
-            for e in engines:
-                m = _re.search(r"luid_0x[0-9a-fA-F]+_0x([0-9a-fA-F]+)", e.get("Name", ""))
-                if m:
-                    low_luid = m.group(1).lower()
-                    u = e.get("UtilizationPercentage") or 0
-                    luid_util[low_luid] = max(luid_util.get(low_luid, 0), u)
-            # 写入对应 GPU
-            for low_luid, util in luid_util.items():
-                if low_luid in luid_to_gpu:
-                    luid_to_gpu[low_luid]["util"] = max(luid_to_gpu[low_luid]["util"] or 0, util)
-
-        return gpus
-    except Exception:
-        return []
-
-
-def _get_disks() -> list:
-    """获取物理磁盘信息（按物理盘分组）"""
-    import subprocess
-    ps_path = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-    try:
-        # 获取物理磁盘 + 其分区的使用情况
-        r = subprocess.run(
-            [ps_path, "-NoProfile", "-Command",
-             r"""Get-PhysicalDisk | ForEach-Object {
-                 $pd = $_
-                 $parts = Get-Partition -DiskNumber $pd.DeviceId -ErrorAction SilentlyContinue |
-                     Where-Object { $_.Type -ne 'Reserved' -and $_.Size -gt 0 }
-                 $totalPart = ($parts | Measure-Object -Property Size -Sum).Sum
-                 $driveLetters = ($parts | Where-Object { $_.DriveLetter } | Select-Object -ExpandProperty DriveLetter) -join ''
-                 $usedPart = 0
-                 foreach ($dl in $driveLetters.ToCharArray()) {
-                     $vol = Get-Volume -DriveLetter $dl -ErrorAction SilentlyContinue
-                     if ($vol) { $usedPart += ($vol.Size - $vol.SizeRemaining) }
-                 }
-                 $mediaType = [string]$pd.MediaType
-                 [PSCustomObject]@{
-                     Model = $pd.FriendlyName
-                     Total = $totalPart
-                     Used = $usedPart
-                     Letters = $driveLetters
-                     MediaType = $mediaType
-                 }
-             } | ConvertTo-Json -Depth 3"""],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-        )
-        phys_disks = json.loads(r.stdout) if r.stdout.strip() else []
-        if isinstance(phys_disks, dict):
-            phys_disks = [phys_disks]
-    except Exception:
-        phys_disks = []
-
-    disks = []
-    for pd in phys_disks:
-        total = pd.get("Total", 0) or 0
-        used = pd.get("Used", 0) or 0
-        percent = round(used / total * 100, 1) if total > 0 else 0
-        model = pd.get("Model", "Unknown")
-        letters = pd.get("Letters", "")
-        if letters:
-            model += f" ({letters})"
-        disks.append({
-            "model": model,
-            "total": total,
-            "used": used,
-            "percent": percent,
-            "type": pd.get("MediaType", "Unknown"),
-        })
-    return disks
 
 
 def get_system_info() -> dict:
@@ -734,8 +786,7 @@ def get_system_info() -> dict:
                     if key.lower() in name.lower():
                         vram = val; break
                 pnp = g.get("PNP", "")
-                import re as _re_gpu
-                dm = _re_gpu.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
+                dm = re.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
                 is_discrete = bool(dm and dm.group(1).lower() not in _APU_DEVS)
                 gpus.append({
                     "name": name, "vram": vram, "util": 0, "pnp": pnp,
@@ -891,7 +942,6 @@ foreach ($pd in $physDisks) {
 
 def _refresh_dynamic(gpus: list, disks: list):
     """一次 PowerShell 调用刷新 GPU 利用率 + 显存占用 + 磁盘用量 + CPU当前频率"""
-    import re as _re
     out = _run_ps(r"""
 # GPU 利用率 + 显存
 $engines = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine | Select-Object Name, UtilizationPercentage
@@ -928,7 +978,7 @@ if ($perf) { [math]::Round($maxClock * $perf.CounterSamples.CookedValue / 100, 0
         engines = json.loads(engines_json)
         if isinstance(engines, dict): engines = [engines]
         for e in engines:
-            m = _re.search(r"luid_0x[0-9a-fA-F]+_0x([0-9a-fA-F]+)", e.get("Name", ""))
+            m = re.search(r"luid_0x[0-9a-fA-F]+_0x([0-9a-fA-F]+)", e.get("Name", ""))
             if m:
                 low = m.group(1).lower()
                 u = e.get("UtilizationPercentage") or 0
@@ -941,7 +991,7 @@ if ($perf) { [math]::Round($maxClock * $perf.CounterSamples.CookedValue / 100, 0
         mem_data = json.loads(mem_json)
         if isinstance(mem_data, dict): mem_data = [mem_data]
         for d in mem_data:
-            m = _re.search(r"luid_0x[0-9a-fA-F]+_0x([0-9a-fA-F]+)", d.get("Path", ""))
+            m = re.search(r"luid_0x[0-9a-fA-F]+_0x([0-9a-fA-F]+)", d.get("Path", ""))
             if m:
                 low = m.group(1).lower()
                 luid_vram[low] = luid_vram.get(low, 0) + int(d.get("CookedValue", 0))
@@ -960,7 +1010,7 @@ if ($perf) { [math]::Round($maxClock * $perf.CounterSamples.CookedValue / 100, 0
         for gpu in gpus:
             if id(gpu) in matched: continue
             pnp = gpu.get("pnp", "")
-            dm = _re.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
+            dm = re.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
             if dm and dm.group(1).lower() not in _APU_DEVS:
                 target = gpu; break
         if not target:
@@ -979,7 +1029,7 @@ if ($perf) { [math]::Round($maxClock * $perf.CounterSamples.CookedValue / 100, 0
             for gpu in gpus:
                 if id(gpu) in matched: continue
                 pnp = gpu.get("pnp", "")
-                dm = _re.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
+                dm = re.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
                 if dm and dm.group(1).lower() not in _APU_DEVS:
                     target = gpu; break
             if not target:
@@ -1008,10 +1058,9 @@ if ($perf) { [math]::Round($maxClock * $perf.CounterSamples.CookedValue / 100, 0
 
     # ── 磁盘用量 + 分区明细（psutil 直接读取）──
     try:
-        import re as _re2
         for dk in disks:
             letters_str = dk.get("model", "")
-            m = _re2.search(r"\(([A-Z]+)\)", letters_str)
+            m = re.search(r"\(([A-Z]+)\)", letters_str)
             if m:
                 total = 0
                 used = 0
@@ -1095,7 +1144,6 @@ def api_data():
 # SMTC 媒体信息 + 网易云歌词
 # ============================================================
 
-import re as _re_media
 import subprocess as _media_sp
 import threading
 
@@ -1165,8 +1213,8 @@ def _parse_lrc(lrc_text: str) -> list:
     """解析 LRC 歌词为 [(seconds, text), ...]"""
     result = []
     for line in lrc_text.split("\n"):
-        matches = _re_media.findall(r"\[(\d+):(\d+(?:\.\d+)?)\]", line)
-        text = _re_media.sub(r"\[\d+:\d+(?:\.\d+)?\]", "", line).strip()
+        matches = re.findall(r"\[(\d+):(\d+(?:\.\d+)?)\]", line)
+        text = re.sub(r"\[\d+:\d+(?:\.\d+)?\]", "", line).strip()
         if not text or not matches:
             continue
         for m, s in matches:
@@ -1176,79 +1224,378 @@ def _parse_lrc(lrc_text: str) -> list:
     return result
 
 
-def _search_netease(title: str, artist: str) -> tuple:
-    """搜索网易云获取歌曲 ID 和总时长（秒）"""
+# 翻唱/切片/改编关键词。仅当"候选歌名有这些词而目标 title 没有"时才惩罚
+# （用户听翻唱时目标 title 本身会包含这些词，不应扣分）。
+_LYRIC_JUNK_KW = (
+    "DJ", "remix", "Remix", "REMIX", "翻自", "原唱", "钢琴", "伴奏",
+    "伤感版", "女声", "男声", "Cover", "cover", "Acoustic",
+    "Live版", "live版", "Live)", "Live）", "正式版",
+    " beat", " Beat", " BEAT", "Type Beat",
+)
+
+# 采纳门槛。参考分布：
+#   精确艺人 + 完整名字 = 3×10 + 2×3 = 36
+#   子串艺人 + 完整名字 = 2×10 + 2×3 = 26
+#   伪造艺人（"周杰伦-"匹配"周杰伦"是子串）+ 完整名字 - junk 惩罚 = 26 - 6 = 20
+_LYRIC_SCORE_THRESHOLD = 25
+
+
+def _strip_paren(s: str) -> str:
+    """去掉歌名尾部的括号后缀（'起风了 (Acoustic)' -> '起风了'）"""
+    s = (s or "").strip().lower()
+    for ch in ("(", "（"):
+        i = s.find(ch)
+        if i > 0:
+            s = s[:i].strip()
+    return s
+
+
+# 伪造艺人常见后缀。网易云上大量 AI 翻唱账号叫 "周杰伦-"、"周杰伦."、"周杰伦、"、
+# "b-kll" 这种，故意在原艺人名后加少量特殊字符来蹭搜索。
+_FAKE_ARTIST_SUFFIX_CHARS = "-.·、_~—,、."
+
+
+def _is_fake_artist_variant(candidate: str, target: str) -> bool:
+    """候选艺人名把尾部特殊字符剥掉后与目标艺人一致 —— 判定为伪造账号。
+
+    真合唱/双名艺人（例："冯沁苑(买辣椒也用券)"）加的是有意义的字符或括号，剥不掉。
+    """
+    if not candidate or not target:
+        return False
+    stripped = candidate.rstrip(_FAKE_ARTIST_SUFFIX_CHARS).strip()
+    return stripped == target and stripped != candidate
+
+
+def _has_extra_junk(candidate: str, target: str) -> bool:
+    """候选歌名里出现了翻唱/改编关键词，但目标歌名里没有该关键词。
+
+    用户如果本来就在听 'xxx (Acoustic)' 或 'DJ 版 xxx'，目标 title 里就带这些词，
+    此时候选带同样的词是想要的匹配，不应视为"多出来的翻唱字样"。
+    """
+    for kw in _LYRIC_JUNK_KW:
+        if kw in candidate and kw not in target:
+            return True
+    return False
+
+
+# 内网 ncm-api（NeteaseCloudMusicApiEnhanced）配置。首次调用时从 config.json 读，
+# 之后缓存在这里。base_url 为空表示"不启用，走公开老接口 fallback"。
+_NCM_API_CONF = None   # None=未初始化，dict={"base_url":"","cookie":""}=已初始化
+
+
+def _get_ncm_api_conf() -> dict:
+    """返回 {'base_url': str, 'cookie': str}。仅在首次调用时读 config.json。"""
+    global _NCM_API_CONF
+    if _NCM_API_CONF is None:
+        try:
+            cfg = load_config().get("netease_api") or {}
+            if cfg.get("enabled") and cfg.get("base_url"):
+                _NCM_API_CONF = {
+                    "base_url": cfg["base_url"].rstrip("/"),
+                    "cookie": cfg.get("cookie", ""),
+                }
+            else:
+                _NCM_API_CONF = {"base_url": "", "cookie": ""}
+        except Exception:
+            _NCM_API_CONF = {"base_url": "", "cookie": ""}
+    return _NCM_API_CONF
+
+
+def _get_ncm_api_base() -> str:
+    return _get_ncm_api_conf()["base_url"]
+
+
+def _search_songs(title: str, artist: str) -> list:
+    """返回统一格式的候选列表 [{id, name, artists:[str,...], duration_sec}]。
+
+    优先走内网 ncm-api /cloudsearch（返回结构更干净、字段现代），失败时回退直连
+    music.163.com/api/search/get。两个接口的返回字段有差异，这里统一成一种。
+    """
+    kw = f"{title} {artist}"
+
+    base = _get_ncm_api_base()
+    if base:
+        try:
+            resp = _requests.get(
+                f"{base}/cloudsearch",
+                params={"keywords": kw, "limit": 30},
+                timeout=5,
+            )
+            data = resp.json()
+            songs = (data.get("result") or {}).get("songs", []) or []
+            return [
+                {
+                    "id": s.get("id"),
+                    "name": s.get("name", "") or "",
+                    "artists": [(a.get("name", "") or "") for a in (s.get("ar") or [])],
+                    "duration_sec": (s.get("dt") or 0) / 1000.0,
+                }
+                for s in songs
+                if s.get("id")
+            ]
+        except Exception as e:
+            print(f"[media] cloudsearch error (fallback to legacy): {e}", flush=True)
+
     try:
         resp = _requests.get(
             "https://music.163.com/api/search/get",
-            params={"s": f"{title} {artist}", "type": 1, "limit": 5, "offset": 0},
+            params={"s": kw, "type": 1, "limit": 30, "offset": 0},
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=5,
         )
         data = resp.json()
-        songs = data.get("result", {}).get("songs", [])
-        if songs:
-            song = songs[0]
-            duration_sec = (song.get("duration") or 0) / 1000.0
-            return song["id"], duration_sec
+        songs = (data.get("result") or {}).get("songs", []) or []
+        return [
+            {
+                "id": s.get("id"),
+                "name": s.get("name", "") or "",
+                "artists": [(a.get("name", "") or "") for a in (s.get("artists") or [])],
+                "duration_sec": (s.get("duration") or 0) / 1000.0,
+            }
+            for s in songs
+            if s.get("id")
+        ]
     except Exception as e:
-        print(f"[media] search error: {e}", flush=True)
+        print(f"[media] legacy search error: {e}", flush=True)
+        return []
+
+
+# 最近播放列表缓存：ncm-api /record/recent/song 反映的是网易云账号云端的播放历史，
+# SMTC 报的当前曲一般就是第一条（或前几条中的一条）。这个查询比 cloudsearch 快、准。
+# 后端每首歌只查一次匹配就够，不需要每秒刷新；用简单的 TTL 缓存即可。
+_recent_cache = {"list": None, "ts": 0.0}
+_recent_cache_lock = threading.Lock()
+_RECENT_CACHE_TTL = 15.0  # 秒
+
+
+def _fetch_recent_played(force: bool = False) -> list:
+    """拉取网易云账号云端的最近播放列表，返回 [{id, name, artists:[str], duration_sec, play_time_ms}]。
+
+    需要 ncm-api base_url + cookie；任何一个缺失就返回空列表。
+    带 15 秒 TTL 缓存，避免每秒刷新时打爆接口。
+    """
+    import time as _time
+    conf = _get_ncm_api_conf()
+    base = conf["base_url"]
+    cookie = conf["cookie"]
+    if not base or not cookie:
+        return []
+
+    with _recent_cache_lock:
+        cached = _recent_cache["list"]
+        age = _time.time() - _recent_cache["ts"]
+    if not force and cached is not None and age < _RECENT_CACHE_TTL:
+        return cached
+
+    try:
+        resp = _requests.get(
+            f"{base}/record/recent/song",
+            params={"cookie": cookie, "limit": 20},
+            timeout=5,
+        )
+        data = resp.json()
+        items = (data.get("data") or {}).get("list") or []
+        result = []
+        for x in items:
+            d = x.get("data") or {}
+            sid = d.get("id")
+            if not sid:
+                continue
+            result.append({
+                "id": sid,
+                "name": d.get("name", "") or "",
+                "artists": [(a.get("name") or "") for a in (d.get("ar") or [])],
+                "duration_sec": (d.get("dt") or 0) / 1000.0,
+                "play_time_ms": x.get("playTime") or 0,
+            })
+    except Exception as e:
+        print(f"[media] recent played error: {e}", flush=True)
+        return []
+
+    with _recent_cache_lock:
+        _recent_cache["list"] = result
+        _recent_cache["ts"] = _time.time()
+    return result
+
+
+def _match_from_recent(title: str, artist: str) -> tuple:
+    """在最近播放列表里找与 (title, artist) 匹配的歌，命中返回 (song_id, duration_sec)。
+
+    只看前 5 条，且要求歌名去括号后一致。艺人字段用宽松包含匹配（因为最近播放里
+    艺人字段跟 SMTC 报的通常已经一致，不需要复杂打分）。
+    """
+    items = _fetch_recent_played()
+    if not items:
+        return 0, 0.0
+
+    target_title = _strip_paren(title)
+    target_artist = (artist or "").strip().lower()
+
+    for it in items[:5]:
+        if _strip_paren(it["name"]) != target_title:
+            continue
+        arts = [a.strip().lower() for a in it["artists"]]
+        if not target_artist:
+            return it["id"], it["duration_sec"]
+        # 精确 / 子串 / 反向子串都算命中
+        for a in arts:
+            if a == target_artist or (a and target_artist and (target_artist in a or a in target_artist)):
+                return it["id"], it["duration_sec"]
     return 0, 0.0
 
 
-def _fetch_lyrics(song_id: int) -> str:
-    """从网易云获取 LRC 歌词"""
+def _search_netease(title: str, artist: str) -> list:
+    """搜索网易云获取候选歌曲列表，返回 [(score, song_id, duration_sec), ...] 按分数降序。
+
+    匹配优先级：
+    1. 已登录时先查网易云账号的"最近播放列表"（/record/recent/song），
+       SMTC 报的当前曲通常就是列表最前面几条之一，这条通道最快也最准。
+    2. 上一步没命中或没配 cookie 时，走搜索接口 + 打分/门槛过滤伪造艺人。
+    """
+    # 优先从最近播放列表拿
+    sid, dur = _match_from_recent(title, artist)
+    if sid:
+        return [(999, sid, dur)]  # 最高优先级
+
+    songs = _search_songs(title, artist)
+
+    target_title = _strip_paren(title)
+    target_artist = (artist or "").strip().lower()
+
+    candidates = []  # [(score, song_id, duration_sec), ...]
+    for s in songs:
+        name_full = s.get("name", "") or ""
+        if _strip_paren(name_full) != target_title:
+            continue
+
+        artists = [(a or "").strip().lower() for a in s.get("artists", [])]
+
+        artist_score = 0
+        for a in artists:
+            if a == target_artist:
+                artist_score = 3
+                break
+            if _is_fake_artist_variant(a, target_artist):
+                continue
+            if target_artist and (target_artist in a or a in target_artist):
+                artist_score = max(artist_score, 2)
+
+        name_score = 2 if name_full.strip().lower() == (title or "").strip().lower() else 1
+        junk_pen = -6 if _has_extra_junk(name_full, title or "") else 0
+        total = artist_score * 10 + name_score * 3 + junk_pen
+
+        if total >= _LYRIC_SCORE_THRESHOLD:
+            candidates.append((total, s["id"], s.get("duration_sec", 0.0)))
+
+    candidates.sort(key=lambda x: -x[0])
+
+    if not candidates:
+        print(f"[media] no acceptable match on netease: {title} - {artist} "
+              f"(scanned {len(songs)} candidates)", flush=True)
+    return candidates
+
+
+def _fetch_lyrics_raw(song_id: int) -> dict:
+    """从网易云获取原始歌词数据，同时拿 lrc（逐行）和 yrc（逐字）。
+
+    优先走内网 ncm-api（有登录态时能拿到更完整的歌词）；失败回退直连老接口。
+    返回 {'lrc': str, 'yrc': str}，字段为空字符串表示该类型不存在。
+    """
+    conf = _get_ncm_api_conf()
+    base = conf["base_url"]
+
+    if base:
+        try:
+            params = {"id": song_id}
+            if conf["cookie"]:
+                params["cookie"] = conf["cookie"]
+            resp = _requests.get(f"{base}/lyric/new", params=params, timeout=5)
+            data = resp.json()
+            return {
+                "lrc": (data.get("lrc") or {}).get("lyric", "") or "",
+                "yrc": (data.get("yrc") or {}).get("lyric", "") or "",
+            }
+        except Exception as e:
+            print(f"[media] ncm-api lyric error (fallback): {e}", flush=True)
+
     try:
         resp = _requests.get(
-            f"http://music.163.com/api/song/lyric?id={song_id}&lv=1&kv=1&tv=-1",
+            "http://music.163.com/api/song/lyric",
+            params={"id": song_id, "lv": -1, "kv": -1, "tv": -1, "yv": -1, "rv": -1},
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=5,
         )
         data = resp.json()
-        return data.get("lrc", {}).get("lyric", "")
-    except Exception as e:
-        print(f"[media] lyrics error: {e}", flush=True)
-    return ""
-
-
-async def _get_smtc_info() -> dict:
-    """通过 SMTC 获取当前播放信息"""
-    try:
-        from winrt.windows.media.control import (
-            GlobalSystemMediaTransportControlsSessionManager as MediaManager,
-        )
-
-        sessions = await MediaManager.request_async()
-        session = sessions.get_current_session()
-        if not session:
-            return {"status": "idle", "title": "", "artist": "", "position": 0, "duration": 0}
-
-        props = await session.try_get_media_properties_async()
-        timeline = session.get_timeline_properties()
-        playback = session.get_playback_info()
-
-        position = timeline.position.total_seconds()
-        duration = timeline.end_time.total_seconds()
-
-        # playback_status: 0=closed, 1=opened, 2=changing, 3=stopped, 4=playing, 5=paused
-        status_map = {0: "closed", 1: "opened", 2: "changing", 3: "stopped", 4: "playing", 5: "paused"}
-        status = status_map.get(playback.playback_status, "unknown")
-
         return {
-            "status": status,
-            "title": props.title or "",
-            "artist": props.artist or "",
-            "position": round(position, 1),
-            "duration": round(duration, 1),
+            "lrc": (data.get("lrc") or {}).get("lyric", "") or "",
+            "yrc": (data.get("yrc") or {}).get("lyric", "") or "",
         }
     except Exception as e:
-        print(f"[media] SMTC error: {e}", flush=True)
-        return {"status": "error", "title": "", "artist": "", "position": 0, "duration": 0}
+        print(f"[media] legacy lyric error: {e}", flush=True)
+    return {"lrc": "", "yrc": ""}
 
 
-def _get_lyrics_for(title: str, artist: str) -> dict:
+def _parse_yrc(yrc_text: str) -> list:
+    """解析逐字歌词。返回 [{"start": ms, "chars": [{"start": ms, "dur": ms, "text": "字"}, ...]}]
+
+    yrc 每行形如 `[16210,3460](16210,670,0)还(16880,410,0)没...`
+    - 行头方括号 [start,duration] 是行显示时间戳（毫秒）
+    - 每个字符前的圆括号 (charStart,charDur,unknown) 是字符高亮时间戳（毫秒）
+
+    可能开头有 `{"t":0,"c":[...]}` 之类的 JSON 元数据行，跳过。
+    """
+    result = []
+    for line in (yrc_text or "").split("\n"):
+        line = line.strip()
+        if not line or line.startswith("{"):
+            continue
+
+        # 行头 [start,duration]
+        header_m = re.match(r"\[(\d+),(\d+)\]", line)
+        if not header_m:
+            continue
+        line_start = int(header_m.group(1))
+        rest = line[header_m.end():]
+
+        # 每个字符：(start,dur,x) text
+        chars = []
+        for m in re.finditer(r"\((\d+),(\d+),\d+\)([^\(]*)", rest):
+            text = m.group(3)
+            if not text:
+                continue
+            chars.append({
+                "start": int(m.group(1)),
+                "dur": int(m.group(2)),
+                "text": text,
+            })
+
+        if chars:
+            result.append({"start": line_start, "chars": chars})
+
+    result.sort(key=lambda r: r["start"])
+    return result
+
+
+def _load_lyrics_by_id(song_id: int, duration_sec: float) -> dict:
+    """按 song_id 拉取并解析歌词，返回统一的结果 dict。"""
+    raw = _fetch_lyrics_raw(song_id)
+    lyrics_lrc = _parse_lrc(raw["lrc"]) if raw["lrc"] else []
+    lyrics_yrc = _parse_yrc(raw["yrc"]) if raw["yrc"] else []
+    return {
+        "song_id": song_id,
+        "duration": duration_sec,
+        "lyrics": lyrics_lrc,
+        "lyrics_yrc": lyrics_yrc,
+        "manual": False,
+    }
+
+
+def _get_lyrics_for(title: str, artist: str, song_id: int = 0) -> dict:
     """获取指定歌曲的歌词信息，带缓存（key=title+artist）。
-    搜索/歌词请求失败时不写入缓存，允许下次调用重试，避免永久卡住无歌词。"""
+    如果提供了 song_id（来自 YesPlayMusic API），直接用它拉歌词，跳过搜索。
+    否则遍历搜索候选，优先返回有逐字歌词(YRC)的版本。
+    搜索/歌词请求失败时不写入缓存，允许下次调用重试。
+    如果缓存条目标记为 manual=True（用户手动指定 songId），跳过自动搜索直接返回。"""
     key = (title, artist)
 
     with _lyrics_cache_lock:
@@ -1256,25 +1603,41 @@ def _get_lyrics_for(title: str, artist: str) -> dict:
     if cached is not None:
         return cached
 
-    song_id, duration_sec = _search_netease(title, artist)
-    if not song_id:
-        # 搜索失败：不缓存，下次请求会重新尝试
-        return {"song_id": None, "duration": 0.0, "lyrics": []}
+    result = None
 
-    lrc_text = _fetch_lyrics(song_id)
-    lyrics = _parse_lrc(lrc_text) if lrc_text else []
-    result = {"song_id": song_id, "duration": duration_sec, "lyrics": lyrics}
+    if song_id:
+        # YesPlayMusic API 直接提供了 song_id，跳过搜索
+        r = _load_lyrics_by_id(song_id, 0.0)
+        if r["lyrics"] or r["lyrics_yrc"]:
+            result = r
+    else:
+        # 没有 song_id，走搜索 + YRC 优先逻辑
+        candidates = _search_netease(title, artist)
+        if not candidates:
+            return {"song_id": None, "duration": 0.0, "lyrics": [], "lyrics_yrc": [], "manual": False}
 
-    if lyrics:
-        # 只有成功拿到歌词才写入缓存
+        best_any = None
+        for score, cid, duration_sec in candidates[:5]:
+            r = _load_lyrics_by_id(cid, duration_sec)
+            if r["lyrics_yrc"]:
+                result = r
+                break
+            if r["lyrics"] and best_any is None:
+                best_any = r
+        result = result or best_any
+    if not result:
+        return {"song_id": None, "duration": 0.0, "lyrics": [], "lyrics_yrc": [], "manual": False}
+
+    if result["lyrics"] or result["lyrics_yrc"]:
         with _lyrics_cache_lock:
             _lyrics_cache[key] = result
             _lyrics_cache_order.append(key)
             while len(_lyrics_cache_order) > _LYRICS_CACHE_MAX:
                 old_key = _lyrics_cache_order.pop(0)
                 _lyrics_cache.pop(old_key, None)
-        print(f"[media] loaded lyrics for: {title} ({len(lyrics)} lines, "
-              f"duration={duration_sec:.1f}s)", flush=True)
+        print(f"[media] loaded lyrics for: {title} "
+              f"(lrc={len(result['lyrics'])} lines, yrc={len(result['lyrics_yrc'])} lines, "
+              f"duration={result['duration']:.1f}s)", flush=True)
 
     return result
 
@@ -1287,24 +1650,33 @@ def get_media_info() -> dict:
 
     if info["status"] not in ("playing", "paused") or not info["title"]:
         return {
-            "status": info["status"], "title": "", "artist": "", "lyric": "",
+            "status": info["status"], "title": "", "artist": "", "lyric": "", "next_lyric": "",
+            "lyrics": [], "lyrics_yrc": [], "song_id": None,
             "position": 0, "duration": 0, "progress_ratio": None, "position_source": "none",
         }
 
-    lyric_data = _get_lyrics_for(info["title"], info["artist"])
+    # YesPlayMusic API 直接提供 song_id，跳过搜索
+    lyric_data = _get_lyrics_for(info["title"], info["artist"],
+                                  song_id=info.get("song_id"))
     lyrics = lyric_data["lyrics"]
+    lyrics_yrc = lyric_data.get("lyrics_yrc") or []
     duration = lyric_data["duration"]
+    song_id = lyric_data.get("song_id")
 
     ratio = info.get("progress_ratio")
     position_source = "none"
     pos = 0.0
 
-    if ratio is not None and duration > 0:
-        # UI Automation 读到的真实进度条比例（可靠）
+    # 优先用 YesPlayMusic API 直接返回的 position（最可靠）
+    if info.get("position") and info.get("duration"):
+        pos = float(info["position"])
+        duration = float(info["duration"])  # API 返回的 duration 比歌词 API 更准
+        position_source = "api"
+    elif ratio is not None and duration > 0:
+        # fallback: UIA 进度条比例 × 歌词 API 时长
         pos = ratio * duration
         position_source = "uia"
-    # 若 UIA 不可用（网易云窗口最小化/隐藏），前端会自行按估算计时兜底，
-    # 后端不再返回假的 position，避免误导。
+    # 若都不可用，前端会自行按估算计时兜底
 
     # 根据播放位置匹配当前歌词行
     current_lyric = ""
@@ -1325,6 +1697,8 @@ def get_media_info() -> dict:
         "lyric": current_lyric,
         "next_lyric": next_lyric,
         "lyrics": [[t, text] for t, text in lyrics],
+        "lyrics_yrc": lyrics_yrc,
+        "song_id": song_id,
         "position": round(pos, 2),
         "duration": round(duration, 2),
         "progress_ratio": ratio,
@@ -1340,7 +1714,8 @@ def api_media():
 
 @app.route("/api/media/reload", methods=["POST"])
 def api_media_reload():
-    """清除当前歌曲的歌词缓存并重新获取"""
+    """清除当前歌曲的歌词缓存并重新获取。同时刷新最近播放列表缓存，
+    避免刚切歌就点重载还是命中旧列表。"""
     with _smtc_lock:
         title = _smtc_result.get("title", "")
         artist = _smtc_result.get("artist", "")
@@ -1352,8 +1727,136 @@ def api_media_reload():
                 _lyrics_cache_order.remove(key)
             except ValueError:
                 pass
+        # 让下次 _match_from_recent 强制重取最新列表
+        with _recent_cache_lock:
+            _recent_cache["ts"] = 0.0
         print(f"[media] lyrics cache cleared for: {title}", flush=True)
     return jsonify(get_media_info())
+
+
+@app.route("/api/media/set_song_id", methods=["POST"])
+def api_media_set_song_id():
+    """手动指定当前歌曲的网易云 song_id 并加载对应歌词。
+
+    应对场景：SMTC 报的曲名/艺人在网易云搜索接口里搜不出正版（比如曲库里
+    确实存在但搜索索引缺失），用户通过网易云 App 或网页找到真正的 id 后
+    通过前端 UI 传进来，直接拉歌词并写入缓存。缓存条目标记 manual=True，
+    自动搜索路径不会覆盖它。
+    """
+    payload = request.get_json(silent=True) or {}
+    try:
+        song_id = int(payload.get("song_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid song_id"}), 400
+
+    with _smtc_lock:
+        title = _smtc_result.get("title", "")
+        artist = _smtc_result.get("artist", "")
+    if not title:
+        return jsonify({"error": "no active song"}), 400
+
+    # 拉歌词，同时尝试从当前搜索给出的 duration_sec 里推断（若拿不到就用 0）
+    # 这里 duration 不重要——UIA 进度条比例配合 SMTC 时长即可，前端会自兜。
+    result = _load_lyrics_by_id(song_id, 0.0)
+    result["manual"] = True
+
+    key = (title, artist)
+    with _lyrics_cache_lock:
+        _lyrics_cache[key] = result
+        if key not in _lyrics_cache_order:
+            _lyrics_cache_order.append(key)
+        while len(_lyrics_cache_order) > _LYRICS_CACHE_MAX:
+            old_key = _lyrics_cache_order.pop(0)
+            _lyrics_cache.pop(old_key, None)
+    print(f"[media] manually set song_id={song_id} for: {title}", flush=True)
+    return jsonify(get_media_info())
+
+
+_LYRIC_OFFSET_FILE = Path(__file__).parent / "lyric_offset.json"
+_LYRIC_OFFSET_DEFAULT = 1.5
+
+
+def _load_lyric_offset() -> float:
+    """从磁盘读取歌词偏移量（秒）"""
+    try:
+        data = json.loads(_LYRIC_OFFSET_FILE.read_text(encoding="utf-8"))
+        return float(data.get("offset", _LYRIC_OFFSET_DEFAULT))
+    except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError):
+        return _LYRIC_OFFSET_DEFAULT
+
+
+def _save_lyric_offset(val: float):
+    """持久化歌词偏移量"""
+    try:
+        _LYRIC_OFFSET_FILE.write_text(json.dumps({"offset": val}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+@app.route("/api/media/offset", methods=["GET", "POST"])
+def api_media_offset():
+    """GET: 返回当前偏移量; POST: 设置偏移量（支持 delta 增量或绝对值）"""
+    if request.method == "GET":
+        return jsonify({"offset": _load_lyric_offset()})
+    payload = request.get_json(silent=True) or {}
+    if "delta" in payload:
+        val = round((_load_lyric_offset() + float(payload["delta"])) * 10) / 10
+    else:
+        val = round(float(payload.get("offset", _LYRIC_OFFSET_DEFAULT)) * 10) / 10
+    _save_lyric_offset(val)
+    return jsonify({"offset": val})
+
+
+# ============================================================
+# SMTC 系统级播放控制
+# ============================================================
+
+
+def _smtc_control(action: str) -> dict:
+    """通过 Windows SMTC 发送系统级媒体控制指令"""
+    import asyncio
+
+    async def _do():
+        from winrt.windows.media.control import (
+            GlobalSystemMediaTransportControlsSessionManager as MediaManager,
+        )
+        manager = await MediaManager.request_async()
+        session = manager.get_current_session()
+        if not session:
+            return {"ok": False, "error": "no active session"}
+
+        props = await session.try_get_media_properties_async()
+        title = props.title or ""
+
+        if action == "next":
+            ok = await session.try_skip_next_async()
+        elif action == "prev":
+            ok = await session.try_skip_previous_async()
+        elif action == "play":
+            ok = await session.try_play_async()
+        elif action == "pause":
+            ok = await session.try_pause_async()
+        elif action == "toggle":
+            ok = await session.try_toggle_play_pause_async()
+        else:
+            return {"ok": False, "error": "unknown action"}
+
+        return {"ok": ok, "title": title}
+
+    try:
+        return asyncio.run(_do())
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.route("/api/player/<action>", methods=["POST"])
+def api_player_control(action):
+    """播放控制：play/pause/next/prev/toggle（通过 Windows SMTC 系统级指令）"""
+    allowed = {"play", "pause", "next", "prev", "toggle"}
+    if action not in allowed:
+        return jsonify({"error": "unknown action"}), 400
+    result = _smtc_control(action)
+    return jsonify(result), 200 if result.get("ok") else 500
 
 
 @app.route("/api/system")
@@ -1391,7 +1894,12 @@ def main():
     print(f"访问地址: http://{args.host}:{args.port}")
     print(f"按 Ctrl+C 停止服务器")
 
-    app.run(host=args.host, port=args.port, debug=False)
+    # 启动 WebSocket 广播线程
+    t = _ws_threading.Thread(target=_ws_broadcaster, daemon=True)
+    t.start()
+
+    app.run(host=args.host, port=args.port, debug=True,
+            use_reloader=True, extra_files=["static/dashboard.html"])
 
 
 if __name__ == "__main__":
