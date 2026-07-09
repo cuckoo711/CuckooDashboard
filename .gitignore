@@ -1,2 +1,21 @@
 .narrafork/
 .worktrees/
+
+# 敏感文件
+.env
+.env.*
+credentials.*
+cookies.json
+cookies.txt
+config.json
+local_tokens.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
