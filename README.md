@@ -1,120 +1,152 @@
-# Mimo_usage
+# Cuckoo Dashboard
 
-查询自己的小米 MiMo Token Plan 使用情况（套餐详情、额度用量等）。
+A real-time system monitoring dashboard with MiMo Token Plan tracking, GitHub contribution heatmap, and desktop audio player with synchronized lyrics.
 
-## 功能
+![Python](https://img.shields.io/badge/Python-3.10+-blue) ![Flask](https://img.shields.io/badge/Flask-3.x-green) ![License](https://img.shields.io/badge/License-MIT-yellow)
 
-- **多种登录方式** - 扫码登录 / 浏览器 Cookie 自动读取 / 密码登录
-- **Cookie 自动刷新** - 过期后自动重新获取（浏览器/密码模式）
-- **用量查询** - 查询 Token Plan 套餐详情、当月用量、总用量
-- **美化输出** - 使用 rich 库在终端展示带进度条的用量报告
-- **JSON 输出** - 支持 `--json` 导出结构化数据
-- **桌面应用** - 原生窗口显示，无需打开浏览器
+## Features
 
-## 安装
+### System Monitoring
+- CPU / GPU / Memory usage with real-time ring gauges
+- Physical disk partition overview with capacity bars
+- Network throughput (upload / download)
+- Uptime tracking
+- GPU detection (AMD Radeon series)
+- Physical disk hot-plug detection
+
+### MiMo Token Plan
+- Token Plan usage ring with remaining quota
+- Daily token consumption breakdown (input / output / cache hit)
+- Stacked bar visualization
+- Model-level usage breakdown
+- Pay-as-you-go usage tracking
+
+### GitHub Contribution Heatmap
+- Full-year contribution calendar fetched from your GitHub profile
+- Disk cache + 3-retry logic for reliability
+- Auto-refresh based on Vibe Coding mode
+
+### Desktop Audio Player
+- Real-time media info via Windows SMTC
+- Synchronized lyrics display with smooth scrolling
+- Lyrics time offset adjustment
+- Lyrics reload button
+
+### Dashboard Themes
+- Default dark theme
+- Clean mono theme (click the red dot in the top-left corner to toggle)
+
+## Screenshots
+
+> Run the dashboard and open `http://localhost:5050` in your browser to see it live.
+
+## Installation
 
 ```bash
-pip install requests rich flask pywebview
+# Clone the repository
+git clone https://github.com/cuckoo711/CuckooDashboard.git
+cd CuckooDashboard
 
-# 可选: 终端显示二维码
-pip install segno   # 或 pip install qrcode
+# Install dependencies
+pip install -r requirements.txt
 ```
 
-## 使用
+### Dependencies
 
-### 方式一: 交互式（推荐）
+- `flask` - Web server
+- `psutil` - System monitoring
+- `requests` - HTTP client
+- `pywebview` - Native desktop window (optional)
+- `segno` or `qrcode` - QR code for login (optional)
+
+## Usage
+
+### 1. Login to MiMo
 
 ```bash
 python mimo_usage.py
-# 会提示选择登录方式:
-#   1. 扫码登录（用小米手机扫码）
-#   2. 浏览器 Cookie（自动从 Chrome/Edge 读取）
-#   3. 密码登录
-#   4. 手动输入 Cookie
+
+# Options:
+#   1. QR Code login (scan with Xiaomi phone)
+#   2. Browser Cookie (auto-read from Chrome/Edge)
+#   3. Password login
+#   4. Manual Cookie input
 ```
 
-### 方式二: 命令行参数
+Or with command-line flags:
 
 ```bash
-python mimo_usage.py --login qr         # 扫码登录
-python mimo_usage.py --login browser    # 自动从浏览器读取 Cookie
-python mimo_usage.py --login password   # 密码登录
-python mimo_usage.py --cookie FILE      # 从文件加载 Cookie
+python mimo_usage.py --login browser --save   # Auto-refresh cookies
+python mimo_usage.py --login qr               # QR code scan
+python mimo_usage.py --json                   # JSON output
 ```
 
-### 保存 Cookie 并启用自动刷新
+### 2. Start the Dashboard
 
 ```bash
-python mimo_usage.py --login browser --save
-# 或
-python mimo_usage.py --login password --save
+python dashboard.py
+# Open http://localhost:5050 in your browser
 ```
 
-`--save` 会保存登录方式，下次运行时如果 Cookie 过期:
-- **browser**: 自动重新从浏览器读取
-- **password**: 自动用缓存的账号密码重新登录
-- **qr / manual**: 需要手动重新登录
-
-### 其他选项
-
 ```bash
-python mimo_usage.py --json       # JSON 格式输出
-python mimo_usage.py --no-cache   # 忽略缓存，强制重新登录
-python mimo_usage.py --help       # 查看帮助
+# Custom port and settings
+python dashboard.py --port 8080 --host 0.0.0.0
+python dashboard.py --dev   # Debug mode
 ```
 
-## 桌面应用
-
-原生窗口显示，无需打开浏览器：
+### 3. Desktop App (optional)
 
 ```bash
-# 先登录获取Cookie
-python mimo_usage.py --login browser --save
-
-# 启动桌面应用
 python desktop.py
+# Native window, no browser needed
 
-# 指定端口和窗口大小
 python desktop.py --port 8080 --width 1200 --height 800
-
-# 开发模式（显示控制台）
-python desktop.py --dev
 ```
 
-桌面应用特性：
-- ✅ 原生窗口，无需浏览器
-- ✅ 支持窗口缩放
-- ✅ 后台自动刷新数据
-- ✅ 系统托盘支持（计划中）
+## API Endpoints
 
-## 输出示例
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/data` | GET | MiMo usage data + GitHub contributions |
+| `/api/system` | GET | System hardware info (CPU/GPU/Memory/Disk) |
+| `/api/nug` | GET | Nug status |
+| `/api/media` | GET | Current media info + lyrics |
+| `/api/media/reload` | POST | Clear lyrics cache and refetch |
+
+## Configuration
+
+Environment variables or `cookies.json`:
+
+| Key | Description |
+|---|---|
+| `GITHUB_USER` | GitHub username for contribution heatmap |
+| `MIMO_COOKIE` | MiMo login cookie string |
+| `MIMO_COOKIE_PATH` | Path to cookie file (default: `cookies.json`) |
+
+## Project Structure
 
 ```
-╭──── 用户信息 ────╮
-│ 字段       值             │
-│ 用户ID     123456789      │
-│ 邮箱       user@email.com │
-│ 昵称       MiMoFan        │
-╰─────────────────╯
-
-╭──── Token Plan 套餐 ────╮
-│ 字段          值              │
-│ 套餐名称      Pro             │
-│ 到期时间      2025-08-15      │
-│ 自动续费      已开启           │
-╰─────────────────────────────╯
-
-当月用量 (总使用率: 25.0%)
-  项目                已使用    总额度   使用率  进度
-  mimo-v2.5-pro       2.50B    10.00B   25.0%  █████░░░░░░░░░░░░░░░
+.
+├── dashboard.py          # Flask server + all API endpoints
+├── desktop.py            # PyWebView native window wrapper
+├── mimo_usage.py         # MiMo login & CLI tool
+├── smtc_worker.py        # Windows SMTC media info worker
+├── requirements.txt      # Python dependencies
+├── static/
+│   └── dashboard.html    # Single-file dashboard (HTML/CSS/JS)
+└── LICENSE
 ```
 
-## 安全说明
+## Security
 
-- `cookies.json` 已被 `.gitignore` 忽略，不会提交到仓库
-- 密码登录模式使用 `--save` 时会将密码保存到本地 `cookies.json`，仅用于自动刷新
-- 如果不需要自动刷新，可以不用 `--save`，每次手动登录
+- `cookies.json` is in `.gitignore` and will not be committed
+- `github_cache.json` (local cache) is also git-ignored
+- No sensitive data is transmitted to third-party servers
 
-## 参考
+## Acknowledgments
 
-本项目的实现参考了 [0xtbug/Mimo-Usage](https://github.com/0xtbug/Mimo-Usage) 和 [Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor) 的登录流程。
+Login flow inspired by [0xtbug/Mimo-Usage](https://github.com/0xtbug/Mimo-Usage) and [Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor).
+
+## License
+
+MIT
