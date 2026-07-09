@@ -14,7 +14,7 @@ import json
 import platform
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections import defaultdict
 
@@ -315,16 +315,30 @@ def get_mimo_api() -> MiMoAPI:
     return MiMoAPI(cookie_str)
 
 
+GITHUB_DISK_CACHE = Path(__file__).parent / "github_cache.json"
+
+
 def fetch_github_contributions() -> dict:
-    """从 GitHub profile 页面抓取完整一年的贡献日历数据"""
+    """从 GitHub profile 页面抓取完整一年的贡献日历数据，带磁盘缓存和重试"""
     now = time.time()
     if _github_cache["data"] and (now - _github_cache["timestamp"]) < GITHUB_CACHE_TTL:
         return _github_cache["data"]
 
-    try:
-        import re
+    # 尝试从磁盘缓存恢复
+    if GITHUB_DISK_CACHE.exists():
+        try:
+            disk = json.loads(GITHUB_DISK_CACHE.read_text(encoding="utf-8"))
+            if disk.get("data") and (now - disk.get("ts", 0)) < 86400:  # 1天有效
+                _github_cache["data"] = disk["data"]
+                _github_cache["timestamp"] = now
+                print(f"GitHub: 从磁盘缓存恢复 {len(disk['data'])} 天数据", flush=True)
+                return disk["data"]
+        except (json.JSONDecodeError, OSError):
+            pass
 
-        # GitHub 将贡献日历放在 lazy-loaded fragment 中
+    import re
+
+    def _do_fetch() -> dict:
         resp = _requests.get(
             f"https://github.com/{GITHUB_USER}",
             headers={
@@ -334,19 +348,15 @@ def fetch_github_contributions() -> dict:
             timeout=15,
         )
         if resp.status_code != 200:
-            print(f"GitHub profile 返回 {resp.status_code}", flush=True)
-            return _github_cache["data"] or {}
+            raise Exception(f"GitHub profile 返回 {resp.status_code}")
 
         html = resp.text
-
-        # 找到 contributions fragment URL
         frag_m = re.search(
             r'src="(/[^"]*?controller=profiles[^"]*?tab=contributions[^"]*?)"',
             html,
         )
         if not frag_m:
-            print("GitHub: 未找到 contributions fragment URL", flush=True)
-            return _github_cache["data"] or {}
+            raise Exception("未找到 contributions fragment URL")
 
         frag_url = "https://github.com" + frag_m.group(1).replace("&amp;", "&")
         frag_resp = _requests.get(
@@ -359,73 +369,41 @@ def fetch_github_contributions() -> dict:
             timeout=15,
         )
         if frag_resp.status_code != 200:
-            print(f"GitHub fragment 返回 {frag_resp.status_code}", flush=True)
-            return _github_cache["data"] or {}
+            raise Exception(f"GitHub fragment 返回 {frag_resp.status_code}")
 
-        # 从 SVG rect 提取 data-date + data-level
         rects = re.findall(r'data-date="([^"]+)"[^>]*data-level="([^"]+)"', frag_resp.text)
-
-        # level 映射到贡献次数（GitHub 用 0-4 分级，这里用中值）
         level_map = {"0": 0, "1": 2, "2": 5, "3": 8, "4": 12}
         contributions = {}
         for date, level in rects:
             count = level_map.get(level, 0)
             if count > 0:
                 contributions[date] = count
-
-        print(f"GitHub: fetched {len(contributions)} days of contributions from SVG", flush=True)
-        _github_cache["data"] = contributions
-        _github_cache["timestamp"] = now
         return contributions
 
-    except Exception as e:
-        print(f"GitHub fetch error: {e}", flush=True)
-        return _github_cache["data"] or {}
+    # 重试3次
+    for attempt in range(3):
+        try:
+            contributions = _do_fetch()
+            print(f"GitHub: fetched {len(contributions)} days of contributions", flush=True)
+            _github_cache["data"] = contributions
+            _github_cache["timestamp"] = now
+            # 写入磁盘缓存
+            try:
+                GITHUB_DISK_CACHE.write_text(
+                    json.dumps({"data": contributions, "ts": now}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+            return contributions
+        except Exception as e:
+            print(f"GitHub fetch attempt {attempt+1}/3 failed: {e}", flush=True)
+            if attempt < 2:
+                import time as _t
+                _t.sleep(2)
 
-        html = resp.text
-
-        # 找到 contributions fragment URL
-        frag_m = re.search(
-            r'src="(/[^"]*?controller=profiles[^"]*?tab=contributions[^"]*?)"',
-            html,
-        )
-        if not frag_m:
-            print("GitHub: 未找到 contributions fragment URL", flush=True)
-            return _github_cache["data"] or {}
-
-        frag_url = "https://github.com" + frag_m.group(1).replace("&amp;", "&")
-        frag_resp = _requests.get(
-            frag_url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "text/html",
-                "X-Requested-With": "XMLHttpRequest",
-            },
-            timeout=15,
-        )
-        if frag_resp.status_code != 200:
-            print(f"GitHub fragment 返回 {frag_resp.status_code}", flush=True)
-            return _github_cache["data"] or {}
-
-        # 从 SVG rect 提取 data-date + data-level
-        rects = re.findall(r'data-date="([^"]+)"[^>]*data-level="([^"]+)"', frag_resp.text)
-
-        # level 映射到贡献次数（GitHub 用 0-4 分级，这里用中值）
-        level_map = {"0": 0, "1": 2, "2": 5, "3": 8, "4": 12}
-        contributions = {}
-        for date, level in rects:
-            count = level_map.get(level, 0)
-            if count > 0:
-                contributions[date] = count
-
-        print(f"GitHub: fetched {len(contributions)} days of contributions from SVG", flush=True)
-        _github_cache["data"] = contributions
-        _github_cache["timestamp"] = now
-        return contributions
-
-    except Exception as e:
-        print(f"GitHub fetch error: {e}", flush=True)
-        return _github_cache["data"] or {}
+    print("GitHub: 所有重试均失败", flush=True)
+    return _github_cache["data"] or {}
 
 
 def fetch_all_data() -> dict:
@@ -455,6 +433,7 @@ def fetch_all_data() -> dict:
         plan = api.get_token_plan_detail()
         usage = api.get_token_plan_usage()
         balance = api.get_balance()
+        payg_usage = api.get_usage()
         tp_usage_detail = api.get_token_plan_usage_detail()
 
         daily_data = daily_detail.get("data", {})
@@ -478,6 +457,7 @@ def fetch_all_data() -> dict:
             if today:
                 has_local = True
                 local_usage["requestCount"] += today.get("requestCount", 0)
+                # 本地平台: totalTokens = in + out + cacheRead
                 local_usage["totalInputTokens"] += today.get("totalInputTokens", 0)
                 local_usage["totalOutputTokens"] += today.get("totalOutputTokens", 0)
                 local_usage["totalCacheReadTokens"] += today.get("totalCacheReadTokens", 0)
@@ -487,6 +467,17 @@ def fetch_all_data() -> dict:
                 local_usage["errorCount"] += today.get("errorCount", 0)
                 local_usage["meterUsage"] += today.get("meterUsage", 0)
 
+        # 计算 MiMo 的 inMiss（非缓存输入）
+        mimo_inMiss = 0
+        tu = daily_data.get("tokenUsage", [])
+        bj_now = datetime.now(timezone(timedelta(hours=8)))
+        ref = datetime.utcnow() if bj_now.hour >= 8 else datetime.utcnow() - timedelta(days=1)
+        target_key = f"{ref.month:02d}-{ref.day:02d}"
+        for t in tu:
+            if t[0] == target_key:
+                mimo_inMiss = max(0, t[1] - t[4])  # inTok - cache
+                break
+
         result = {
             "success": True,
             "timestamp": datetime.now().isoformat(),
@@ -494,9 +485,11 @@ def fetch_all_data() -> dict:
             "plan": plan.get("data", {}),
             "usage": usage.get("data", {}),
             "balance": balance.get("data", {}),
+            "payg_usage": payg_usage.get("data", {}),
             "tp_usage_detail": tp_usage_detail.get("data", []),
             "daily_detail": daily_data,
             "local_usage": local_usage if has_local else None,
+            "mimo_inMiss": mimo_inMiss,
         }
 
         _cache["data"] = result
@@ -728,7 +721,7 @@ def get_system_info() -> dict:
         if hw:
             # GPU: 应用 VRAM 型号映射修正
             _VRAM_MAP = {
-                "9070 XT": 16 * 1024**3, "9070": 16 * 1024**3,
+                "9070 XT": 45.6 * 1024**3, "9070": 45.6 * 1024**3,
                 "7900 XTX": 24 * 1024**3, "7900 XT": 20 * 1024**3,
                 "7800 XT": 16 * 1024**3, "7700 XT": 12 * 1024**3,
             }
@@ -767,6 +760,7 @@ def get_system_info() -> dict:
                 "cpu_cores_l": hw.get("CpuCores", psutil.cpu_count(logical=True)),
                 "mem_freq": hw.get("MemFreq", 0) or 0,
                 "mem_type": hw.get("MemType", ""),
+                "mem_installed": 78.3 * 1024**3,  # Task Manager 显示的已安装内存
                 "gpus": gpus,
                 "disks": disks,
             }
@@ -794,6 +788,9 @@ def get_system_info() -> dict:
     _refresh_dynamic(s["gpus"], s["disks"])
     cpu_freq_dynamic = getattr(_refresh_dynamic, "cpu_freq_mhz", 0)
 
+    # 检测磁盘插拔（每30秒一次，独立函数）
+    _check_disk_changes(s["disks"])
+
     uptime_sec = now - psutil.boot_time()
 
     data = {
@@ -812,6 +809,7 @@ def get_system_info() -> dict:
             "percent": mem.percent,
             "freq": s["mem_freq"],
             "type": s["mem_type"],
+            "installed": s.get("mem_installed", 0),
         },
         "gpus": s["gpus"],
         "disks": s["disks"],
@@ -1034,6 +1032,53 @@ if ($perf) { [math]::Round($maxClock * $perf.CounterSamples.CookedValue / 100, 0
                 dk["partitions"] = parts
             else:
                 dk["partitions"] = []
+    except Exception:
+        pass
+
+
+def _check_disk_changes(disks: list):
+    """每30秒检测一次物理磁盘插拔（WMI 查询，有开销）"""
+    now = time.time()
+    if not hasattr(_check_disk_changes, "_last_ts"):
+        _check_disk_changes._last_ts = 0
+    if now - _check_disk_changes._last_ts < 30:
+        return
+    _check_disk_changes._last_ts = now
+
+    out = _run_ps(r"""
+$physDisks = Get-PhysicalDisk | ForEach-Object {
+    $pd = $_
+    $letters = (Get-Partition -DiskNumber $pd.DeviceId -ErrorAction SilentlyContinue |
+        Where-Object { $_.DriveLetter } |
+        Select-Object -ExpandProperty DriveLetter) -join ''
+    @{Model=$pd.FriendlyName; MediaType=[string]$pd.MediaType; Letters=$letters; Size=[long]$pd.Size}
+}
+$physDisks | ConvertTo-Json -Depth 3
+""", timeout=5)
+    if not out:
+        return
+    try:
+        disk_data = json.loads(out)
+        if isinstance(disk_data, dict):
+            disk_data = [disk_data]
+        current_keys = {d.get("model", "").split(" (")[0] for d in disks}
+        new_keys = {d.get("Model", "") for d in disk_data}
+        if current_keys != new_keys:
+            print(f"[sys] 磁盘变化检测: {current_keys} -> {new_keys}", flush=True)
+            disks.clear()
+            for pd in disk_data:
+                total = pd.get("Size", 0) or 0
+                model = pd.get("Model", "Unknown")
+                letters = pd.get("Letters", "")
+                if letters:
+                    model += f" ({letters})"
+                disks.append({
+                    "model": model,
+                    "total": total,
+                    "used": 0,
+                    "percent": 0,
+                    "type": pd.get("MediaType", "Unknown"),
+                })
     except Exception:
         pass
 
@@ -1290,6 +1335,24 @@ def get_media_info() -> dict:
 @app.route("/api/media")
 def api_media():
     """返回当前播放的媒体信息和歌词"""
+    return jsonify(get_media_info())
+
+
+@app.route("/api/media/reload", methods=["POST"])
+def api_media_reload():
+    """清除当前歌曲的歌词缓存并重新获取"""
+    with _smtc_lock:
+        title = _smtc_result.get("title", "")
+        artist = _smtc_result.get("artist", "")
+    if title:
+        key = (title, artist)
+        with _lyrics_cache_lock:
+            _lyrics_cache.pop(key, None)
+            try:
+                _lyrics_cache_order.remove(key)
+            except ValueError:
+                pass
+        print(f"[media] lyrics cache cleared for: {title}", flush=True)
     return jsonify(get_media_info())
 
 

@@ -39,12 +39,103 @@
         .hdr-l { display:flex; align-items:center; gap:10px; }
         .hdr-l .mark {
             width:20px; height:20px; border:2px solid var(--crimson); border-radius:50%; position:relative;
-            box-shadow: 0 0 8px rgba(181,52,42,0.4);
+            box-shadow: 0 0 8px rgba(181,52,42,0.4); cursor:pointer; transition:border-color 0.4s, box-shadow 0.4s;
         }
         .hdr-l .mark::after {
             content:''; position:absolute; top:3px; left:3px;
             width:10px; height:10px; background:var(--crimson); border-radius:50%;
+            transition:background 0.4s;
         }
+        body.mono {
+            filter:none; background:#f8f8fa !important; color:#1a1a2e; text-shadow:none;
+        }
+        body.mono .grid { background:none; }
+        body.mono .card {
+            background:#ffffff; backdrop-filter:none; -webkit-backdrop-filter:none;
+            border:1px solid #e2e2e8; box-shadow:0 2px 8px rgba(0,0,0,0.06);
+        }
+        body.mono .card-head-l { color:#1a1a2e; text-shadow:none; }
+        body.mono .card-head-l .bar { background:#4a4a6a; }
+        body.mono .card-head-r { color:#6a6a8a; text-shadow:none; }
+        body.mono .card-foot { border-color:#ededf0; }
+        body.mono .card-foot-l, body.mono .card-foot-r { color:#6a6a8a; text-shadow:none; }
+        body.mono .card-foot-l b, body.mono .card-foot-r b { color:#1a1a2e; }
+
+        /* 纯净模式 - Header */
+        body.mono .hdr h1 { color:#1a1a2e; text-shadow:none; }
+        body.mono .hdr-date { color:#4a4a6a; text-shadow:none; }
+        body.mono .hdr-clock-box { background:#f0f0f5; border-color:#e2e2e8; box-shadow:none; }
+        body.mono .hdr-clock-ampm, body.mono .hdr-clock { color:#1a1a2e; text-shadow:none; }
+        body.mono .hdr-badge { color:#6a6a8a; text-shadow:none; }
+        body.mono .mark { border-color:#4a4a6a; box-shadow:none; }
+        body.mono .mark::after { background:#4a4a6a; }
+
+        /* 纯净模式 - 系统信息 */
+        body.mono .hw-main-pct { color:#1a1a2e; }
+        body.mono .hw-main-sub { color:#8a8aa0; text-shadow:none; }
+        body.mono .hw-main-name { color:#3a3a5a; text-shadow:none; }
+        body.mono .hw-ring-bg { stroke:#e8e8f0 !important; }
+
+        /* 纯净模式 - 网络 & 开机 */
+        body.mono .net-icon.up { color:#6a6a8a; }
+        body.mono .net-icon.down { color:#4a7a5a; }
+        body.mono .net-value { color:#1a1a2e; }
+        body.mono .net-unit { color:#8a8aa0; }
+        body.mono .uptime-val { color:#1a1a2e; }
+
+        /* 纯净模式 - 磁盘 */
+        body.mono .dk-disk-name { color:#4a4a6a; text-shadow:none; }
+        body.mono .dk-disk-info { color:#6a6a8a; text-shadow:none; }
+        body.mono .dk-part-letter { color:#4a4a6a; text-shadow:none; }
+        body.mono .dk-part-track { background:#f0f0f5; }
+        body.mono .dk-part-fill.ok { background:linear-gradient(90deg, #5a9a6a, #7aba8a); }
+        body.mono .dk-part-fill.warn { background:linear-gradient(90deg, #c09040, #d0a850); }
+        body.mono .dk-part-fill.danger { background:linear-gradient(90deg, #c04040, #d06060); }
+
+        /* 纯净模式 - Vibe Coding */
+        body.mono .ring-bg { stroke:#e8e8f0 !important; }
+        body.mono .ring-pct { color:#1a1a2e; }
+        body.mono .ring-label { color:#8a8aa0; text-shadow:none; }
+        body.mono .today-big { color:#c04040; }
+        body.mono .today-big-sub { color:#8a8aa0; text-shadow:none; }
+        body.mono .stacked-bar { background:#f0f0f5; }
+        body.mono .stacked-seg.s-in { background:#7b6cc4; }
+        body.mono .stacked-seg.s-cache { background:#4a3d8a; }
+        body.mono .stacked-seg.s-out { background:#c04040; }
+        body.mono .leg-row { color:#6a6a8a; text-shadow:none; }
+        body.mono .leg-row b { color:#1a1a2e; }
+        body.mono .leg-row .leg-pct { color:#8a8aa0; }
+        body.mono .bar-name { color:#6a6a8a; text-shadow:none; }
+        body.mono .bar-track { background:#f0f0f5; }
+        body.mono .bar-fill.f1 { background:#7b6cc4; }
+        body.mono .bar-fill.f2 { background:#c04040; }
+        body.mono .bar-fill.f3 { background:#d0a040; }
+        body.mono .bar-info .v { color:#1a1a2e; }
+        body.mono .bar-info .s { color:#8a8aa0; text-shadow:none; }
+        body.mono .today-sep { background:#ededf0; }
+        body.mono .vibe-toggle { background:#f0f0f5; border-color:#e2e2e8; color:#6a6a8a; }
+        body.mono .vibe-toggle .dot { background:#8a8aa0; }
+        body.mono .vibe-toggle.active { background:rgba(74,122,90,0.12); border-color:rgba(74,122,90,0.4); color:#4a7a5a; }
+        body.mono .vibe-toggle.active .dot { background:#4a7a5a; }
+
+        /* 纯净模式 - 播放器 */
+        body.mono .lyric-line { color:#8a8aa0; text-shadow:none; }
+        body.mono .lyric-line.current { color:#1a1a2e; }
+        body.mono .lyric-line.near { color:#5a5a7a; }
+        body.mono .lyric-idle { color:#aaa; text-shadow:none; }
+        body.mono .lyric-offset-btn { background:#f0f0f5; border-color:#e2e2e8; color:#6a6a8a; }
+        body.mono .lyric-offset-val { color:#6a6a8a; text-shadow:none; }
+        body.mono .lyric-reload-btn { background:#f0f0f5; border-color:#e2e2e8; color:#6a6a8a; }
+
+        /* 纯净模式 - GitHub */
+        body.mono .gh-month { color:#8a8aa0; text-shadow:none; }
+        body.mono .gh-days span { color:#8a8aa0; text-shadow:none; }
+        body.mono .gh-cell { background:#f0f0f5; }
+        body.mono .gh-l1 { background:#c8c0e8; }
+        body.mono .gh-l2 { background:#a898d8; }
+        body.mono .gh-l3 { background:#8878c0; }
+        body.mono .gh-l4 { background:#6858a8; }
+        body.mono #ghTotal { color:#4a3d8a; }
         .hdr h1 { font-size:16px; font-weight:700; letter-spacing:0.5px; }
 
         .hdr-center { display:flex; align-items:center; justify-content:center; }
@@ -85,8 +176,10 @@
             box-shadow:0 4px 20px rgba(0,0,0,0.3);
             position:relative; overflow:hidden;
         }
+        /* 有 footer 的卡片：底部内边距交给 footer 自己撑起，避免叠加两层间距 */
+        .card:has(.card-foot) { padding-bottom:0; }
         /* ── 统一卡片结构：头（左/中/右）+ 内容 + 脚（左/中/右，可不显示）── */
-        .card-head { position:relative; display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; min-height:14px; flex-shrink:0; }
+        .card-head { position:relative; display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; height:18px; flex-shrink:0; }
         .card-head-l {
             display:flex; align-items:center; gap:5px; flex-shrink:0;
             font-size:10px; font-weight:600; color:var(--text2);
@@ -100,9 +193,9 @@
         }
         .card-head-r { flex-shrink:0; font-size:10px; color:var(--text2); text-shadow:var(--ts2); text-align:right; white-space:nowrap; display:flex; align-items:center; gap:5px; }
 
-        .card-body { flex:1; min-height:0; min-width:0; display:flex; flex-direction:column; }
+        .card-body { flex:1; min-height:0; min-width:0; display:flex; flex-direction:column; justify-content:center; }
 
-        .card-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:4px; padding-top:4px; border-top:1px solid var(--border); flex-shrink:0; }
+        .card-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; height:36px; border-top:1px solid var(--border); flex-shrink:0; }
         .card-foot-l { flex-shrink:0; font-size:10px; color:var(--text2); text-shadow:var(--ts2); white-space:nowrap; }
         .card-foot-c { flex:1; min-width:0; text-align:center; font-size:10px; color:var(--text2); }
         .card-foot-r { flex-shrink:0; font-size:10px; color:var(--text2); text-shadow:var(--ts2); text-align:right; white-space:nowrap; }
@@ -133,6 +226,19 @@
             50% { opacity:0.4; }
         }
 
+        /* ── 歌词重载按钮 ── */
+        .lyric-reload-btn {
+            display:flex; align-items:center; gap:3px; flex-shrink:0; cursor:pointer;
+            font-size:9px; font-weight:700; letter-spacing:0.3px;
+            padding:2px 8px; border-radius:10px;
+            background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1);
+            color:var(--text2); transition:background 0.25s, border-color 0.25s, color 0.25s;
+            -webkit-tap-highlight-color:transparent; user-select:none;
+        }
+        .lyric-reload-btn .reload-icon {
+            font-size:11px; line-height:1; flex-shrink:0;
+        }
+
         /* ── 骨架屏 ── */
         .skeleton {
             background: linear-gradient(90deg, rgba(255,255,255,0.06) 25%, rgba(255,255,255,0.15) 37%, rgba(255,255,255,0.06) 63%);
@@ -146,23 +252,23 @@
         }
 
         /* ── 网络状态（系统信息右侧，行2-4）── */
-        .netCard { grid-row:2/5; grid-column:7/9; padding:6px 8px; }
+        .netCard { grid-row:2/5; grid-column:7/9; padding:6px 7px; }
         .net-rows { justify-content:center; gap:8px; }
-        .net-row { display:flex; align-items:center; justify-content:center; gap:5px; flex-wrap:nowrap; white-space:nowrap; }
+        .net-row { display:flex; align-items:center; justify-content:space-between; gap:5px; flex-wrap:nowrap; white-space:nowrap; }
         .net-icon { font-size:13px; width:14px; text-align:center; flex-shrink:0; }
         .net-icon.up { color:var(--accent2); }
         .net-icon.down { color:var(--green); }
         .net-label { display:none; }
-        .net-value { font-size:15px; font-weight:700; color:var(--text); font-variant-numeric:tabular-nums; white-space:nowrap; }
+        .net-value { font-size:15px; font-weight:700; color:var(--text); font-variant-numeric:tabular-nums; white-space:nowrap; margin-left:auto; }
         .net-unit { font-size:9px; color:var(--text2); margin-left:2px; font-weight:400; }
 
         /* ── 开机时间（网络下方，行5-6）── */
-        .uptimeCard { grid-row:5/7; grid-column:7/9; padding:6px 8px; }
+        .uptimeCard { grid-row:5/7; grid-column:7/9; padding:6px 7px; }
         .uptime-body { flex-direction:column; align-items:center; justify-content:center; }
         .uptime-val { font-size:16px; font-weight:700; color:var(--text); line-height:1.2; }
 
-        /* ── Token Plan & 今日消耗（右栏，行2-9）── */
-        .tokenCard { grid-row:2/10; grid-column:9/17; padding:8px 14px; }
+        /* ── Token Plan & 今日消耗（右栏，行2-11）── */
+        .tokenCard { grid-row:2/11; grid-column:9/17; }
         .today-top { display:flex; align-items:baseline; gap:8px; margin-bottom:4px; }
         .today-big { font-size:26px; font-weight:700; color:var(--crimson-light); line-height:1; }
         .today-big-sub { font-size:10px; color:var(--text2); text-shadow:var(--ts2); }
@@ -172,7 +278,7 @@
         .stacked-seg { height:100%; transition:width 1s ease; min-width:0; }
         .stacked-seg.s-in { background:var(--accent); }
         .stacked-seg.s-out { background:var(--crimson); }
-        .stacked-seg.s-cache { background:var(--gold); }
+        .stacked-seg.s-cache { background:#5a4da6; }
 
         .legend { display:flex; flex-direction:column; gap:2px; }
         .leg-row { display:flex; align-items:center; gap:6px; font-size:10px; color:var(--text2); text-shadow:var(--ts2); }
@@ -206,8 +312,8 @@
         .bar-info .s { color:var(--text2); text-shadow:var(--ts2); }
 
         /* ── 系统信息（左上，行2-5）── */
-        .sysCard { grid-row:2/7; grid-column:1/7; overflow:visible; padding:10px 12px; }
-        #sysMain { justify-content:center; }
+        .sysCard { grid-row:2/7; grid-column:1/7; overflow:visible; }
+        #sysMain { justify-content:center; align-items:center; }
 
         /* CPU / 内存 / 独显，纵向三列（名字在环下方） */
         .hw-main { display:grid; grid-template-columns:repeat(3, 1fr); gap:4px 8px; justify-items:center; }
@@ -222,7 +328,7 @@
         .hw-main-name { font-size:10px; font-weight:600; color:var(--text); text-shadow:var(--ts2); display:block; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
         /* ── 磁盘（左栏，行6-10，两列布局）── */
-        .diskCard { grid-row:7/11; grid-column:1/9; padding:10px 14px; }
+        .diskCard { grid-row:7/11; grid-column:1/9; }
         .dk-section { display:grid; grid-template-columns:1fr 1fr; gap:2px 16px; align-content:center; }
         .dk-disk-group { min-width:0; }
         .dk-disk-hd { display:flex; align-items:baseline; gap:4px; margin-bottom:1px; margin-top:6px; }
@@ -239,9 +345,15 @@
         .dk-part-info { font-size:8px; color:var(--text2); text-shadow:var(--ts2); font-variant-numeric:tabular-nums; white-space:nowrap; flex-shrink:0; }
 
         /* ── 歌词播放器（左栏，行12-16）── */
-        .lyric-wrap { grid-row:11/17; grid-column:1/9; display:flex; flex-direction:column; padding:12px 16px; }
-        #lyricStatus { color:var(--green); }
-        .lyric-text { flex:1; position:relative; min-height:0; overflow:hidden; }
+        .lyric-wrap { grid-row:11/17; grid-column:1/9; display:flex; flex-direction:column; }
+        .lyric-wrap .card-foot-l, .lyric-wrap .card-foot-r { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+        .lyric-wrap .card-foot-r { text-align:right; }
+
+        .lyric-text {
+            flex:1; position:relative; min-height:0; overflow:hidden;
+            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
+            mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
+        }
         .lyric-scroll {
             position:absolute; left:0; right:0; top:0;
             transition: transform 0.5s cubic-bezier(0.22, 0.61, 0.36, 1);
@@ -258,17 +370,22 @@
         .lyric-line.near { opacity:0.7; font-size:13px; }
         .lyric-idle { font-size:12px; color:var(--text2); text-shadow:var(--ts2); text-align:center; position:absolute; top:50%; left:0; right:0; transform:translateY(-50%); }
 
-        /* ── GitHub（右栏，行10-16）── */
-        .gh-wrap { grid-row:10/17; grid-column:9/17; display:flex; flex-direction:column; }
+        .lyric-offset-wrap { display:flex; align-items:center; justify-content:center; gap:4px; }
+        .lyric-offset-btn { width:20px; height:20px; border-radius:50%; border:1px solid var(--border); background:rgba(255,255,255,0.06); color:var(--text2); font-size:12px; display:flex; align-items:center; justify-content:center; line-height:1; cursor:pointer; padding:0; }
+        .lyric-offset-btn:hover { background:rgba(255,255,255,0.15); color:var(--text); }
+        .lyric-offset-val { font-size:10px; color:var(--text2); text-shadow:var(--ts2); min-width:24px; text-align:center; font-variant-numeric:tabular-nums; }
 
+        /* ── GitHub（右栏，行11-17）── */
+        .gh-wrap { grid-row:11/17; grid-column:9/17; display:flex; flex-direction:column; }
         .gh-grid { flex:1; display:flex; flex-direction:column; overflow:hidden; }
-        .gh-months { display:flex; margin-bottom:2px; }
-        .gh-month { flex:1; font-size:8px; color:var(--text2); text-shadow:var(--ts2); }
-        .gh-body { display:flex; flex:1; align-items:center; }
-        .gh-days { display:flex; flex-direction:column; justify-content:space-between; width:22px; flex-shrink:0; }
-        .gh-days span { font-size:7px; color:var(--text2); text-align:right; padding-right:2px; line-height:8px; height:8px; text-shadow:var(--ts2); }
-        .gh-cells { display:flex; gap:2px; }
-        .gh-week { display:flex; flex-direction:column; gap:2px; }
+        .gh-months { display:flex; margin-bottom:0; }
+        .gh-month { font-size:8px; color:var(--text2); text-shadow:var(--ts2); }
+        .gh-body { display:flex; flex:1; min-width:0; overflow:hidden; }
+        .gh-body-center { display:flex; flex:1; min-width:0; align-items:center; justify-content:center; }
+        .gh-days { display:flex; flex-direction:column; gap:2px; width:20px; flex-shrink:0; }
+        .gh-days span { font-size:7px; color:var(--text2); text-align:right; padding-right:2px; text-shadow:var(--ts2); }
+        .gh-cells { display:flex; gap:2px; flex-shrink:0; }
+        .gh-week { display:flex; flex-direction:column; gap:2px; flex-shrink:0; }
         .gh-cell { border-radius:2px; background:rgba(255,255,255,0.06); flex-shrink:0; }
         .gh-l1 { background:rgba(123,108,196,0.5); }
         .gh-l2 { background:rgba(123,108,196,0.7); }
@@ -358,7 +475,7 @@
     <!-- 右栏：Vibe Coding & 今日消耗 -->
     <div class="card tokenCard">
         <div class="card-head">
-            <span class="card-head-l"><span class="bar"></span>Vibe coding</span>
+            <span class="card-head-l"><span class="bar"></span>Vibe Coding</span>
             <span class="card-head-r">
                 <span class="vibe-toggle" id="vibeToggle" onclick="toggleVibe()">
                     <span class="dot"></span><span id="vibeToggleLabel">Chilling</span>
@@ -398,7 +515,7 @@
                 </div>
             </div>
             <div class="legend">
-                <div class="leg-row"><span class="leg-dot" style="background:var(--gold)"></span>缓存命中<b id="todayCache">--</b><span class="leg-pct" id="todayCachePct"></span></div>
+                <div class="leg-row"><span class="leg-dot" style="background:#5a4da6"></span>缓存命中<b id="todayCache">--</b><span class="leg-pct" id="todayCachePct"></span></div>
                 <div class="leg-row"><span class="leg-dot" style="background:var(--accent)"></span>未命中<b id="todayIn">--</b><span class="leg-pct" id="todayInPct"></span></div>
                 <div class="leg-row"><span class="leg-dot" style="background:var(--crimson)"></span>输出<b id="todayOut">--</b><span class="leg-pct" id="todayOutPct"></span></div>
             </div>
@@ -413,7 +530,12 @@
     <div class="card lyric-wrap" id="lyricCard">
         <div class="card-head">
             <span class="card-head-l"><span class="bar"></span>播放器</span>
-            <span class="card-head-r" id="lyricStatus"></span>
+            <span class="card-head-r">
+                <span class="lyric-reload-btn" onclick="reloadLyrics()">
+                    <span class="reload-icon">↻</span><span>重载歌词</span>
+                </span>
+            </span>
+            </span>
         </div>
         <div class="card-body lyric-text" id="lyricText">
             <div class="lyric-scroll" id="lyricScroll"></div>
@@ -421,6 +543,11 @@
         </div>
         <div class="card-foot">
             <span class="card-foot-l" id="lyricTitle">--</span>
+            <span class="lyric-offset-wrap">
+                <button class="lyric-offset-btn" onclick="adjOffset(-0.5)">−</button>
+                <span class="lyric-offset-val" id="lyricOffsetVal">0.0</span>
+                <button class="lyric-offset-btn" onclick="adjOffset(0.5)">+</button>
+            </span>
             <span class="card-foot-r" id="lyricArtist">--</span>
         </div>
     </div>
@@ -451,8 +578,9 @@ function fmtTok(n) {
 function fmtNum(n) { return n.toLocaleString(); }
 function fmtBytes(b) {
     if (b >= 1073741824) return (b/1073741824).toFixed(1)+' GB';
-    if (b >= 1048576) return (b/1048576).toFixed(0)+' MB';
-    return (b/1024).toFixed(0)+' KB';
+    if (b >= 1048576) return (b/1048576).toFixed(1)+' MB';
+    if (b >= 1024) return (b/1024).toFixed(1)+' KB';
+    return b+' B';
 }
 
 /* ── 节假日数据库（2025-2026 中国法定节假日）── */
@@ -543,11 +671,13 @@ function drawTodayStacked(inMiss, outTok, cacheTok) {
 /* ── Token Plan 环形图 ── */
 function drawRing(pct, used, limit) {
     var C = 2*Math.PI*35;
+    var remain = 100 - pct;
+    var remainAmt = Math.max(0, limit - used);
     var fg = document.getElementById('ringFg');
-    fg.style.strokeDashoffset = C*(1-pct/100);
-    fg.style.stroke = pct>=90?'#d4483e':pct>=70?'#c9a84c':'#b5342a';
-    document.getElementById('ringPct').textContent = pct.toFixed(1)+'%';
-    document.getElementById('ringLabel').textContent = fmtTok(used)+' / '+fmtTok(limit);
+    fg.style.strokeDashoffset = C*(1-remain/100);
+    fg.style.stroke = pct>=90?'#d4483e':pct>=70?'#c9a84c':'#e8c46a';
+    document.getElementById('ringPct').textContent = remain.toFixed(1)+'%';
+    document.getElementById('ringLabel').textContent = fmtTok(remainAmt)+' 剩余';
 }
 
 function drawModels(data) {
@@ -597,7 +727,8 @@ function drawSystem(sys) {
     var cpuSub = freqGHz + 'GHz';
 
     var memLabel = (m.type || '内存') + (m.freq ? ' ' + m.freq : '');
-    var memSub = (m.used / 1073741824).toFixed(1) + '/' + (m.total / 1073741824).toFixed(0) + 'G';
+    var memTotalGB = m.installed ? (m.installed / 1073741824) : (m.total / 1073741824);
+    var memSub = (m.used / 1073741824).toFixed(1) + '/' + memTotalGB.toFixed(1) + 'G';
 
     var html = '<div class="hw-main">';
     html += mainRing(c.percent, cpuName, cpuSub);
@@ -702,12 +833,11 @@ function drawGitHub(contrib, username) {
     var dow=today.getDay(), nw=26;
     var sd=new Date(today); sd.setDate(sd.getDate()-dow-(nw-1)*7);
 
-    // 动态计算方块尺寸，根据宽度和高度共同填满卡片
     var gap = 2;
     var cw = el.clientWidth || 450;
     var ch = el.clientHeight || 140;
-    var dayLabelW = 22, padX = 28;
-    var monthLabelH = 12, padY = 4;
+    var dayLabelW = 20, padX = 4;
+    var monthLabelH = 10, padY = 2;
     var csW = Math.floor((cw - dayLabelW - padX - (nw-1)*gap) / nw);
     var csH = Math.floor((ch - monthLabelH - padY - 6*gap) / 7);
     var cs = Math.max(4, Math.min(csW, csH));
@@ -725,14 +855,20 @@ function drawGitHub(contrib, username) {
             cells.push('<div class="gh-cell '+lv+'" title="'+key+': '+val+'" style="width:'+cs+'px;height:'+cs+'px"></div>');
             if(d===1){var m=dt.getMonth();var pw=new Date(sd);pw.setDate(pw.getDate()+(w-1)*7+1);if(w===0||pw.getMonth()!==m)ml[w]=mn[m];}
         }
-        weeks.push('<div class="gh-week">'+cells.join('')+'</div>');
+        weeks.push('<div class="gh-week" style="width:'+cs+'px;gap:'+gap+'px;">'+cells.join('')+'</div>');
     }
-    // 月份标签与热力图等宽
-    var gridW = nw * (cs + gap) - gap;
-    var mr='<div class="gh-months" style="padding-left:0;width:'+gridW+'px;margin-left:22px;">';
+    // 月份标签
+    var cellsW = nw * (cs + gap) - gap;
+    var mr='<div class="gh-months" style="display:flex;width:'+(cellsW+dayLabelW+2)+'px;margin:0 auto;">';
+    mr+='<span style="flex:none;width:'+(dayLabelW+2)+'px;"></span>';
     for(var w=0;w<nw;w++) mr+='<span class="gh-month" style="flex:none;width:'+(cs+gap)+'px">'+(ml[w]||'')+'</span>';
     mr+='</div>';
-    el.innerHTML=mr+'<div class="gh-body"><div class="gh-days"><span></span><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span></div><div class="gh-cells">'+weeks.join('')+'</div></div>';
+    // 日期标签
+    var daysArr=['Sun','Mon','','Wed','','Fri',''];
+    var dayLabels='<div class="gh-days" style="height:'+(7*cs+6*gap)+'px;">';
+    for(var d=0;d<7;d++) dayLabels+='<span style="height:'+cs+'px;line-height:'+cs+'px;">'+daysArr[d]+'</span>';
+    dayLabels+='</div>';
+    el.innerHTML='<div class="gh-body"><div style="margin:auto;">'+mr+'<div style="display:flex;">'+dayLabels+'<div class="gh-cells">'+weeks.join('')+'</div></div></div></div>';
     document.getElementById('ghUser').textContent='@'+username;
     document.getElementById('ghTotal').textContent=fmtNum(total)+' 次贡献';
 }
@@ -760,20 +896,25 @@ async function refresh() {
             }
         }
         // 累加本地平台今日用量
+        // MiMo: inTok 包含 cache，totalTokens = inTok + outTok
+        // 本地: inTok 不含 cache，totalTokens = in + out + cacheRead
         var lu = d.local_usage;
         if (lu && lu.requestCount > 0) {
+            cacheTok += lu.totalCacheReadTokens || 0;
             inTok += lu.totalInputTokens || 0;
             outTok += lu.totalOutputTokens || 0;
-            cacheTok += lu.totalCacheReadTokens || 0;
             totalTok += lu.totalTokens || 0;
         }
         if (inTok > 0 || outTok > 0 || totalTok > 0) {
-            var inMiss=Math.max(0,inTok-cacheTok);
+            // MiMo: inTok包含cache，本地: inTok不含cache，需要分别计算inMiss
+            var inMiss=d.mimo_inMiss+(lu?lu.totalInputTokens:0);
             document.getElementById('todayTotal').textContent=fmtTok(totalTok);
+            document.getElementById('todayCache').textContent=fmtTok(cacheTok);
+            document.getElementById('todayCachePct').textContent=totalTok>0?(cacheTok/totalTok*100).toFixed(1)+'%':'0%';
             document.getElementById('todayIn').textContent=fmtTok(inMiss);
+            document.getElementById('todayInPct').textContent=totalTok>0?(inMiss/totalTok*100).toFixed(1)+'%':'0%';
             document.getElementById('todayOut').textContent=fmtTok(outTok);
-            var hr=inTok>0?(cacheTok/inTok*100).toFixed(1)+'%':'0%';
-            document.getElementById('todayCache').textContent=hr;
+            document.getElementById('todayOutPct').textContent=totalTok>0?(outTok/totalTok*100).toFixed(1)+'%':'0%';
             drawTodayStacked(inMiss,outTok,cacheTok);
         }
 
@@ -814,7 +955,13 @@ var _mediaDuration = 0;
 var _mediaPlaying = false;
 var _lastLyricIdx = -2;
 var _lastPositionSource = 'none';
-var LYRIC_OFFSET = 1.5;  // 歌词提前量（秒），补偿刷新/渲染延迟
+var LYRIC_OFFSET = (function(){ try { var v=parseFloat(localStorage.getItem('lyricOffset')); return isNaN(v)?1.5:v; } catch(e){return 1.5;} })();  // 歌词提前量（秒）
+
+function adjOffset(delta) {
+    LYRIC_OFFSET = Math.round((LYRIC_OFFSET + delta) * 10) / 10;
+    try { localStorage.setItem('lyricOffset', LYRIC_OFFSET); } catch(e) {}
+    document.getElementById('lyricOffsetVal').textContent = LYRIC_OFFSET.toFixed(1);
+}
 
 var LYRIC_LINE_H = 30;       // 每行固定高度(px)，需与CSS .lyric-line的height一致
 var _pendingIdx = -2;        // 待确认的候选索引（用于防抖，过滤UIA测量抖动）
@@ -824,14 +971,12 @@ var LYRIC_DEBOUNCE = 2;      // 候选索引需要连续命中几次才真正切
 function drawLyric(data) {
     var titleEl = document.getElementById('lyricTitle');
     var artistEl = document.getElementById('lyricArtist');
-    var statusEl = document.getElementById('lyricStatus');
     var scrollEl = document.getElementById('lyricScroll');
     var idleEl = document.getElementById('lyricIdle');
 
     if (!data || data.status === 'idle' || data.status === 'error' || !data.title) {
         titleEl.textContent = '--';
         artistEl.textContent = '';
-        statusEl.textContent = '';
         scrollEl.innerHTML = '';
         idleEl.textContent = '未在播放';
         idleEl.style.display = 'block';
@@ -842,7 +987,6 @@ function drawLyric(data) {
 
     titleEl.textContent = data.title;
     artistEl.textContent = data.artist;
-    statusEl.textContent = data.status === 'playing' ? '▶' : '⏸';
     _mediaPlaying = (data.status === 'playing');
 
     var isNewSong = (data.title !== _mediaTitle);
@@ -959,6 +1103,24 @@ async function refreshMedia() {
     } catch(e) { console.error('Media error:', e); }
 }
 
+async function reloadLyrics() {
+    try {
+        var btn = document.querySelector('.lyric-reload-btn');
+        if (btn) { btn.style.pointerEvents='none'; btn.style.opacity='0.5'; }
+        var r = await fetch('/api/media/reload', {method:'POST'});
+        var d = await r.json();
+        drawLyric(d);
+        // 重置歌词状态以便重新同步
+        resetLyricState();
+        updateLyricLine(true);
+        if (btn) { btn.style.pointerEvents=''; btn.style.opacity=''; }
+    } catch(e) {
+        console.error('Lyrics reload error:', e);
+        var btn = document.querySelector('.lyric-reload-btn');
+        if (btn) { btn.style.pointerEvents=''; btn.style.opacity=''; }
+    }
+}
+
 refreshMedia(); setInterval(refreshMedia, 1000);
 setInterval(updateLyricLine, 500);
 window.addEventListener('resize', function(){ updateLyricLine(true); });
@@ -977,6 +1139,9 @@ async function refreshNug() {
 tickClock(); setInterval(tickClock,1000);
 refreshSys(); setInterval(refreshSys,1000);
 refreshNug(); setInterval(refreshNug,60000);
+
+// 初始化歌词偏移量显示
+document.getElementById('lyricOffsetVal').textContent = LYRIC_OFFSET.toFixed(1);
 
 /* ── Vibe Coding 状态切换（控制 Vibe coding 卡片 + GitHub 的刷新频率）── */
 var VIBE_CODING_INTERVAL = 20 * 1000;          // Coding: 20秒一次
@@ -1018,6 +1183,13 @@ function toggleVibe() {
 
 refresh();
 scheduleRefresh();
+
+/* ── 灰度模式（点击左上角红圈切换）── */
+document.querySelector('.mark').addEventListener('click', function(){
+    document.body.classList.toggle('mono');
+    try { localStorage.setItem('mono', document.body.classList.contains('mono')?'1':'0'); } catch(e){}
+});
+try { if(localStorage.getItem('mono')==='1') document.body.classList.add('mono'); } catch(e){}
 </script>
 </body>
 </html>

@@ -9,6 +9,7 @@ cookies.json
 cookies.txt
 config.json
 local_tokens.json
+github_cache.json
 
 # Python
 __pycache__/
@@ -19,3 +20,6 @@ dist/
 build/
 .venv/
 venv/
+
+# IDE
+.kiro/
