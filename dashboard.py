@@ -43,6 +43,8 @@ except ImportError:
 
 from services.cache import TTLCache
 from services.config import load_config
+from services.github_service import get_github_data
+from services.nug_service import get_nug_payload
 from services.theme import (
     THEMES,
     load_theme_index,
@@ -172,9 +174,7 @@ def _ws_broadcaster():
                     except Exception as e:
                         print(f"[ws] mimo broadcast error: {e}", flush=True)
                     try:
-                        nug = get_nug_api()
-                        nug_data = nug.get_data() if nug else None
-                        _ws_broadcast({"type": "nug", "data": {"enabled": bool(nug), **(nug_data or {})}})
+                        _ws_broadcast({"type": "nug", "data": get_nug_payload()})
                     except Exception as e:
                         print(f"[ws] nug broadcast error: {e}", flush=True)
         except Exception as e:
@@ -195,17 +195,9 @@ def start_background_threads_once() -> bool:
         _ws_broadcaster_started = True
         return True
 
-# 配置
-GITHUB_USER = "cuckoo711"
-
 # 全局缓存
 CACHE_TTL = 55  # 缓存55秒（前端60秒刷新）
-GITHUB_CACHE_TTL = 600  # GitHub 缓存10分钟
 _mimo_cache = TTLCache(CACHE_TTL)
-_github_cache = {
-    "data": None,
-    "timestamp": 0,
-}
 _DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN") or secrets.token_urlsafe(24)
 
 
@@ -430,95 +422,6 @@ def get_local_apis() -> list[LocalMimoAPI]:
     return _local_apis
 
 
-# ============================================================
-# NUG 平台 API 客户端
-# ============================================================
-
-
-class NUGApi:
-    """NUG (NarraFork) 平台 API 客户端（session cookie 认证）"""
-
-    def __init__(self, base_url: str, username: str, password: str):
-        self.base_url = base_url.rstrip("/")
-        self.username = username
-        self.password = password
-        self.session = _requests.Session()
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Dashboard",
-            "Content-Type": "application/json",
-        })
-        self._logged_in = False
-
-    def _login(self) -> bool:
-        """登录获取 session cookie"""
-        try:
-            resp = self.session.post(
-                f"{self.base_url}/api/auth/login",
-                json={"username": self.username, "password": self.password},
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                self._logged_in = True
-                print(f"[nug] 登录成功: {self.base_url}", flush=True)
-                return True
-            print(f"[nug] 登录失败 {self.base_url}: HTTP {resp.status_code}", flush=True)
-        except Exception as e:
-            print(f"[nug] 登录异常 {self.base_url}: {e}", flush=True)
-        return False
-
-    def get_data(self) -> dict | None:
-        """获取余额"""
-        if not self._logged_in:
-            if not self._login():
-                return None
-        try:
-            # 获取余额
-            me_resp = self.session.get(
-                f"{self.base_url}/api/auth/me", timeout=10,
-            )
-            if me_resp.status_code == 401:
-                # session 过期，重新登录
-                if self._login():
-                    me_resp = self.session.get(
-                        f"{self.base_url}/api/auth/me", timeout=10,
-                    )
-                else:
-                    return None
-            if me_resp.status_code != 200:
-                print(f"[nug] 获取用户信息失败 {self.base_url}: HTTP {me_resp.status_code}", flush=True)
-                return None
-            me = me_resp.json()
-            balance = me.get("quotaBalance", 0)
-
-            return {
-                "balance": balance,
-            }
-        except Exception as e:
-            print(f"[nug] 获取数据异常 {self.base_url}: {e}", flush=True)
-            return None
-
-
-_nug_api: NUGApi | None = None
-
-
-def get_nug_api() -> NUGApi | None:
-    """获取 NUG API 实例（单例）"""
-    global _nug_api
-    if _nug_api is not None:
-        return _nug_api
-    config = load_config()
-    nug = config.get("nug", {})
-    if not nug.get("enabled"):
-        return None
-    url = nug.get("url", "")
-    username = nug.get("username", "")
-    password = nug.get("password", "")
-    if not all([url, username, password]):
-        return None
-    _nug_api = NUGApi(url, username, password)
-    return _nug_api
-
-
 _mimo_cookie_valid = None  # None=未检测, True=有效, False=过期
 _mimo_cookie_last_check = 0  # 上次检测时间戳
 
@@ -570,96 +473,6 @@ def get_mimo_api() -> MiMoAPI | None:
         _mimo_cookie_valid = False
 
     return api if _mimo_cookie_valid else None
-
-
-GITHUB_DISK_CACHE = Path(__file__).parent / "github_cache.json"
-
-
-def fetch_github_contributions() -> dict:
-    """从 GitHub profile 页面抓取完整一年的贡献日历数据，带磁盘缓存和重试"""
-    now = time.time()
-    if _github_cache["data"] and (now - _github_cache["timestamp"]) < GITHUB_CACHE_TTL:
-        return _github_cache["data"]
-
-    # 尝试从磁盘缓存恢复
-    if GITHUB_DISK_CACHE.exists():
-        try:
-            disk = json.loads(GITHUB_DISK_CACHE.read_text(encoding="utf-8"))
-            if disk.get("data") and (now - disk.get("ts", 0)) < 86400:  # 1天有效
-                _github_cache["data"] = disk["data"]
-                _github_cache["timestamp"] = now
-                print(f"GitHub: 从磁盘缓存恢复 {len(disk['data'])} 天数据", flush=True)
-                return disk["data"]
-        except (json.JSONDecodeError, OSError):
-            pass
-
-
-    def _do_fetch() -> dict:
-        resp = _requests.get(
-            f"https://github.com/{GITHUB_USER}",
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "text/html",
-            },
-            timeout=15,
-        )
-        if resp.status_code != 200:
-            raise Exception(f"GitHub profile 返回 {resp.status_code}")
-
-        html = resp.text
-        frag_m = re.search(
-            r'src="(/[^"]*?controller=profiles[^"]*?tab=contributions[^"]*?)"',
-            html,
-        )
-        if not frag_m:
-            raise Exception("未找到 contributions fragment URL")
-
-        frag_url = "https://github.com" + frag_m.group(1).replace("&amp;", "&")
-        frag_resp = _requests.get(
-            frag_url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "text/html",
-                "X-Requested-With": "XMLHttpRequest",
-            },
-            timeout=15,
-        )
-        if frag_resp.status_code != 200:
-            raise Exception(f"GitHub fragment 返回 {frag_resp.status_code}")
-
-        rects = re.findall(r'data-date="([^"]+)"[^>]*data-level="([^"]+)"', frag_resp.text)
-        level_map = {"0": 0, "1": 2, "2": 5, "3": 8, "4": 12}
-        contributions = {}
-        for date, level in rects:
-            count = level_map.get(level, 0)
-            if count > 0:
-                contributions[date] = count
-        return contributions
-
-    # 重试3次
-    for attempt in range(3):
-        try:
-            contributions = _do_fetch()
-            print(f"GitHub: fetched {len(contributions)} days of contributions", flush=True)
-            _github_cache["data"] = contributions
-            _github_cache["timestamp"] = now
-            # 写入磁盘缓存
-            try:
-                GITHUB_DISK_CACHE.write_text(
-                    json.dumps({"data": contributions, "ts": now}, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-            except OSError:
-                pass
-            return contributions
-        except Exception as e:
-            print(f"GitHub fetch attempt {attempt+1}/3 failed: {e}", flush=True)
-            if attempt < 2:
-                import time as _t
-                _t.sleep(2)
-
-    print("GitHub: 所有重试均失败", flush=True)
-    return _github_cache["data"] or {}
 
 
 def fetch_all_data() -> dict:
@@ -1177,7 +990,7 @@ $physDisks | ConvertTo-Json -Depth 3
 def api_data():
     """返回所有 MiMo 数据 + GitHub 贡献"""
     data = fetch_all_data()
-    data["github"] = {"user": GITHUB_USER, "contributions": fetch_github_contributions()}
+    data["github"] = get_github_data()
     return jsonify(data)
 
 
@@ -1913,13 +1726,7 @@ def api_system():
 @app.route("/api/nug")
 def api_nug():
     """返回 NUG 平台余额和用量"""
-    nug = get_nug_api()
-    if not nug:
-        return jsonify({"enabled": False})
-    data = nug.get_data()
-    if data is None:
-        return jsonify({"enabled": True, "error": "获取数据失败"})
-    return jsonify({"enabled": True, **data})
+    return jsonify(get_nug_payload())
 
 
 def main():

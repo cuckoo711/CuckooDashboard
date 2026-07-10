@@ -140,11 +140,17 @@ Environment variables or `cookies.json`:
 
 ```
 .
-├── dashboard.py          # Flask server + all API endpoints
+├── dashboard.py          # Flask app, routes, and WebSocket orchestration
 ├── desktop.py            # PyWebView native window wrapper
 ├── mimo_usage.py         # MiMo login & CLI tool
 ├── smtc_worker.py        # Windows SMTC media info worker
 ├── requirements.txt      # Python dependencies
+├── services/
+│   ├── cache.py          # Small cache primitives
+│   ├── config.py         # Local private config loading
+│   ├── github_service.py # GitHub heatmap fetch/cache (estimated counts)
+│   ├── nug_service.py    # NUG balance API client
+│   └── theme.py          # Theme metadata and persistence
 ├── static/
 │   └── dashboard.html    # Single-file dashboard (HTML/CSS/JS)
 └── LICENSE
