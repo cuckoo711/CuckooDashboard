@@ -391,29 +391,10 @@ function drawGitHub(contrib, username) {
 function handleMimoData(d) {
     if (!d.success) { console.error('API Error:',d.error); }
 
-    // 今日消耗
-    var daily = d.daily_detail;
-    var inTok=0, outTok=0, totalTok=0, cacheTok=0;
-    if (daily && daily.tokenUsage) {
-        var now=new Date();
-        var bjH=(now.getUTCHours()+8)%24;
-        var ref=bjH<8?new Date(now.getTime()-86400000):now;
-        var key=String(ref.getUTCMonth()+1).padStart(2,'0')+'-'+String(ref.getUTCDate()).padStart(2,'0');
-        var te=null;
-        for(var i=0;i<daily.tokenUsage.length;i++){if(daily.tokenUsage[i][0]===key){te=daily.tokenUsage[i];break;}}
-        if(te){
-            inTok=te[1]||0; outTok=te[2]||0; totalTok=te[3]||0; cacheTok=te[4]||0;
-        }
-    }
-    var lu = d.local_usage;
-    if (lu && lu.requestCount > 0) {
-        cacheTok += lu.totalCacheReadTokens || 0;
-        inTok += lu.totalInputTokens || 0;
-        outTok += lu.totalOutputTokens || 0;
-        totalTok += lu.totalTokens || 0;
-    }
+    // 今日消耗（后端已标准化，合并 MiMo + 本地平台）
+    var t = d.today || {};
+    var inTok=t.in||0, outTok=t.out||0, totalTok=t.total||0, cacheTok=t.cache||0, inMiss=t.inMiss||0;
     if (inTok > 0 || outTok > 0 || totalTok > 0) {
-        var inMiss=d.mimo_inMiss+(lu?lu.totalInputTokens:0);
         document.getElementById('todayTotal').textContent=fmtTok(totalTok);
         document.getElementById('todayCache').textContent=fmtTok(cacheTok);
         document.getElementById('todayCachePct').textContent=totalTok>0?(cacheTok/totalTok*100).toFixed(1)+'%':'0%';

@@ -87,6 +87,7 @@ def _mimo_expired_payload() -> dict:
         "tp_usage_detail": [],
         "local_usage": {},
         "mimo_inMiss": 0,
+        "today": {"in": 0, "out": 0, "cache": 0, "total": 0, "inMiss": 0},
         "github": {},
         "system": {},
         "timestamp": time.time(),
@@ -103,6 +104,24 @@ def _calculate_mimo_in_miss(daily_data: dict) -> int:
         if t[0] == target_key:
             return max(0, t[1] - t[4])  # inTok - cache
     return 0
+
+
+def _extract_today_tokens(daily_data: dict) -> dict:
+    """从 daily_detail 提取今日 token 用量（按北京时间日界线）。
+    返回 {"in": int, "out": int, "cache": int, "total": int}。"""
+    tu = daily_data.get("tokenUsage", [])
+    bj_now = datetime.now(timezone(timedelta(hours=8)))
+    ref = datetime.utcnow() if bj_now.hour >= 8 else datetime.utcnow() - timedelta(days=1)
+    target_key = f"{ref.month:02d}-{ref.day:02d}"
+    for t in tu:
+        if t[0] == target_key:
+            return {
+                "in": t[1] or 0,
+                "out": t[2] or 0,
+                "total": t[3] or 0,
+                "cache": t[4] or 0,
+            }
+    return {"in": 0, "out": 0, "total": 0, "cache": 0}
 
 
 def fetch_all_data() -> dict:
@@ -143,6 +162,20 @@ def fetch_all_data() -> dict:
         daily_data = daily_detail.get("data", {})
         local_usage = aggregate_local_usage()
         mimo_in_miss = _calculate_mimo_in_miss(daily_data)
+        mimo_today = _extract_today_tokens(daily_data)
+
+        # 合并 MiMo + 本地平台今日用量
+        lu_in = (local_usage or {}).get("totalInputTokens", 0)
+        lu_out = (local_usage or {}).get("totalOutputTokens", 0)
+        lu_cache = (local_usage or {}).get("totalCacheReadTokens", 0)
+        lu_total = (local_usage or {}).get("totalTokens", 0)
+        today = {
+            "in": mimo_today["in"] + lu_in,
+            "out": mimo_today["out"] + lu_out,
+            "cache": mimo_today["cache"] + lu_cache,
+            "total": mimo_today["total"] + lu_total,
+            "inMiss": mimo_in_miss + lu_in,
+        }
 
         result = {
             "success": True,
@@ -156,6 +189,7 @@ def fetch_all_data() -> dict:
             "daily_detail": daily_data,
             "local_usage": local_usage,
             "mimo_inMiss": mimo_in_miss,
+            "today": today,
         }
 
         _last_result = result
