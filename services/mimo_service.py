@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import logging
 import time
-import traceback
 from datetime import datetime, timedelta, timezone
 
 try:
@@ -13,6 +13,8 @@ except ImportError as exc:
 
 from services.cache import TTLCache
 from services.local_platform_service import aggregate_local_usage
+
+logger = logging.getLogger("cuckoo.mimo")
 
 CACHE_TTL = 55  # 缓存55秒（前端60秒刷新）
 _mimo_cache = TTLCache(CACHE_TTL)
@@ -31,7 +33,7 @@ def get_mimo_api() -> MiMoAPI | None:
     cache_info = load_cookies()
     cookie_str = cache_info.get("cookie")
     if not cookie_str:
-        print("[MiMo] 未找到 Cookie，请先运行 mimo_usage.py --login qr --save 登录", flush=True)
+        logger.info("[MiMo] 未找到 Cookie，请先运行 mimo_usage.py --login qr --save 登录")
         _mimo_cookie_valid = False
         return None
 
@@ -48,7 +50,7 @@ def get_mimo_api() -> MiMoAPI | None:
         test = api.get_user_profile()
         if test.get("code") == 401:
             # Cookie 过期，尝试用 passToken 自动刷新
-            print("[MiMo] Cookie 已过期，尝试自动刷新...", flush=True)
+            logger.error("[MiMo] Cookie 已过期，尝试自动刷新...")
             new_cookie = refresh_mimo_cookie(cookie_str)
             if new_cookie:
                 # 刷新成功，保存新 cookie
@@ -58,15 +60,15 @@ def get_mimo_api() -> MiMoAPI | None:
                 })
                 api = MiMoAPI(new_cookie)
                 _mimo_cookie_valid = True
-                print("[MiMo] 自动刷新成功，已保存新 Cookie [OK]", flush=True)
+                logger.info("[MiMo] 自动刷新成功，已保存新 Cookie [OK]")
             else:
-                print("[MiMo] 自动刷新失败，请手动运行: python mimo_usage.py --login qr --save", flush=True)
+                logger.error("[MiMo] 自动刷新失败，请手动运行: python mimo_usage.py --login qr --save")
                 _mimo_cookie_valid = False
         else:
             _mimo_cookie_valid = True
-            print("[MiMo] Cookie 有效 [OK]", flush=True)
+            logger.info("[MiMo] Cookie 有效 [OK]")
     except Exception as e:
-        print(f"[MiMo] Cookie 检测失败: {e}", flush=True)
+        logger.error(f"[MiMo] Cookie 检测失败: {e}")
         _mimo_cookie_valid = False
 
     return api if _mimo_cookie_valid else None
@@ -162,7 +164,7 @@ def fetch_all_data() -> dict:
         return _mimo_cache.set(result)
 
     except Exception as e:
-        traceback.print_exc()
+        logger.exception("MiMo data fetch failed")
         _last_error = str(e)
         _last_result = {
             "success": False,

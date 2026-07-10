@@ -159,7 +159,11 @@ Environment variables or `cookies.json`:
 │   ├── system_service.py # System hardware and runtime metrics
 │   └── theme.py          # Theme metadata and persistence
 ├── static/
-│   └── dashboard.html    # Single-file dashboard (HTML/CSS/JS)
+│   ├── dashboard.html    # Dashboard HTML skeleton
+│   ├── dashboard.css     # Dashboard styles
+│   └── dashboard.js      # Dashboard client-side logic
+├── tests/
+│   └── test_lyrics.py    # Lyrics parsing unit tests
 └── LICENSE
 ```
 

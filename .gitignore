@@ -13,6 +13,7 @@ local_tokens.json
 github_cache.json
 display_theme.json
 lyric_offset.json
+song_id_overrides.json
 
 # Python
 __pycache__/
@@ -23,6 +24,7 @@ dist/
 build/
 .venv/
 venv/
+.pytest_cache/
 
 # IDE
 .kiro/

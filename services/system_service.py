@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import threading
+
 import json
 import os
 import platform
@@ -12,8 +15,58 @@ import time
 
 import psutil
 
+from services.config import load_config
+
+logger = logging.getLogger("cuckoo.system")
+
 _last_success_at: float | None = None
 _last_error: str | None = None
+
+# Background snapshot state
+_snapshot_data: dict | None = None
+_snapshot_lock = threading.Lock()
+_snapshot_started = False
+
+# Default hardware maps
+_DEFAULT_VRAM_MAP = {
+    "9070 XT": 45.6 * 1024**3, "9070": 45.6 * 1024**3,
+    "7900 XTX": 24 * 1024**3, "7900 XT": 20 * 1024**3,
+    "7800 XT": 16 * 1024**3, "7700 XT": 12 * 1024**3,
+}
+_DEFAULT_APU_DEVS = {"13c0", "13e0", "15bf", "1681", "164f", "15e4"}
+
+
+def _get_overrides() -> dict:
+    """Read hardware overrides from config.json (cached per import)."""
+    if not hasattr(_get_overrides, "_cache"):
+        _get_overrides._cache = load_config().get("hardware_overrides", {})
+    return _get_overrides._cache
+
+
+def _get_vram_map() -> dict:
+    override = _get_overrides().get("gpu_vram_gb")
+    if isinstance(override, dict) and override:
+        return {k: float(v) * 1024**3 for k, v in override.items()}
+    return _DEFAULT_VRAM_MAP
+
+
+def _get_apu_devs() -> set:
+    override = _get_overrides().get("apu_device_ids")
+    if isinstance(override, list) and override:
+        return {x.lower() for x in override}
+    return _DEFAULT_APU_DEVS
+
+
+def _get_mem_installed() -> float | None:
+    override = _get_overrides().get("mem_installed_gb")
+    if isinstance(override, (int, float)) and override > 0:
+        return float(override) * 1024**3
+    return None
+
+
+def _get_cpu_model_override() -> str | None:
+    override = _get_overrides().get("cpu_model")
+    return str(override).strip() if isinstance(override, str) and override.strip() else None
 
 
 def _collect_system_info() -> dict:
@@ -37,22 +90,18 @@ def _collect_system_info() -> dict:
         hw = _fetch_static_hardware()
         if hw:
             # GPU: 应用 VRAM 型号映射修正
-            _VRAM_MAP = {
-                "9070 XT": 45.6 * 1024**3, "9070": 45.6 * 1024**3,
-                "7900 XTX": 24 * 1024**3, "7900 XT": 20 * 1024**3,
-                "7800 XT": 16 * 1024**3, "7700 XT": 12 * 1024**3,
-            }
-            _APU_DEVS = {"13c0", "13e0", "15bf", "1681", "164f", "15e4"}  # 常见 AMD APU iGPU 设备 ID
+            vram_map = _get_vram_map()
+            apu_devs = _get_apu_devs()
             gpus = []
             for g in hw.get("GPUs", []):
                 name = g.get("Name", "")
                 vram = g.get("VRAM", 0) or 0
-                for key, val in _VRAM_MAP.items():
+                for key, val in vram_map.items():
                     if key.lower() in name.lower():
                         vram = val; break
                 pnp = g.get("PNP", "")
                 dm = re.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
-                is_discrete = bool(dm and dm.group(1).lower() not in _APU_DEVS)
+                is_discrete = bool(dm and dm.group(1).lower() not in apu_devs)
                 gpus.append({
                     "name": name, "vram": vram, "util": 0, "pnp": pnp,
                     "vram_used": 0, "is_discrete": is_discrete,
@@ -70,18 +119,18 @@ def _collect_system_info() -> dict:
             _refresh_dynamic(gpus, disks)
 
             static["data"] = {
-                "cpu_model": hw.get("CpuModel", platform.processor() or "Unknown CPU"),
+                "cpu_model": _get_cpu_model_override() or hw.get("CpuModel", platform.processor() or "Unknown CPU"),
                 "cpu_freq_max": 0,
                 "cpu_cores_p": hw.get("CpuCoresPhysical", psutil.cpu_count(logical=False)),
                 "cpu_cores_l": hw.get("CpuCores", psutil.cpu_count(logical=True)),
                 "mem_freq": hw.get("MemFreq", 0) or 0,
                 "mem_type": hw.get("MemType", ""),
-                "mem_installed": 78.3 * 1024**3,  # Task Manager 显示的已安装内存
+                "mem_installed": _get_mem_installed() or 78.3 * 1024**3,
                 "gpus": gpus,
                 "disks": disks,
             }
             static["ts"] = now
-            print("[sys] static info refreshed (1 PS call)", flush=True)
+            logger.info("[sys] static info refreshed (1 PS call)")
 
     s = static["data"]
 
@@ -149,16 +198,48 @@ def _collect_system_info() -> dict:
 
 
 def get_system_info() -> dict:
-    """Collect system metrics and record the latest service status."""
+    """Return the latest system snapshot (from background thread)."""
     global _last_success_at, _last_error
-    try:
-        data = _collect_system_info()
-        _last_success_at = time.time()
-        _last_error = None
-        return data
-    except Exception as e:
-        _last_error = str(e)
-        raise
+    with _snapshot_lock:
+        data = _snapshot_data
+    if data is None:
+        # First call: collect synchronously
+        try:
+            data = _collect_system_info()
+            with _snapshot_lock:
+                globals()['_snapshot_data'] = data
+            _last_success_at = time.time()
+            _last_error = None
+        except Exception as e:
+            _last_error = str(e)
+            raise
+    _ensure_snapshot_thread()
+    return data
+
+
+def _snapshot_loop():
+    """Background thread: collect system metrics every 3 seconds."""
+    global _snapshot_data, _last_success_at, _last_error
+    while True:
+        try:
+            data = _collect_system_info()
+            with _snapshot_lock:
+                _snapshot_data = data
+            _last_success_at = time.time()
+            _last_error = None
+        except Exception as e:
+            _last_error = str(e)
+        time.sleep(3)
+
+
+def _ensure_snapshot_thread():
+    """Start the background snapshot thread if not already running."""
+    global _snapshot_started
+    if _snapshot_started:
+        return
+    _snapshot_started = True
+    t = threading.Thread(target=_snapshot_loop, daemon=True, name="sys-snapshot")
+    t.start()
 
 
 def get_system_status() -> dict:
@@ -408,7 +489,7 @@ $physDisks | ConvertTo-Json -Depth 3
         current_keys = {d.get("model", "").split(" (")[0] for d in disks}
         new_keys = {d.get("Model", "") for d in disk_data}
         if current_keys != new_keys:
-            print(f"[sys] 磁盘变化检测: {current_keys} -> {new_keys}", flush=True)
+            logger.info(f"[sys] 磁盘变化检测: {current_keys} -> {new_keys}")
             disks.clear()
             for pd in disk_data:
                 total = pd.get("Size", 0) or 0

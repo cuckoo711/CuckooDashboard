@@ -1,3 +1,5 @@
+import logging
+
 #!/usr/bin/env python3
 """
 MiMo Usage Dashboard
@@ -11,11 +13,19 @@ Web 看板服务器，用于副屏显示 MiMo 使用情况。
 
 import argparse
 import json
+import logging
 import os
 import secrets
 import sys
 import time
 from urllib.parse import urlparse
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(name)s %(message)s",
+    stream=sys.stderr,
+)
+logger = logging.getLogger("cuckoo.dashboard")
 
 try:
     from flask import Flask, abort, jsonify, send_from_directory, request
@@ -114,7 +124,7 @@ def ws_handler(ws):
         _ws_clients.append(ws)
         _ws_client_states[ws] = {"vibe": False}
         total = len(_ws_clients)
-    print(f"[ws] client connected (total: {total})", flush=True)
+    logger.info(f"[ws] client connected (total: {total})")
     try:
         while ws.connected:
             raw = ws.receive(timeout=30)
@@ -125,7 +135,7 @@ def ws_handler(ws):
                         with _ws_clients_lock:
                             _ws_client_states.setdefault(ws, {})["vibe"] = bool(msg.get("active"))
                             vibe = _ws_recalc_vibe_locked()
-                        print(f"[ws] vibe coding: {'ON' if vibe else 'OFF'}", flush=True)
+                        logger.info(f"[ws] vibe coding: {'ON' if vibe else 'OFF'}")
                 except (json.JSONDecodeError, KeyError):
                     pass
     except Exception:
@@ -137,7 +147,7 @@ def ws_handler(ws):
             _ws_client_states.pop(ws, None)
             vibe = _ws_recalc_vibe_locked()
             total = len(_ws_clients)
-        print(f"[ws] client disconnected (total: {total}, vibe: {'ON' if vibe else 'OFF'})", flush=True)
+        logger.info(f"[ws] client disconnected (total: {total}, vibe: {'ON' if vibe else 'OFF'})")
 
 
 def _ws_broadcaster():
@@ -159,7 +169,7 @@ def _ws_broadcaster():
                     try:
                         _ws_broadcast({"type": msg_type, "data": fut.result()})
                     except Exception as e:
-                        print(f"[ws] {msg_type} broadcast error: {e}", flush=True)
+                        logger.error(f"[ws] {msg_type} broadcast error: {e}")
 
                 # mimo + nug：Coding 模式 20 秒，Chilling 模式 60 秒
                 _nug_counter += 1
@@ -169,11 +179,11 @@ def _ws_broadcaster():
                     try:
                         _ws_broadcast({"type": "mimo", "data": fetch_all_data()})
                     except Exception as e:
-                        print(f"[ws] mimo broadcast error: {e}", flush=True)
+                        logger.error(f"[ws] mimo broadcast error: {e}")
                     try:
                         _ws_broadcast({"type": "nug", "data": get_nug_payload()})
                     except Exception as e:
-                        print(f"[ws] nug broadcast error: {e}", flush=True)
+                        logger.error(f"[ws] nug broadcast error: {e}")
                     try:
                         from services.nug_service import get_nug_api
                         _nug = get_nug_api()
@@ -181,9 +191,9 @@ def _ws_broadcaster():
                             _ch_rows = _nug.get_channel_breakdown(days=7)
                             _ws_broadcast({"type": "nug_channels", "data": {"enabled": True, "rows": _ch_rows or []}})
                     except Exception as e:
-                        print(f"[ws] nug_channels broadcast error: {e}", flush=True)
+                        logger.error(f"[ws] nug_channels broadcast error: {e}")
         except Exception as e:
-            print(f"[ws] broadcaster error: {e}", flush=True)
+            logger.error(f"[ws] broadcaster error: {e}")
         # 精确计时：扣除执行耗时，保证 1 秒间隔
         elapsed = time.time() - t0
         time.sleep(max(0, 1.0 - elapsed))
@@ -389,14 +399,14 @@ def main():
     if args.open:
         import webbrowser
         url = f"http://{args.host}:{args.port}"
-        print(f"正在打开浏览器: {url}")
+        logger.info(f"正在打开浏览器: {url}")
         webbrowser.open(url)
 
-    print("MiMo Dashboard 启动中...")
-    print(f"访问地址: http://{args.host}:{args.port}")
+    logger.info("MiMo Dashboard 启动中...")
+    logger.info(f"访问地址: http://{args.host}:{args.port}")
     if args.host not in ("127.0.0.1", "localhost", "::1"):
-        print("[security] 当前不是仅本机监听；POST 接口会要求同源或 X-Dashboard-Token")
-    print("按 Ctrl+C 停止服务器")
+        logger.info("[security] 当前不是仅本机监听；POST 接口会要求同源或 X-Dashboard-Token")
+    logger.info("按 Ctrl+C 停止服务器")
 
     # Flask reloader 会先启动父进程；只在实际服务进程中启动后台线程。
     if not args.dev or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
@@ -407,7 +417,7 @@ def main():
         port=args.port,
         debug=args.dev,
         use_reloader=args.dev,
-        extra_files=["static/dashboard.html"] if args.dev else None,
+        extra_files=["static/dashboard.html", "static/dashboard.css", "static/dashboard.js"] if args.dev else None,
     )
 
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import json
 import re
 import time
@@ -10,6 +12,8 @@ from pathlib import Path
 import requests
 
 from services.cache import TTLCache
+
+logger = logging.getLogger("cuckoo.github")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 GITHUB_USER = "cuckoo711"
@@ -110,13 +114,13 @@ def get_github_data() -> dict:
     if disk_fresh is not None:
         _cache.set(disk_fresh)
         _last_success_at = time.time()
-        print(f"GitHub: 从磁盘缓存恢复 {len(disk_fresh)} 天数据", flush=True)
+        logger.info(f"GitHub: 从磁盘缓存恢复 {len(disk_fresh)} 天数据")
         return _github_payload(disk_fresh)
 
     for attempt in range(3):
         try:
             contributions = _fetch_from_github()
-            print(f"GitHub: fetched {len(contributions)} days of contributions", flush=True)
+            logger.info(f"GitHub: fetched {len(contributions)} days of contributions")
             _last_error = None
             _last_success_at = time.time()
             _cache.set(contributions)
@@ -124,11 +128,11 @@ def get_github_data() -> dict:
             return _github_payload(contributions)
         except Exception as e:
             _last_error = str(e)
-            print(f"GitHub fetch attempt {attempt+1}/3 failed: {e}", flush=True)
+            logger.error(f"GitHub fetch attempt {attempt+1}/3 failed: {e}")
             if attempt < 2:
                 time.sleep(2)
 
-    print("GitHub: 所有重试均失败", flush=True)
+    logger.error("GitHub: 所有重试均失败")
     stale = _cache.data if isinstance(_cache.data, dict) else None
     if stale is None:
         stale = _read_disk_cache(max_age=None)

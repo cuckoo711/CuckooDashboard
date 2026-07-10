@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -10,6 +12,8 @@ from pathlib import Path
 import requests
 
 from services.config import load_config
+
+logger = logging.getLogger("cuckoo.local")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 LOCAL_TOKEN_CACHE = BASE_DIR / "local_tokens.json"
@@ -83,9 +87,9 @@ class LocalMimoAPI:
                 if self._token:
                     self._save_cached_token()
                     return True
-            print(f"[local] 登录失败 {self.base_url}: HTTP {resp.status_code}", flush=True)
+            logger.error(f"[local] 登录失败 {self.base_url}: HTTP {resp.status_code}")
         except Exception as e:
-            print(f"[local] 登录异常 {self.base_url}: {e}", flush=True)
+            logger.error(f"[local] 登录异常 {self.base_url}: {e}")
         return False
 
     def _ensure_token(self) -> bool:
@@ -108,7 +112,7 @@ class LocalMimoAPI:
                 timeout=10, verify=self._verify,
             )
             if resp.status_code != 200:
-                print(f"[local] 获取数据失败 {self.base_url}: HTTP {resp.status_code}", flush=True)
+                logger.error(f"[local] 获取数据失败 {self.base_url}: HTTP {resp.status_code}")
                 return None
             data = resp.json()
             points = data.get("points", [])
@@ -125,7 +129,7 @@ class LocalMimoAPI:
                     return p
             return None
         except Exception as e:
-            print(f"[local] 获取数据异常 {self.base_url}: {e}", flush=True)
+            logger.error(f"[local] 获取数据异常 {self.base_url}: {e}")
             return None
 
 
@@ -159,7 +163,7 @@ def get_local_apis() -> list[LocalMimoAPI]:
             pwd = default_password
         if url:
             _local_apis.append(LocalMimoAPI(url, username, pwd))
-    print(f"[local] 已配置 {len(_local_apis)} 个本地平台", flush=True)
+    logger.info(f"[local] 已配置 {len(_local_apis)} 个本地平台")
     return _local_apis
 
 

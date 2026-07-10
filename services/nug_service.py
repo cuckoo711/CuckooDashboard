@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+
 from datetime import datetime, timezone
 
 import requests
 
 from services.config import load_config
+
+logger = logging.getLogger("cuckoo.nug")
 
 
 class NUGApi:
@@ -33,11 +37,11 @@ class NUGApi:
             )
             if resp.status_code == 200:
                 self._logged_in = True
-                print(f"[nug] 登录成功: {self.base_url}", flush=True)
+                logger.info(f"[nug] 登录成功: {self.base_url}")
                 return True
-            print(f"[nug] 登录失败 {self.base_url}: HTTP {resp.status_code}", flush=True)
+            logger.error(f"[nug] 登录失败 {self.base_url}: HTTP {resp.status_code}")
         except Exception as e:
-            print(f"[nug] 登录异常 {self.base_url}: {e}", flush=True)
+            logger.error(f"[nug] 登录异常 {self.base_url}: {e}")
         return False
 
     def get_channel_breakdown(self, days: int = 7) -> list | None:
@@ -74,7 +78,7 @@ class NUGApi:
             data = resp.json()
             return data.get("rows", [])
         except Exception as e:
-            print(f"[nug] 获取 channel breakdown 异常: {e}", flush=True)
+            logger.error(f"[nug] 获取 channel breakdown 异常: {e}")
             return None
 
     def get_data(self) -> dict | None:
@@ -90,12 +94,12 @@ class NUGApi:
                 else:
                     return None
             if me_resp.status_code != 200:
-                print(f"[nug] 获取用户信息失败 {self.base_url}: HTTP {me_resp.status_code}", flush=True)
+                logger.error(f"[nug] 获取用户信息失败 {self.base_url}: HTTP {me_resp.status_code}")
                 return None
             me = me_resp.json()
             return {"balance": me.get("quotaBalance", 0)}
         except Exception as e:
-            print(f"[nug] 获取数据异常 {self.base_url}: {e}", flush=True)
+            logger.error(f"[nug] 获取数据异常 {self.base_url}: {e}")
             return None
 
 

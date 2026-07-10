@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import json
 import re
 import time
@@ -11,7 +13,11 @@ import requests as _requests
 
 from services.config import load_config
 
+logger = logging.getLogger("cuckoo.media")
+
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+_SONG_ID_FILE = BASE_DIR / "song_id_overrides.json"
 
 import subprocess as _media_sp
 import threading
@@ -31,6 +37,28 @@ _smtc_last_update = 0.0
 _SMTC_WORKER = str(BASE_DIR / "smtc_worker.py")
 _SMTC_PYTHON = str(BASE_DIR / "venv" / "Scripts" / "python.exe")
 _smtc_started = False
+
+
+def _load_song_id_overrides() -> dict:
+    """Load persisted song_id overrides from disk."""
+    if not _SONG_ID_FILE.exists():
+        return {}
+    try:
+        data = json.loads(_SONG_ID_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_song_id_override(title: str, artist: str, song_id: int):
+    """Persist a song_id override to disk."""
+    overrides = _load_song_id_overrides()
+    key = f"{title}|||{artist}"
+    overrides[key] = {"song_id": song_id}
+    try:
+        _SONG_ID_FILE.write_text(json.dumps(overrides, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as e:
+        logger.error(f"[media] failed to save song_id override: {e}")
 
 
 def _smtc_reader_loop():
@@ -59,7 +87,7 @@ def _smtc_reader_loop():
             # 子进程意外退出，等待后重启
             proc.wait(timeout=1)
         except Exception as e:
-            print(f"[media] worker error: {e}", flush=True)
+            logger.error(f"[media] worker error: {e}")
         finally:
             if proc:
                 try:
@@ -203,7 +231,7 @@ def _search_songs(title: str, artist: str) -> list:
                 if s.get("id")
             ]
         except Exception as e:
-            print(f"[media] cloudsearch error (fallback to legacy): {e}", flush=True)
+            logger.error(f"[media] cloudsearch error (fallback to legacy): {e}")
 
     try:
         resp = _requests.get(
@@ -225,7 +253,7 @@ def _search_songs(title: str, artist: str) -> list:
             if s.get("id")
         ]
     except Exception as e:
-        print(f"[media] legacy search error: {e}", flush=True)
+        logger.error(f"[media] legacy search error: {e}")
         return []
 
 
@@ -278,7 +306,7 @@ def _fetch_recent_played(force: bool = False) -> list:
                 "play_time_ms": x.get("playTime") or 0,
             })
     except Exception as e:
-        print(f"[media] recent played error: {e}", flush=True)
+        logger.error(f"[media] recent played error: {e}")
         return []
 
     with _recent_cache_lock:
@@ -359,8 +387,8 @@ def _search_netease(title: str, artist: str) -> list:
     candidates.sort(key=lambda x: -x[0])
 
     if not candidates:
-        print(f"[media] no acceptable match on netease: {title} - {artist} "
-              f"(scanned {len(songs)} candidates)", flush=True)
+        logger.warning(f"[media] no acceptable match on netease: {title} - {artist} "
+                       f"(scanned {len(songs)} candidates)")
     return candidates
 
 
@@ -385,7 +413,7 @@ def _fetch_lyrics_raw(song_id: int) -> dict:
                 "yrc": (data.get("yrc") or {}).get("lyric", "") or "",
             }
         except Exception as e:
-            print(f"[media] ncm-api lyric error (fallback): {e}", flush=True)
+            logger.error(f"[media] ncm-api lyric error (fallback): {e}")
 
     try:
         resp = _requests.get(
@@ -400,7 +428,7 @@ def _fetch_lyrics_raw(song_id: int) -> dict:
             "yrc": (data.get("yrc") or {}).get("lyric", "") or "",
         }
     except Exception as e:
-        print(f"[media] legacy lyric error: {e}", flush=True)
+        logger.error(f"[media] legacy lyric error: {e}")
     return {"lrc": "", "yrc": ""}
 
 
@@ -472,6 +500,13 @@ def _get_lyrics_for(title: str, artist: str, song_id: int = 0) -> dict:
     if cached is not None:
         return cached
 
+    # Check persisted song_id override
+    if not song_id:
+        overrides = _load_song_id_overrides()
+        override_key = f"{title}|||{artist}"
+        if override_key in overrides:
+            song_id = int(overrides[override_key].get("song_id", 0))
+
     result = None
 
     if song_id:
@@ -504,9 +539,9 @@ def _get_lyrics_for(title: str, artist: str, song_id: int = 0) -> dict:
             while len(_lyrics_cache_order) > _LYRICS_CACHE_MAX:
                 old_key = _lyrics_cache_order.pop(0)
                 _lyrics_cache.pop(old_key, None)
-        print(f"[media] loaded lyrics for: {title} "
-              f"(lrc={len(result['lyrics'])} lines, yrc={len(result['lyrics_yrc'])} lines, "
-              f"duration={result['duration']:.1f}s)", flush=True)
+        logger.info(f"[media] loaded lyrics for: {title} "
+                    f"(lrc={len(result['lyrics'])} lines, yrc={len(result['lyrics_yrc'])} lines, "
+                    f"duration={result['duration']:.1f}s)")
 
     return result
 
@@ -612,7 +647,7 @@ def reload_current_media() -> dict:
         # 让下次 _match_from_recent 强制重取最新列表
         with _recent_cache_lock:
             _recent_cache["ts"] = 0.0
-        print(f"[media] lyrics cache cleared for: {title}", flush=True)
+        logger.info(f"[media] lyrics cache cleared for: {title}")
     return get_media_info()
 
 
@@ -642,7 +677,8 @@ def set_current_song_id(song_id_value) -> tuple[dict, int]:
         while len(_lyrics_cache_order) > _LYRICS_CACHE_MAX:
             old_key = _lyrics_cache_order.pop(0)
             _lyrics_cache.pop(old_key, None)
-    print(f"[media] manually set song_id={song_id} for: {title}", flush=True)
+    _save_song_id_override(title, artist, song_id)
+    logger.info(f"[media] manually set song_id={song_id} for: {title}")
     return get_media_info(), 200
 
 

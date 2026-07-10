@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+
 import asyncio
+
+logger = logging.getLogger("cuckoo.player")
 
 ALLOWED_PLAYER_ACTIONS = {"play", "pause", "next", "prev", "toggle"}
 
