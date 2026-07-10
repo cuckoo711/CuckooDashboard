@@ -149,6 +149,8 @@ Environment variables or `cookies.json`:
 │   ├── cache.py          # Small cache primitives
 │   ├── config.py         # Local private config loading
 │   ├── github_service.py # GitHub heatmap fetch/cache (estimated counts)
+│   ├── local_platform_service.py # Local MiMo-compatible platform clients
+│   ├── mimo_service.py   # MiMo API access and dashboard aggregation
 │   ├── nug_service.py    # NUG balance API client
 │   └── theme.py          # Theme metadata and persistence
 ├── static/
