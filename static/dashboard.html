@@ -750,6 +750,26 @@ function drawModels(data) {
     }).join('');
 }
 
+function drawNugChannels(rows) {
+    var el = document.getElementById('modelBars');
+    if (!rows||!rows.length) { el.innerHTML='<div class="ld">暂无数据</div>'; return; }
+    rows = rows.filter(function(d){ return d.requestCount >= 5; });
+    if (!rows.length) { el.innerHTML='<div class="ld">暂无数据</div>'; return; }
+    rows.sort(function(a,b){return parseFloat(b.totalQuotaCost)-parseFloat(a.totalQuotaCost)});
+    var mx = parseFloat(rows[0].totalQuotaCost)||1;
+    var colors = {'kiro':'#5e8eaf','codex':'#7b68ae','anthropic':'#c47a3a','antigravity':'#5fa89e'};
+    el.innerHTML = rows.map(function(d){
+        var cost = parseFloat(d.totalQuotaCost)||0;
+        var w = mx>0?(cost/mx*100):0;
+        var clr = colors[d.groupKey]||'#888';
+        return '<div class="bar-row">'+
+            '<span class="bar-name">'+d.groupKey+'</span>'+
+            '<div class="bar-track"><div class="bar-fill" style="width:'+w+'%;background:'+clr+'"></div></div>'+
+            '<div class="bar-info"><div class="v">$'+cost.toFixed(2)+'</div><div class="s">'+fmtNum(d.requestCount)+' 次</div></div>'+
+        '</div>';
+    }).join('');
+}
+
 /* ── 系统信息（CPU / 内存 / 独显，纵向三列）── */
 function drawSystem(sys) {
     if (!sys) return;
@@ -976,7 +996,6 @@ function handleMimoData(d) {
             var mu=usage.monthUsage;
             drawRing(mu.percent*100,mu.items[0]?mu.items[0].used:0,mu.items[0]?mu.items[0].limit:0);
         }
-        drawModels(d.tp_usage_detail||[]);
     }
 
     // 余额
@@ -1290,6 +1309,7 @@ function connectWS(){
             else if(msg.type === 'media') drawLyric(msg.data);
             else if(msg.type === 'mimo'){ handleMimoData(msg.data); }
             else if(msg.type === 'nug'){ if(msg.data.enabled && msg.data.balance!=null) document.getElementById('nugBal').textContent='$'+msg.data.balance.toFixed(2); }
+            else if(msg.type === 'nug_channels'){ if(msg.data.enabled) drawNugChannels(msg.data.rows); }
             else if(msg.type === 'theme'){ applyTheme(msg.data); }
         } catch(e){ console.error('[ws] parse error:', e); }
     };
@@ -1305,6 +1325,16 @@ function connectWS(){
     };
 }
 connectWS();
+refreshNug(); setInterval(refreshNug, 60000);
+// 初始加载 NUG channel 用量（WS 推送前先 REST 拉一次）
+async function refreshNugChannels(){
+    try{
+        var r=await secureFetch('/api/nug/channels');
+        var d=await r.json();
+        if(d.enabled&&d.rows&&d.rows.length) drawNugChannels(d.rows);
+    }catch(e){}
+}
+refreshNugChannels(); setInterval(refreshNugChannels, 60000);
 
 /* ── Vibe Coding 状态切换（仅 UI 标记，数据由 WS 统一推送）── */
 var _vibeActive = false;
