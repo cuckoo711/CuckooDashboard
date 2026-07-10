@@ -618,10 +618,17 @@
 </div>
 
 <script>
+var DASHBOARD_TOKEN = '';
+try { DASHBOARD_TOKEN = localStorage.getItem('dashboardToken') || ''; } catch(e) {}
+function secureFetch(url, options) {
+    options = options || {};
+    options.headers = options.headers || {};
+    options.headers['X-Requested-With'] = 'CuckooDashboard';
+    if (DASHBOARD_TOKEN) options.headers['X-Dashboard-Token'] = DASHBOARD_TOKEN;
+    return fetch(url, options);
+}
 function playerCtl(action) {
-    var xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/player/' + action, true);
-    xhr.send();
+    secureFetch('/api/player/' + action, {method:'POST'}).catch(function(e){ console.error('[player]', e); });
 }
 function fmtTok(n) {
     if (n >= 1e12) return (n/1e12).toFixed(2)+'T';
@@ -988,7 +995,7 @@ function handleMimoData(d) {
 
 async function refresh() {
     try {
-        var r = await fetch('/api/data');
+        var r = await secureFetch('/api/data');
         var d = await r.json();
         handleMimoData(d);
     } catch(e){console.error('Refresh error:',e);}
@@ -996,7 +1003,7 @@ async function refresh() {
 
 async function refreshSys() {
     try {
-        var r = await fetch('/api/system');
+        var r = await secureFetch('/api/system');
         var sys = await r.json();
         drawSystem(sys);
     } catch(e) { console.error('Sys refresh error:',e); }
@@ -1014,13 +1021,13 @@ var _mediaPlaying = false;
 var _lastLyricIdx = -2;
 var _lastPositionSource = 'none';
 var LYRIC_OFFSET = 1.5;  // 默认值，启动时从后端加载
-fetch('/api/media/offset').then(r=>r.json()).then(d=>{
+secureFetch('/api/media/offset').then(r=>r.json()).then(d=>{
     LYRIC_OFFSET = d.offset;
     document.getElementById('lyricOffsetVal').textContent = LYRIC_OFFSET.toFixed(1);
 }).catch(function(){ try { var v=parseFloat(localStorage.getItem('lyricOffset')); if(!isNaN(v)){LYRIC_OFFSET=v; document.getElementById('lyricOffsetVal').textContent=LYRIC_OFFSET.toFixed(1);} } catch(e){} });
 
 function adjOffset(delta) {
-    fetch('/api/media/offset', {
+    secureFetch('/api/media/offset', {
         method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({delta: delta})
     }).then(r=>r.json()).then(d=>{
@@ -1245,7 +1252,7 @@ function updateLyricLine(force) {
 
 async function refreshMedia() {
     try {
-        var r = await fetch('/api/media');
+        var r = await secureFetch('/api/media');
         var d = await r.json();
         drawLyric(d);
     } catch(e) { console.error('Media error:', e); }
@@ -1258,7 +1265,7 @@ window.addEventListener('resize', function(){ updateLyricLine(true); });
 /* ── NUG 平台数据 ── */
 async function refreshNug() {
     try {
-        var r = await fetch('/api/nug');
+        var r = await secureFetch('/api/nug');
         var d = await r.json();
         if (!d.enabled) return;
         if (d.error) { console.error('NUG error:', d.error); return; }
@@ -1290,6 +1297,7 @@ function connectWS(){
             else if(msg.type === 'media') drawLyric(msg.data);
             else if(msg.type === 'mimo'){ handleMimoData(msg.data); }
             else if(msg.type === 'nug'){ if(msg.data.enabled && msg.data.balance!=null) document.getElementById('nugBal').textContent='$'+msg.data.balance.toFixed(2); }
+            else if(msg.type === 'theme'){ applyTheme(msg.data); }
         } catch(e){ console.error('[ws] parse error:', e); }
     };
     _ws.onclose = function(){
@@ -1345,7 +1353,8 @@ refresh();
 
 /* ── 主题切换（点击左上角红圈，通过后端 API 循环切换）── */
 function applyTheme(d){
-    var name = d.theme, bg = d.bg || {};
+    var name = d.theme || 'dark', bg = d.bg || {};
+    document.body.dataset.theme = name;
     document.body.classList.toggle('mono', name === 'mono');
     // 背景：强绑定主题
     if(bg.bg_type === 'image' && bg.bg_image){
@@ -1357,13 +1366,13 @@ function applyTheme(d){
     try { localStorage.setItem('themeData', JSON.stringify(d)); } catch(e){}
 }
 // 启动时从后端读取当前主题
-fetch('/api/theme').then(r=>r.json()).then(applyTheme).catch(()=>{
+secureFetch('/api/theme').then(r=>r.json()).then(applyTheme).catch(()=>{
     // 后端不可用时回退到 localStorage 缓存
     try { var c=JSON.parse(localStorage.getItem('themeData')); if(c) applyTheme(c); } catch(e){}
 });
 // 点击红圈 → 后端切换下一个主题
 document.querySelector('.mark').addEventListener('click', function(){
-    fetch('/api/theme/next',{method:'POST'}).then(r=>r.json()).then(applyTheme);
+    secureFetch('/api/theme/next',{method:'POST'}).then(r=>r.json()).then(applyTheme);
 });
 </script>
 </body>

@@ -1,0 +1,26 @@
+{
+  "dashboard": {
+    "token": ""
+  },
+  "local_platforms": {
+    "enabled": false,
+    "username": "",
+    "password": "",
+    "urls": []
+  },
+  "nug": {
+    "enabled": false,
+    "url": "",
+    "username": "",
+    "password": ""
+  },
+  "netease_api": {
+    "enabled": false,
+    "base_url": "",
+    "cookie": ""
+  },
+  "hardware_overrides": {
+    "mem_installed_gb": null,
+    "gpu_vram_gb": {}
+  }
+}

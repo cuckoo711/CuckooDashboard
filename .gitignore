@@ -8,6 +8,7 @@ credentials.*
 cookies.json
 cookies.txt
 config.json
+config.local.json
 local_tokens.json
 github_cache.json
 display_theme.json

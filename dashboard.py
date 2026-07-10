@@ -11,16 +11,19 @@ Web 看板服务器，用于副屏显示 MiMo 使用情况。
 
 import argparse
 import json
+import os
 import platform
 import re
+import secrets
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 import psutil
 
 try:
-    from flask import Flask, jsonify, send_from_directory, request
+    from flask import Flask, abort, jsonify, send_from_directory, request
 except ImportError:
     print("错误: 缺少 Flask 库，请运行: pip install flask")
     sys.exit(1)
@@ -50,17 +53,37 @@ sock = Sock(app)
 import threading as _ws_threading
 
 _ws_clients = []
+_ws_client_states = {}
 _ws_clients_lock = _ws_threading.Lock()
 _ws_vibe_coding = False  # 前端 Vibe Coding 状态（任一客户端开启即生效）
+_ws_broadcaster_started = False
+_ws_broadcaster_lock = _ws_threading.Lock()
+
+
+def _ws_recalc_vibe_locked() -> bool:
+    """在已持有 _ws_clients_lock 时重新计算全局 Vibe Coding 状态。"""
+    global _ws_vibe_coding
+    _ws_vibe_coding = any(s.get("vibe") for s in _ws_client_states.values())
+    return _ws_vibe_coding
+
+
+def _ws_has_clients() -> bool:
+    """线程安全地判断是否有 WebSocket 客户端。"""
+    with _ws_clients_lock:
+        return bool(_ws_clients)
+
+
+def _ws_clients_snapshot() -> list:
+    """线程安全地获取 WebSocket 客户端快照。"""
+    with _ws_clients_lock:
+        return list(_ws_clients)
 
 
 def _ws_broadcast(msg: dict):
-    """向所有连接的客户端广播消息，失败时自动清理"""
+    """向所有连接的客户端广播消息，失败时自动清理。"""
     data = json.dumps(msg, ensure_ascii=False)
     dead = []
-    with _ws_clients_lock:
-        clients = list(_ws_clients)
-    for ws in clients:
+    for ws in _ws_clients_snapshot():
         try:
             ws.send(data)
         except Exception:
@@ -70,15 +93,18 @@ def _ws_broadcast(msg: dict):
             for ws in dead:
                 if ws in _ws_clients:
                     _ws_clients.remove(ws)
+                _ws_client_states.pop(ws, None)
+            _ws_recalc_vibe_locked()
 
 
 @sock.route("/ws")
 def ws_handler(ws):
-    """WebSocket 端点：前端建立连接后接收后端推送 + 前端指令"""
-    global _ws_vibe_coding
+    """WebSocket 端点：前端建立连接后接收后端推送 + 前端指令。"""
     with _ws_clients_lock:
         _ws_clients.append(ws)
-    print(f"[ws] client connected (total: {len(_ws_clients)})", flush=True)
+        _ws_client_states[ws] = {"vibe": False}
+        total = len(_ws_clients)
+    print(f"[ws] client connected (total: {total})", flush=True)
     try:
         while ws.connected:
             raw = ws.receive(timeout=30)
@@ -86,8 +112,10 @@ def ws_handler(ws):
                 try:
                     msg = json.loads(raw)
                     if msg.get("type") == "vibe":
-                        _ws_vibe_coding = bool(msg.get("active"))
-                        print(f"[ws] vibe coding: {'ON' if _ws_vibe_coding else 'OFF'}", flush=True)
+                        with _ws_clients_lock:
+                            _ws_client_states.setdefault(ws, {})["vibe"] = bool(msg.get("active"))
+                            vibe = _ws_recalc_vibe_locked()
+                        print(f"[ws] vibe coding: {'ON' if vibe else 'OFF'}", flush=True)
                 except (json.JSONDecodeError, KeyError):
                     pass
     except Exception:
@@ -96,18 +124,21 @@ def ws_handler(ws):
         with _ws_clients_lock:
             if ws in _ws_clients:
                 _ws_clients.remove(ws)
-        print(f"[ws] client disconnected (total: {len(_ws_clients)})", flush=True)
+            _ws_client_states.pop(ws, None)
+            vibe = _ws_recalc_vibe_locked()
+            total = len(_ws_clients)
+        print(f"[ws] client disconnected (total: {total}, vibe: {'ON' if vibe else 'OFF'})", flush=True)
 
 
 def _ws_broadcaster():
-    """后台线程：并行获取 system + media，定时广播"""
+    """后台线程：并行获取 system + media，定时广播。"""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     _executor = ThreadPoolExecutor(max_workers=4)
     _nug_counter = 0
     while True:
         t0 = time.time()
         try:
-            if _ws_clients:
+            if _ws_has_clients():
                 # system + media 并行获取
                 futs = {
                     _executor.submit(get_system_info): "system",
@@ -141,6 +172,18 @@ def _ws_broadcaster():
         elapsed = time.time() - t0
         time.sleep(max(0, 1.0 - elapsed))
 
+
+def start_background_threads_once() -> bool:
+    """启动后台线程；多次调用只会真正启动一次。"""
+    global _ws_broadcaster_started
+    with _ws_broadcaster_lock:
+        if _ws_broadcaster_started:
+            return False
+        t = _ws_threading.Thread(target=_ws_broadcaster, daemon=True, name="ws-broadcaster")
+        t.start()
+        _ws_broadcaster_started = True
+        return True
+
 # 配置
 GITHUB_USER = "cuckoo711"
 
@@ -156,6 +199,52 @@ _github_cache = {
 CACHE_TTL = 55  # 缓存55秒（前端60秒刷新）
 GITHUB_CACHE_TTL = 600  # GitHub 缓存10分钟
 CONFIG_FILE = Path(__file__).parent / "config.json"
+_DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN") or secrets.token_urlsafe(24)
+
+
+def load_config() -> dict:
+    """加载本地私有配置文件。"""
+    if CONFIG_FILE.exists():
+        try:
+            return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def get_dashboard_token() -> str:
+    """获取 POST 防护 token；优先读取配置/环境变量，否则使用启动时随机值。"""
+    config = load_config()
+    token = (config.get("dashboard") or {}).get("token") or os.environ.get("DASHBOARD_TOKEN")
+    return str(token or _DASHBOARD_TOKEN)
+
+
+def _same_site_from_header(value: str | None) -> bool:
+    """校验 Origin/Referer 是否指向当前 dashboard 同源。"""
+    if not value:
+        return False
+    try:
+        parsed = urlparse(value)
+        host_url = urlparse(request.host_url)
+        return parsed.scheme == host_url.scheme and parsed.netloc == host_url.netloc
+    except Exception:
+        return False
+
+
+def require_post_protection():
+    """对本地状态修改类 POST 做最小 CSRF/token 防护。"""
+    if request.method != "POST":
+        return
+    expected = get_dashboard_token()
+    provided = request.headers.get("X-Dashboard-Token")
+    if provided and secrets.compare_digest(provided, expected):
+        return
+    origin = request.headers.get("Origin")
+    referer = request.headers.get("Referer")
+    if _same_site_from_header(origin) or _same_site_from_header(referer):
+        return
+    abort(403)
+
 
 # ============================================================
 # 显示主题管理
@@ -190,38 +279,65 @@ def _theme_response(idx: int) -> dict:
     }
 
 
+def _theme_index_by_name(name: str | None) -> int | None:
+    """根据主题名查找索引。"""
+    for i, theme in enumerate(_THEMES):
+        if theme["name"] == name:
+            return i
+    return None
+
+
 def _load_theme() -> int:
-    """读取当前主题索引"""
+    """读取当前主题索引；兼容旧的 {"index": 0} 格式。"""
     try:
         data = json.loads(THEME_FILE.read_text(encoding="utf-8"))
-        idx = data.get("index", 0)
+        if "theme" in data:
+            idx = _theme_index_by_name(data.get("theme"))
+            if idx is not None:
+                return idx
+        idx = int(data.get("index", 0))
         if 0 <= idx < len(_THEMES):
             return idx
-    except (json.JSONDecodeError, OSError, KeyError):
+    except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError):
         pass
     return 0
 
 
 def _save_theme(index: int):
-    """持久化主题索引到磁盘"""
+    """持久化主题名到磁盘。"""
     try:
-        THEME_FILE.write_text(json.dumps({"index": index}), encoding="utf-8")
+        THEME_FILE.write_text(json.dumps({"theme": _THEMES[index]["name"]}, ensure_ascii=False), encoding="utf-8")
     except OSError:
         pass
 
 
-@app.route("/api/theme")
-def api_theme_get():
-    """返回当前主题信息"""
-    return jsonify(_theme_response(_load_theme()))
+def _set_theme_response(idx: int) -> dict:
+    """保存主题并广播给所有客户端。"""
+    _save_theme(idx)
+    data = _theme_response(idx)
+    _ws_broadcast({"type": "theme", "data": data})
+    return data
+
+
+@app.route("/api/theme", methods=["GET", "POST"])
+def api_theme_get_or_set():
+    """GET 返回当前主题；POST 指定主题。"""
+    if request.method == "GET":
+        return jsonify(_theme_response(_load_theme()))
+    require_post_protection()
+    payload = request.get_json(silent=True) or {}
+    idx = _theme_index_by_name(payload.get("theme"))
+    if idx is None:
+        return jsonify({"error": "unknown theme", "themes": [t["name"] for t in _THEMES]}), 400
+    return jsonify(_set_theme_response(idx))
 
 
 @app.route("/api/theme/next", methods=["POST"])
 def api_theme_next():
-    """循环切换到下一个主题"""
+    """循环切换到下一个主题。"""
+    require_post_protection()
     idx = (_load_theme() + 1) % len(_THEMES)
-    _save_theme(idx)
-    return jsonify(_theme_response(idx))
+    return jsonify(_set_theme_response(idx))
 
 
 # ============================================================
@@ -344,16 +460,6 @@ class LocalMimoAPI:
         except Exception as e:
             print(f"[local] 获取数据异常 {self.base_url}: {e}", flush=True)
             return None
-
-
-def load_config() -> dict:
-    """加载配置文件"""
-    if CONFIG_FILE.exists():
-        try:
-            return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
-    return {}
 
 
 _local_apis: list[LocalMimoAPI] | None = None
@@ -1716,6 +1822,7 @@ def api_media():
 def api_media_reload():
     """清除当前歌曲的歌词缓存并重新获取。同时刷新最近播放列表缓存，
     避免刚切歌就点重载还是命中旧列表。"""
+    require_post_protection()
     with _smtc_lock:
         title = _smtc_result.get("title", "")
         artist = _smtc_result.get("artist", "")
@@ -1743,6 +1850,7 @@ def api_media_set_song_id():
     通过前端 UI 传进来，直接拉歌词并写入缓存。缓存条目标记 manual=True，
     自动搜索路径不会覆盖它。
     """
+    require_post_protection()
     payload = request.get_json(silent=True) or {}
     try:
         song_id = int(payload.get("song_id"))
@@ -1798,6 +1906,7 @@ def api_media_offset():
     """GET: 返回当前偏移量; POST: 设置偏移量（支持 delta 增量或绝对值）"""
     if request.method == "GET":
         return jsonify({"offset": _load_lyric_offset()})
+    require_post_protection()
     payload = request.get_json(silent=True) or {}
     if "delta" in payload:
         val = round((_load_lyric_offset() + float(payload["delta"])) * 10) / 10
@@ -1852,6 +1961,7 @@ def _smtc_control(action: str) -> dict:
 @app.route("/api/player/<action>", methods=["POST"])
 def api_player_control(action):
     """播放控制：play/pause/next/prev/toggle（通过 Windows SMTC 系统级指令）"""
+    require_post_protection()
     allowed = {"play", "pause", "next", "prev", "toggle"}
     if action not in allowed:
         return jsonify({"error": "unknown action"}), 400
@@ -1882,6 +1992,7 @@ def main():
     parser.add_argument("--port", "-p", type=int, default=5000, help="端口号 (默认 5000)")
     parser.add_argument("--host", default="127.0.0.1", help="监听地址 (默认 127.0.0.1)")
     parser.add_argument("--open", "-o", action="store_true", help="自动打开浏览器")
+    parser.add_argument("--dev", action="store_true", help="开发模式：启用 Flask debug/reloader")
     args = parser.parse_args()
 
     if args.open:
@@ -1890,16 +2001,23 @@ def main():
         print(f"正在打开浏览器: {url}")
         webbrowser.open(url)
 
-    print(f"MiMo Dashboard 启动中...")
+    print("MiMo Dashboard 启动中...")
     print(f"访问地址: http://{args.host}:{args.port}")
-    print(f"按 Ctrl+C 停止服务器")
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        print("[security] 当前不是仅本机监听；POST 接口会要求同源或 X-Dashboard-Token")
+    print("按 Ctrl+C 停止服务器")
 
-    # 启动 WebSocket 广播线程
-    t = _ws_threading.Thread(target=_ws_broadcaster, daemon=True)
-    t.start()
+    # Flask reloader 会先启动父进程；只在实际服务进程中启动后台线程。
+    if not args.dev or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        start_background_threads_once()
 
-    app.run(host=args.host, port=args.port, debug=True,
-            use_reloader=True, extra_files=["static/dashboard.html"])
+    app.run(
+        host=args.host,
+        port=args.port,
+        debug=args.dev,
+        use_reloader=args.dev,
+        extra_files=["static/dashboard.html"] if args.dev else None,
+    )
 
 
 if __name__ == "__main__":

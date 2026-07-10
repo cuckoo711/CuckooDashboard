@@ -38,7 +38,7 @@ A real-time system monitoring dashboard with MiMo Token Plan tracking, GitHub co
 
 ## Screenshots
 
-> Run the dashboard and open `http://localhost:5050` in your browser to see it live.
+> Run the dashboard and open `http://localhost:5000` in your browser to see it live.
 
 ## Installation
 
@@ -53,11 +53,12 @@ pip install -r requirements.txt
 
 ### Dependencies
 
-- `flask` - Web server
+- `flask` / `flask-sock` - Web server and WebSocket push
 - `psutil` - System monitoring
 - `requests` - HTTP client
 - `pywebview` - Native desktop window (optional)
-- `segno` or `qrcode` - QR code for login (optional)
+- `winrt-*` / `uiautomation` - Windows SMTC media info and progress fallback
+- `segno` / `qrcode` - QR code for login (optional)
 
 ## Usage
 
@@ -85,7 +86,7 @@ python mimo_usage.py --json                   # JSON output
 
 ```bash
 python dashboard.py
-# Open http://localhost:5050 in your browser
+# Open http://localhost:5000 in your browser
 ```
 
 ```bash
@@ -100,7 +101,7 @@ python dashboard.py --dev   # Debug mode
 python desktop.py
 # Native window, no browser needed
 
-python desktop.py --port 8080 --width 1200 --height 800
+python desktop.py --port 8080
 ```
 
 ## API Endpoints
@@ -112,8 +113,17 @@ python desktop.py --port 8080 --width 1200 --height 800
 | `/api/nug` | GET | Nug status |
 | `/api/media` | GET | Current media info + lyrics |
 | `/api/media/reload` | POST | Clear lyrics cache and refetch |
+| `/api/media/set_song_id` | POST | Manually bind current song to a NetEase song ID |
+| `/api/media/offset` | GET/POST | Read or update lyric offset |
+| `/api/player/<action>` | POST | Media controls: `play`, `pause`, `next`, `prev`, `toggle` |
+| `/api/theme` | GET/POST | Read or set the active theme by name |
+| `/api/theme/next` | POST | Switch to the next theme |
+
+POST endpoints require same-origin `Origin`/`Referer` or an `X-Dashboard-Token` header. Set `dashboard.token` in `config.json` or `DASHBOARD_TOKEN` when exposing the server beyond `127.0.0.1`.
 
 ## Configuration
+
+Copy `config.example.json` to `config.json` and fill only local/private values you need. `config.json`, cookies, token caches, GitHub cache, lyric offset, and display theme state are intentionally git-ignored.
 
 Environment variables or `cookies.json`:
 
@@ -122,6 +132,7 @@ Environment variables or `cookies.json`:
 | `GITHUB_USER` | GitHub username for contribution heatmap |
 | `MIMO_COOKIE` | MiMo login cookie string |
 | `MIMO_COOKIE_PATH` | Path to cookie file (default: `cookies.json`) |
+| `DASHBOARD_TOKEN` | Optional token accepted via `X-Dashboard-Token` for protected POST APIs |
 
 ## Project Structure
 
@@ -139,9 +150,10 @@ Environment variables or `cookies.json`:
 
 ## Security
 
-- `cookies.json` is in `.gitignore` and will not be committed
-- `github_cache.json` (local cache) is also git-ignored
-- No sensitive data is transmitted to third-party servers
+- `config.json`, `cookies.json`, `local_tokens.json`, `github_cache.json`, `display_theme.json`, and `lyric_offset.json` are in `.gitignore` and should stay local-only.
+- `config.example.json` contains structure only; never copy real credentials into it.
+- Protected POST endpoints reject cross-site requests unless they are same-origin or include `X-Dashboard-Token`.
+- If real passwords, cookies, or tokens were ever committed to Git history, rotate those credentials.
 
 ## Acknowledgments
 

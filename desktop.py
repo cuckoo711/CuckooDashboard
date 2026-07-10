@@ -20,7 +20,7 @@ import time
 import webview
 
 # 导入Flask应用
-from dashboard import app, get_mimo_api, _ws_broadcaster
+from dashboard import app, get_mimo_api, start_background_threads_once
 
 
 def enable_dpi_awareness():
@@ -65,21 +65,18 @@ def main():
         log = logging.getLogger('werkzeug')
         log.setLevel(logging.ERROR)
 
-    # 检查Cookie是否存在
+    # MiMo Cookie 仅影响 MiMo 卡片，不应阻塞桌面看板启动
     try:
         api = get_mimo_api()
-        print("[OK] Cookie detected")
-    except ValueError as e:
-        print(f"[FAIL] {e}")
-        print("Please run mimo_usage.py to login first")
-        sys.exit(1)
+        if api:
+            print("[OK] Cookie detected")
+        else:
+            print("[WARN] MiMo Cookie missing or expired; dashboard will start with MiMo unavailable")
     except Exception as e:
-        print(f"[FAIL] Error: {e}")
-        sys.exit(1)
+        print(f"[WARN] MiMo check failed: {e}; dashboard will continue")
 
     # 启动 WebSocket 广播线程
-    ws_thread = threading.Thread(target=_ws_broadcaster, daemon=True)
-    ws_thread.start()
+    start_background_threads_once()
 
     # 在后台线程启动Flask
     flask_thread = threading.Thread(
