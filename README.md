@@ -150,6 +150,7 @@ Environment variables or `cookies.json`:
 │   ├── config.py         # Local private config loading
 │   ├── github_service.py # GitHub heatmap fetch/cache (estimated counts)
 │   ├── local_platform_service.py # Local MiMo-compatible platform clients
+│   ├── media_service.py  # SMTC media state and Netease lyrics
 │   ├── mimo_service.py   # MiMo API access and dashboard aggregation
 │   ├── nug_service.py    # NUG balance API client
 │   ├── system_service.py # System hardware and runtime metrics
