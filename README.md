@@ -116,7 +116,6 @@ python run_desktop.py --port 8080
 | `/api/nug` | GET | Nug status |
 | `/api/media` | GET | Current media info + lyrics |
 | `/api/media/reload` | POST | Clear lyrics cache and refetch |
-| `/api/media/set_song_id` | POST | Manually bind current song to a NetEase song ID |
 | `/api/media/offset` | GET/POST | Read or update lyric offset |
 | `/api/player/<action>` | POST | Media controls: `play`, `pause`, `next`, `prev`, `toggle` |
 | `/api/theme` | GET/POST | Read or set the active theme by name |

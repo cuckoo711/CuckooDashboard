@@ -17,8 +17,6 @@ from services.config import CONFIG_DIR, SRC_DIR, PROJECT_ROOT
 
 logger = logging.getLogger("cuckoo.media")
 
-_SONG_ID_FILE = CONFIG_DIR / "song_id_overrides.json"
-
 # ============================================================
 # SMTC Worker
 # ============================================================
@@ -72,30 +70,6 @@ def _ensure_smtc_thread():
         t = threading.Thread(target=_smtc_reader_loop, daemon=True)
         t.start()
 
-
-# ============================================================
-# Song ID Persistence
-# ============================================================
-
-
-def _load_song_id_overrides() -> dict:
-    if not _SONG_ID_FILE.exists():
-        return {}
-    try:
-        data = json.loads(_SONG_ID_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def _save_song_id_override(title: str, artist: str, song_id: int):
-    overrides = _load_song_id_overrides()
-    key = f"{title}|||{artist}"
-    overrides[key] = {"song_id": song_id}
-    try:
-        _SONG_ID_FILE.write_text(json.dumps(overrides, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError as e:
-        logger.error(f"[media] failed to save song_id override: {e}")
 
 
 # ============================================================
@@ -341,13 +315,6 @@ def _get_lyrics_for(title: str, artist: str, song_id: int = 0) -> dict:
     if cached is not None:
         return cached
 
-    # Check persisted song_id override
-    if not song_id:
-        overrides = _load_song_id_overrides()
-        override_key = f"{title}|||{artist}"
-        if override_key in overrides:
-            song_id = int(overrides[override_key].get("song_id", 0))
-
     result = None
 
     if song_id:
@@ -481,34 +448,6 @@ def reload_current_media() -> dict:
         logger.info(f"[media] lyrics cache cleared for: {title}")
     return get_media_info()
 
-
-def set_current_song_id(song_id_value) -> tuple[dict, int]:
-    """Manually bind the active song to a song_id and return (payload, status)."""
-    try:
-        song_id = int(song_id_value)
-    except (TypeError, ValueError):
-        return {"error": "invalid song_id"}, 400
-
-    with _smtc_lock:
-        title = _smtc_result.get("title", "")
-        artist = _smtc_result.get("artist", "")
-    if not title:
-        return {"error": "no active song"}, 400
-
-    result = _load_lyrics_by_netease_id(song_id, 0.0)
-    result["manual"] = True
-
-    key = (title, artist)
-    with _lyrics_cache_lock:
-        _lyrics_cache[key] = result
-        if key not in _lyrics_cache_order:
-            _lyrics_cache_order.append(key)
-        while len(_lyrics_cache_order) > _LYRICS_CACHE_MAX:
-            old_key = _lyrics_cache_order.pop(0)
-            _lyrics_cache.pop(old_key, None)
-    _save_song_id_override(title, artist, song_id)
-    logger.info(f"[media] manually set song_id={song_id} for: {title}")
-    return get_media_info(), 200
 
 
 def get_media_status() -> dict:

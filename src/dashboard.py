@@ -49,7 +49,6 @@ from services.media_service import (
     normalize_lyric_offset,
     reload_current_media,
     save_lyric_offset,
-    set_current_song_id,
 )
 from services.mimo_service import fetch_all_data, get_mimo_api
 from services.nug_service import get_nug_payload
@@ -327,15 +326,6 @@ def api_media_reload():
     """清除当前歌曲的歌词缓存并重新获取。"""
     require_post_protection()
     return jsonify(reload_current_media())
-
-
-@app.route("/api/media/set_song_id", methods=["POST"])
-def api_media_set_song_id():
-    """手动指定当前歌曲的网易云 song_id 并加载对应歌词。"""
-    require_post_protection()
-    payload = request.get_json(silent=True) or {}
-    result, status = set_current_song_id(payload.get("song_id"))
-    return jsonify(result), status
 
 
 @app.route("/api/media/offset", methods=["GET", "POST"])
