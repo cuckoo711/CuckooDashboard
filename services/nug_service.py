@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import requests
 
 from services.config import load_config
@@ -38,6 +40,43 @@ class NUGApi:
             print(f"[nug] 登录异常 {self.base_url}: {e}", flush=True)
         return False
 
+    def get_channel_breakdown(self, days: int = 7) -> list | None:
+        """获取按 channel 分组的用量明细（最近 N 天）"""
+        if not self._logged_in:
+            if not self._login():
+                return None
+        try:
+            from datetime import datetime, timedelta, timezone
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=days)
+            params = {
+                "start": start.isoformat().replace("+00:00", "Z"),
+                "end": end.isoformat().replace("+00:00", "Z"),
+                "groupBy": "channel",
+                "limit": 100,
+            }
+            resp = self.session.get(
+                f"{self.base_url}/api/user/stats-explorer/breakdown",
+                params=params,
+                timeout=15,
+            )
+            if resp.status_code == 401:
+                if self._login():
+                    resp = self.session.get(
+                        f"{self.base_url}/api/user/stats-explorer/breakdown",
+                        params=params,
+                        timeout=15,
+                    )
+                else:
+                    return None
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            return data.get("rows", [])
+        except Exception as e:
+            print(f"[nug] 获取 channel breakdown 异常: {e}", flush=True)
+            return None
+
     def get_data(self) -> dict | None:
         """Fetch current balance data."""
         if not self._logged_in:
@@ -61,6 +100,9 @@ class NUGApi:
 
 
 _nug_api: NUGApi | None = None
+_last_payload: dict | None = None
+_last_success_at: str | None = None
+_last_error: str | None = None
 
 
 def get_nug_api() -> NUGApi | None:
@@ -83,10 +125,41 @@ def get_nug_api() -> NUGApi | None:
 
 def get_nug_payload() -> dict:
     """Return the dashboard-compatible NUG API payload."""
+    global _last_payload, _last_success_at, _last_error
     nug = get_nug_api()
     if not nug:
-        return {"enabled": False}
+        _last_payload = {"enabled": False}
+        _last_error = None
+        return _last_payload
     data = nug.get_data()
     if data is None:
-        return {"enabled": True, "error": "获取数据失败"}
-    return {"enabled": True, **data}
+        _last_error = "获取数据失败"
+        _last_payload = {"enabled": True, "error": _last_error}
+        return _last_payload
+    _last_error = None
+    _last_success_at = datetime.now(timezone.utc).isoformat()
+    _last_payload = {"enabled": True, **data}
+    return _last_payload
+
+
+def get_nug_status() -> dict:
+    """Return NUG status without logging in or contacting the remote API."""
+    nug_config = load_config().get("nug", {})
+    enabled = bool(nug_config.get("enabled"))
+    if not enabled:
+        status = "disabled"
+    elif _last_error:
+        status = "error"
+    elif _last_payload and "error" not in _last_payload:
+        status = "ok"
+    else:
+        status = "unknown"
+    return {
+        "status": status,
+        "ok": status == "ok",
+        "enabled": enabled,
+        "stale": False,
+        "error": _last_error,
+        "last_success_at": _last_success_at,
+        "details": {},
+    }

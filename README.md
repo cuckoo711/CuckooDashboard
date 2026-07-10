@@ -111,6 +111,7 @@ python desktop.py --port 8080
 | Endpoint | Method | Description |
 |---|---|---|
 | `/api/data` | GET | MiMo usage data + GitHub contributions |
+| `/api/health` | GET | Lightweight cached service health; does not refresh external data |
 | `/api/system` | GET | System hardware info (CPU/GPU/Memory/Disk) |
 | `/api/nug` | GET | Nug status |
 | `/api/media` | GET | Current media info + lyrics |
@@ -149,6 +150,7 @@ Environment variables or `cookies.json`:
 │   ├── cache.py          # Small cache primitives
 │   ├── config.py         # Local private config loading
 │   ├── github_service.py # GitHub heatmap fetch/cache (estimated counts)
+│   ├── health_service.py # Lightweight service health aggregation
 │   ├── local_platform_service.py # Local MiMo-compatible platform clients
 │   ├── media_service.py  # SMTC media state and Netease lyrics
 │   ├── mimo_service.py   # MiMo API access and dashboard aggregation

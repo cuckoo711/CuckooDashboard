@@ -12,22 +12,25 @@ import time
 
 import psutil
 
+_last_success_at: float | None = None
+_last_error: str | None = None
 
-def get_system_info() -> dict:
+
+def _collect_system_info() -> dict:
     """获取系统硬件信息（双层缓存：静态5分钟，动态1秒）"""
     now = time.time()
 
     # ── 动态缓存（1秒）──
-    if not hasattr(get_system_info, "_dyn_cache"):
-        get_system_info._dyn_cache = {"data": None, "ts": 0}
-    dyn = get_system_info._dyn_cache
+    if not hasattr(_collect_system_info, "_dyn_cache"):
+        _collect_system_info._dyn_cache = {"data": None, "ts": 0}
+    dyn = _collect_system_info._dyn_cache
     if dyn["data"] and (now - dyn["ts"]) < 1:
         return dyn["data"]
 
     # ── 静态缓存（5分钟）：CPU型号、内存频率、GPU名称/显存、磁盘型号 ──
-    if not hasattr(get_system_info, "_static"):
-        get_system_info._static = {"data": None, "ts": 0}
-    static = get_system_info._static
+    if not hasattr(_collect_system_info, "_static"):
+        _collect_system_info._static = {"data": None, "ts": 0}
+    static = _collect_system_info._static
     need_static = (static["data"] is None) or (now - static["ts"]) > 300
 
     if need_static:
@@ -89,13 +92,13 @@ def get_system_info() -> dict:
 
     # 网络速率
     net = psutil.net_io_counters()
-    if not hasattr(get_system_info, "_net_prev"):
-        get_system_info._net_prev = {"sent": net.bytes_sent, "recv": net.bytes_recv, "ts": now}
-    np = get_system_info._net_prev
+    if not hasattr(_collect_system_info, "_net_prev"):
+        _collect_system_info._net_prev = {"sent": net.bytes_sent, "recv": net.bytes_recv, "ts": now}
+    np = _collect_system_info._net_prev
     dt = now - np["ts"]
     rate_up = max(0, (net.bytes_sent - np["sent"]) / dt) if dt > 0 else 0
     rate_down = max(0, (net.bytes_recv - np["recv"]) / dt) if dt > 0 else 0
-    get_system_info._net_prev = {"sent": net.bytes_sent, "recv": net.bytes_recv, "ts": now}
+    _collect_system_info._net_prev = {"sent": net.bytes_sent, "recv": net.bytes_recv, "ts": now}
 
     # 刷新 GPU 利用率 + 磁盘用量 + CPU频率（一次 PowerShell 调用）
     _refresh_dynamic(s["gpus"], s["disks"])
@@ -143,6 +146,38 @@ def get_system_info() -> dict:
     dyn["data"] = data
     dyn["ts"] = now
     return data
+
+
+def get_system_info() -> dict:
+    """Collect system metrics and record the latest service status."""
+    global _last_success_at, _last_error
+    try:
+        data = _collect_system_info()
+        _last_success_at = time.time()
+        _last_error = None
+        return data
+    except Exception as e:
+        _last_error = str(e)
+        raise
+
+
+def get_system_status() -> dict:
+    """Return system collector status without triggering a collection."""
+    if _last_error:
+        status = "error"
+    elif _last_success_at:
+        status = "ok"
+    else:
+        status = "unknown"
+    return {
+        "status": status,
+        "ok": status == "ok",
+        "enabled": True,
+        "stale": False,
+        "error": _last_error,
+        "last_success_at": _last_success_at,
+        "details": {},
+    }
 
 
 def _run_ps(script: str, timeout=8) -> str:

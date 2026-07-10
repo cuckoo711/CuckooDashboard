@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 
 import requests as _requests
@@ -643,6 +644,32 @@ def set_current_song_id(song_id_value) -> tuple[dict, int]:
             _lyrics_cache.pop(old_key, None)
     print(f"[media] manually set song_id={song_id} for: {title}", flush=True)
     return get_media_info(), 200
+
+
+def get_media_status() -> dict:
+    """Return SMTC worker status without starting or contacting the worker."""
+    with _smtc_lock:
+        last_update = _smtc_last_update
+        media_state = _smtc_result.get("status", "idle")
+    age = time.time() - last_update if last_update else None
+    stale = bool(_smtc_started and age is not None and age > 15)
+    if not _smtc_started:
+        status = "unknown"
+    elif stale:
+        status = "stale"
+    elif last_update:
+        status = "ok"
+    else:
+        status = "unknown"
+    return {
+        "status": status,
+        "ok": status == "ok",
+        "enabled": True,
+        "stale": stale,
+        "error": None,
+        "last_success_at": last_update or None,
+        "details": {"media_state": media_state, "worker_started": _smtc_started},
+    }
 
 
 def load_lyric_offset() -> float:

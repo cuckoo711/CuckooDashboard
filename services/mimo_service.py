@@ -18,6 +18,9 @@ CACHE_TTL = 55  # 缓存55秒（前端60秒刷新）
 _mimo_cache = TTLCache(CACHE_TTL)
 _mimo_cookie_valid = None  # None=未检测, True=有效, False=过期
 _mimo_cookie_last_check = 0  # 上次检测时间戳
+_last_result: dict | None = None
+_last_success_at: str | None = None
+_last_error: str | None = None
 
 
 def get_mimo_api() -> MiMoAPI | None:
@@ -102,6 +105,7 @@ def _calculate_mimo_in_miss(daily_data: dict) -> int:
 
 def fetch_all_data() -> dict:
     """获取所有 MiMo 数据（带缓存）。"""
+    global _last_result, _last_success_at, _last_error
     cached = _mimo_cache.get()
     if cached:
         return cached
@@ -110,7 +114,9 @@ def fetch_all_data() -> dict:
         api = get_mimo_api()
         if api is None:
             # Cookie 过期，返回最小数据 + 过期标记
-            return _mimo_expired_payload()
+            _last_result = _mimo_expired_payload()
+            _last_error = "MiMo Cookie unavailable or expired"
+            return _last_result
 
         # 获取按天明细（本月）- 先获取以避免 session 状态问题
         # 注意：MiMo 平台按 UTC（世界时）分组统计每日用量，
@@ -150,12 +156,36 @@ def fetch_all_data() -> dict:
             "mimo_inMiss": mimo_in_miss,
         }
 
+        _last_result = result
+        _last_success_at = result["timestamp"]
+        _last_error = None
         return _mimo_cache.set(result)
 
     except Exception as e:
         traceback.print_exc()
-        return {
+        _last_error = str(e)
+        _last_result = {
             "success": False,
-            "error": str(e),
+            "error": _last_error,
             "timestamp": datetime.now().isoformat(),
         }
+        return _last_result
+
+
+def get_mimo_status() -> dict:
+    """Return the latest MiMo status without contacting the remote API."""
+    if _last_result and _last_result.get("success"):
+        status = "ok"
+    elif _last_error or _mimo_cookie_valid is False:
+        status = "error"
+    else:
+        status = "unknown"
+    return {
+        "status": status,
+        "ok": status == "ok",
+        "enabled": True,
+        "stale": False,
+        "error": _last_error,
+        "last_success_at": _last_success_at,
+        "details": {"cookie_checked": _mimo_cookie_valid is not None},
+    }

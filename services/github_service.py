@@ -19,6 +19,7 @@ GITHUB_DISK_CACHE_TTL = 86400
 
 _cache = TTLCache(GITHUB_CACHE_TTL)
 _last_error: str | None = None
+_last_success_at: float | None = None
 
 
 def _github_payload(contributions: dict, *, stale: bool = False, error: str | None = None) -> dict:
@@ -99,7 +100,7 @@ def _fetch_from_github() -> dict:
 
 def get_github_data() -> dict:
     """Return GitHub heatmap data plus status fields."""
-    global _last_error
+    global _last_error, _last_success_at
 
     cached = _cache.get()
     if cached:
@@ -108,6 +109,7 @@ def get_github_data() -> dict:
     disk_fresh = _read_disk_cache(max_age=GITHUB_DISK_CACHE_TTL)
     if disk_fresh is not None:
         _cache.set(disk_fresh)
+        _last_success_at = time.time()
         print(f"GitHub: 从磁盘缓存恢复 {len(disk_fresh)} 天数据", flush=True)
         return _github_payload(disk_fresh)
 
@@ -116,6 +118,7 @@ def get_github_data() -> dict:
             contributions = _fetch_from_github()
             print(f"GitHub: fetched {len(contributions)} days of contributions", flush=True)
             _last_error = None
+            _last_success_at = time.time()
             _cache.set(contributions)
             _write_disk_cache(contributions)
             return _github_payload(contributions)
@@ -130,6 +133,33 @@ def get_github_data() -> dict:
     if stale is None:
         stale = _read_disk_cache(max_age=None)
     return _github_payload(stale or {}, stale=bool(stale), error=_last_error)
+
+
+def get_github_status() -> dict:
+    """Return cached GitHub status without performing network requests."""
+    has_data = isinstance(_cache.data, dict) and bool(_cache.data)
+    cache_age = time.time() - _cache.ts if _cache.ts else None
+    stale = bool(has_data and cache_age is not None and cache_age >= GITHUB_CACHE_TTL)
+    if _last_error and has_data:
+        status = "stale"
+        stale = True
+    elif _last_error:
+        status = "error"
+    elif has_data:
+        status = "stale" if stale else "ok"
+    elif GITHUB_DISK_CACHE.exists():
+        status = "unknown"
+    else:
+        status = "unknown"
+    return {
+        "status": status,
+        "ok": status == "ok",
+        "enabled": True,
+        "stale": stale,
+        "error": _last_error,
+        "last_success_at": _last_success_at,
+        "details": {"estimated": True, "cached_days": len(_cache.data or {})},
+    }
 
 
 def fetch_github_contributions() -> dict:

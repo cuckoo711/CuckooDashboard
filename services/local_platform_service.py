@@ -130,6 +130,9 @@ class LocalMimoAPI:
 
 
 _local_apis: list[LocalMimoAPI] | None = None
+_last_aggregate_success_at: float | None = None
+_last_aggregate_error: str | None = None
+_last_available_count: int | None = None
 
 
 def get_local_apis() -> list[LocalMimoAPI]:
@@ -176,20 +179,58 @@ def empty_local_usage() -> dict:
 
 def aggregate_local_usage() -> dict | None:
     """获取所有本地平台今日使用量并聚合；无可用数据时返回 None。"""
+    global _last_aggregate_success_at, _last_aggregate_error, _last_available_count
     local_usage = empty_local_usage()
-    has_local = False
-    for api in get_local_apis():
-        today = api.get_today_usage()
-        if today:
-            has_local = True
-            local_usage["requestCount"] += today.get("requestCount", 0)
-            # 本地平台: totalTokens = in + out + cacheRead
-            local_usage["totalInputTokens"] += today.get("totalInputTokens", 0)
-            local_usage["totalOutputTokens"] += today.get("totalOutputTokens", 0)
-            local_usage["totalCacheReadTokens"] += today.get("totalCacheReadTokens", 0)
-            local_usage["totalTokens"] += today.get("totalTokens", 0)
-            local_usage["totalReasoningTokens"] += today.get("totalReasoningTokens", 0)
-            local_usage["totalCost"] += today.get("totalCost", 0)
-            local_usage["errorCount"] += today.get("errorCount", 0)
-            local_usage["meterUsage"] += today.get("meterUsage", 0)
-    return local_usage if has_local else None
+    available_count = 0
+    try:
+        for api in get_local_apis():
+            today = api.get_today_usage()
+            if today:
+                available_count += 1
+                local_usage["requestCount"] += today.get("requestCount", 0)
+                # 本地平台: totalTokens = in + out + cacheRead
+                local_usage["totalInputTokens"] += today.get("totalInputTokens", 0)
+                local_usage["totalOutputTokens"] += today.get("totalOutputTokens", 0)
+                local_usage["totalCacheReadTokens"] += today.get("totalCacheReadTokens", 0)
+                local_usage["totalTokens"] += today.get("totalTokens", 0)
+                local_usage["totalReasoningTokens"] += today.get("totalReasoningTokens", 0)
+                local_usage["totalCost"] += today.get("totalCost", 0)
+                local_usage["errorCount"] += today.get("errorCount", 0)
+                local_usage["meterUsage"] += today.get("meterUsage", 0)
+        _last_available_count = available_count
+        _last_aggregate_error = None if available_count else "未获取到本地平台数据"
+        if available_count:
+            _last_aggregate_success_at = time.time()
+            return local_usage
+        return None
+    except Exception as e:
+        _last_available_count = 0
+        _last_aggregate_error = str(e)
+        return None
+
+
+def get_local_platform_status() -> dict:
+    """Return local platform status without contacting configured platforms."""
+    lp = load_config().get("local_platforms", {})
+    enabled = bool(lp.get("enabled"))
+    configured = len(lp.get("urls", []) or []) if enabled else 0
+    if not enabled:
+        status = "disabled"
+    elif _last_available_count is None:
+        status = "unknown"
+    elif _last_available_count > 0:
+        status = "ok"
+    else:
+        status = "error"
+    return {
+        "status": status,
+        "ok": status == "ok",
+        "enabled": enabled,
+        "stale": False,
+        "error": _last_aggregate_error,
+        "last_success_at": _last_aggregate_success_at,
+        "details": {
+            "configured": configured,
+            "available": _last_available_count or 0,
+        },
+    }

@@ -31,6 +31,7 @@ except ImportError:
 
 from services.config import load_config
 from services.github_service import get_github_data
+from services.health_service import get_health_snapshot
 from services.media_service import (
     get_media_info,
     load_lyric_offset,
@@ -173,6 +174,14 @@ def _ws_broadcaster():
                         _ws_broadcast({"type": "nug", "data": get_nug_payload()})
                     except Exception as e:
                         print(f"[ws] nug broadcast error: {e}", flush=True)
+                    try:
+                        from services.nug_service import get_nug_api
+                        _nug = get_nug_api()
+                        if _nug:
+                            _ch_rows = _nug.get_channel_breakdown(days=7)
+                            _ws_broadcast({"type": "nug_channels", "data": {"enabled": True, "rows": _ch_rows or []}})
+                    except Exception as e:
+                        print(f"[ws] nug_channels broadcast error: {e}", flush=True)
         except Exception as e:
             print(f"[ws] broadcaster error: {e}", flush=True)
         # 精确计时：扣除执行耗时，保证 1 秒间隔
@@ -285,6 +294,12 @@ def api_data():
     return jsonify(data)
 
 
+@app.route("/api/health")
+def api_health():
+    """返回轻量服务健康摘要，不主动刷新外部数据。"""
+    return jsonify(get_health_snapshot())
+
+
 # ============================================================
 # SMTC 媒体信息 + 网易云歌词
 # ============================================================
@@ -348,6 +363,19 @@ def api_system():
 def api_nug():
     """返回 NUG 平台余额和用量"""
     return jsonify(get_nug_payload())
+
+
+@app.route("/api/nug/channels")
+def api_nug_channels():
+    """返回 NUG 按 channel 分组的用量明细"""
+    from services.nug_service import get_nug_api
+    nug = get_nug_api()
+    if not nug:
+        return jsonify({"enabled": False, "rows": []})
+    rows = nug.get_channel_breakdown(days=7)
+    if rows is None:
+        return jsonify({"enabled": True, "rows": []})
+    return jsonify({"enabled": True, "rows": rows})
 
 
 def main():
