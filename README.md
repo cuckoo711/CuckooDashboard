@@ -152,6 +152,7 @@ Environment variables or `cookies.json`:
 │   ├── local_platform_service.py # Local MiMo-compatible platform clients
 │   ├── mimo_service.py   # MiMo API access and dashboard aggregation
 │   ├── nug_service.py    # NUG balance API client
+│   ├── system_service.py # System hardware and runtime metrics
 │   └── theme.py          # Theme metadata and persistence
 ├── static/
 │   └── dashboard.html    # Single-file dashboard (HTML/CSS/JS)
