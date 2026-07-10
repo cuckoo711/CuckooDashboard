@@ -87,23 +87,23 @@ python mimo_usage.py --json                   # JSON output
 ### 2. Start the Dashboard
 
 ```bash
-python dashboard.py
+python run_dashboard.py
 # Open http://localhost:5000 in your browser
 ```
 
 ```bash
 # Custom port and settings
-python dashboard.py --port 8080 --host 0.0.0.0
-python dashboard.py --dev   # Debug mode
+python run_dashboard.py --port 8080 --host 0.0.0.0
+python run_dashboard.py --dev   # Debug mode
 ```
 
 ### 3. Desktop App (optional)
 
 ```bash
-python desktop.py
+python run_desktop.py
 # Native window, no browser needed
 
-python desktop.py --port 8080
+python run_desktop.py --port 8080
 ```
 
 ## API Endpoints
@@ -141,35 +141,43 @@ Environment variables or `cookies.json`:
 
 ```
 .
-├── dashboard.py          # Flask app, routes, and WebSocket orchestration
-├── desktop.py            # PyWebView native window wrapper
-├── mimo_usage.py         # MiMo login & CLI tool
-├── smtc_worker.py        # Windows SMTC media info worker
+├── run_dashboard.py      # Entry point: start web dashboard
+├── run_desktop.py        # Entry point: start native desktop app
 ├── requirements.txt      # Python dependencies
-├── services/
-│   ├── cache.py          # Small cache primitives
-│   ├── config.py         # Local private config loading
-│   ├── github_service.py # GitHub heatmap fetch/cache (estimated counts)
-│   ├── health_service.py # Lightweight service health aggregation
-│   ├── local_platform_service.py # Local MiMo-compatible platform clients
-│   ├── media_service.py  # SMTC media state and Netease lyrics
-│   ├── mimo_service.py   # MiMo API access and dashboard aggregation
-│   ├── nug_service.py    # NUG balance API client
-│   ├── player_service.py # Windows SMTC playback controls
-│   ├── system_service.py # System hardware and runtime metrics
-│   └── theme.py          # Theme metadata and persistence
-├── static/
-│   ├── dashboard.html    # Dashboard HTML skeleton
-│   ├── dashboard.css     # Dashboard styles
-│   └── dashboard.js      # Dashboard client-side logic
-├── tests/
-│   └── test_lyrics.py    # Lyrics parsing unit tests
+├── config.example.json   # Configuration template
+├── src/
+│   ├── dashboard.py      # Flask app, routes, and WebSocket orchestration
+│   ├── desktop.py        # PyWebView native window wrapper
+│   ├── mimo_usage.py     # MiMo login & CLI tool
+│   ├── smtc_worker.py    # Windows SMTC media info worker
+│   ├── services/
+│   │   ├── cache.py          # Small cache primitives
+│   │   ├── config.py         # Config + path constants (DATA_DIR, SRC_DIR)
+│   │   ├── github_service.py # GitHub heatmap fetch/cache
+│   │   ├── health_service.py # Service health aggregation
+│   │   ├── local_platform_service.py # Local platform clients
+│   │   ├── media_service.py  # SMTC media state and Netease lyrics
+│   │   ├── mimo_service.py   # MiMo API access and data aggregation
+│   │   ├── nug_service.py    # NUG balance API client
+│   │   ├── player_service.py # Windows SMTC playback controls
+│   │   ├── system_service.py # System hardware and runtime metrics
+│   │   └── theme.py          # Theme metadata and persistence
+│   ├── static/
+│   │   ├── dashboard.html    # Dashboard HTML skeleton
+│   │   ├── dashboard.css     # Dashboard styles
+│   │   └── dashboard.js      # Dashboard client-side logic
+│   └── tests/
+│       └── test_lyrics.py    # Lyrics parsing unit tests
+├── data/                     # Runtime files (git-ignored)
+│   ├── config.json           # Private config (copy from config.example.json)
+│   ├── cookies.json          # MiMo login cookies
+│   └── ...                   # Caches, tokens, offsets
 └── LICENSE
 ```
 
 ## Security
 
-- `config.json`, `cookies.json`, `local_tokens.json`, `github_cache.json`, `display_theme.json`, and `lyric_offset.json` are in `.gitignore` and should stay local-only.
+- The entire `data/` directory is git-ignored and stores all secrets and caches locally.
 - `config.example.json` contains structure only; never copy real credentials into it.
 - Protected POST endpoints reject cross-site requests unless they are same-origin or include `X-Dashboard-Token`.
 - If real passwords, cookies, or tokens were ever committed to Git history, rotate those credentials.

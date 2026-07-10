@@ -1,19 +1,9 @@
 .narrafork/
 .worktrees/
 
-# 敏感文件
-.env
-.env.*
-credentials.*
-cookies.json
-cookies.txt
-config.json
-config.local.json
-local_tokens.json
-github_cache.json
-display_theme.json
-lyric_offset.json
-song_id_overrides.json
+# Runtime data (all local secrets and caches)
+data/*
+!data/.gitkeep
 
 # Python
 __pycache__/

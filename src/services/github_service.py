@@ -12,13 +12,11 @@ from pathlib import Path
 import requests
 
 from services.cache import TTLCache
+from services.config import DATA_DIR
 
-logger = logging.getLogger("cuckoo.github")
-
-BASE_DIR = Path(__file__).resolve().parent.parent
 GITHUB_USER = "cuckoo711"
 GITHUB_CACHE_TTL = 600
-GITHUB_DISK_CACHE = BASE_DIR / "github_cache.json"
+GITHUB_DISK_CACHE = DATA_DIR / "github_cache.json"
 GITHUB_DISK_CACHE_TTL = 86400
 
 _cache = TTLCache(GITHUB_CACHE_TTL)

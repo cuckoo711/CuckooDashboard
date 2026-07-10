@@ -11,12 +11,9 @@ from pathlib import Path
 
 import requests
 
-from services.config import load_config
+from services.config import load_config, DATA_DIR
 
-logger = logging.getLogger("cuckoo.local")
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-LOCAL_TOKEN_CACHE = BASE_DIR / "local_tokens.json"
+LOCAL_TOKEN_CACHE = DATA_DIR / "local_tokens.json"
 
 
 class LocalMimoAPI:

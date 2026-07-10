@@ -11,13 +11,11 @@ from pathlib import Path
 
 import requests as _requests
 
-from services.config import load_config
+from services.config import load_config, DATA_DIR, SRC_DIR, PROJECT_ROOT
 
 logger = logging.getLogger("cuckoo.media")
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-
-_SONG_ID_FILE = BASE_DIR / "song_id_overrides.json"
+_SONG_ID_FILE = DATA_DIR / "song_id_overrides.json"
 
 import subprocess as _media_sp
 import threading
@@ -34,8 +32,8 @@ _lyrics_cache_order = []
 _smtc_result = {"status": "idle", "title": "", "artist": "", "progress_ratio": None}
 _smtc_lock = threading.Lock()
 _smtc_last_update = 0.0
-_SMTC_WORKER = str(BASE_DIR / "smtc_worker.py")
-_SMTC_PYTHON = str(BASE_DIR / "venv" / "Scripts" / "python.exe")
+_SMTC_WORKER = str(SRC_DIR / "smtc_worker.py")
+_SMTC_PYTHON = str(PROJECT_ROOT / "venv" / "Scripts" / "python.exe")
 _smtc_started = False
 
 
@@ -610,7 +608,7 @@ def get_media_info() -> dict:
     }
 
 
-_LYRIC_OFFSET_FILE = BASE_DIR / "lyric_offset.json"
+_LYRIC_OFFSET_FILE = DATA_DIR / "lyric_offset.json"
 _LYRIC_OFFSET_DEFAULT = 1.5
 
 

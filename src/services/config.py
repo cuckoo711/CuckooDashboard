@@ -6,8 +6,16 @@ import json
 from pathlib import Path
 from typing import Any
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-CONFIG_FILE = BASE_DIR / "config.json"
+# src/ directory (where source code lives)
+SRC_DIR = Path(__file__).resolve().parent.parent
+
+# Project root (parent of src/)
+PROJECT_ROOT = SRC_DIR.parent
+
+# Runtime data directory
+DATA_DIR = PROJECT_ROOT / "data"
+
+CONFIG_FILE = DATA_DIR / "config.json"
 
 
 def load_config() -> dict[str, Any]:

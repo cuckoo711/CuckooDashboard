@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-THEME_FILE = BASE_DIR / "display_theme.json"
+from services.config import DATA_DIR
+
+THEME_FILE = DATA_DIR / "display_theme.json"
 
 # 每个主题包含 name + 背景配置（bg_type: "image" | "color"）
 THEMES = [

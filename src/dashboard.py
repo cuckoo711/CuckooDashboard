@@ -18,6 +18,7 @@ import os
 import secrets
 import sys
 import time
+from pathlib import Path
 from urllib.parse import urlparse
 
 logging.basicConfig(
@@ -417,7 +418,11 @@ def main():
         port=args.port,
         debug=args.dev,
         use_reloader=args.dev,
-        extra_files=["static/dashboard.html", "static/dashboard.css", "static/dashboard.js"] if args.dev else None,
+        extra_files=[
+            str(Path(__file__).parent / "static" / "dashboard.html"),
+            str(Path(__file__).parent / "static" / "dashboard.css"),
+            str(Path(__file__).parent / "static" / "dashboard.js"),
+        ] if args.dev else None,
     )
 
 
