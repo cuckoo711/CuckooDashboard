@@ -35,6 +35,8 @@ A real-time system monitoring dashboard with MiMo Token Plan tracking, GitHub co
 ### Dashboard Themes
 - Default dark theme
 - Clean mono theme (click the red dot in the top-left corner to toggle)
+- Theme state is persisted by name and synchronized across WebSocket clients
+- Styles are driven by `body[data-theme]` CSS variables; to add a theme, add its backend entry in `_THEMES` and define a matching `body[data-theme="..."]` variable block
 
 ## Screenshots
 
