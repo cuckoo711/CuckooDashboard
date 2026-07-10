@@ -11,11 +11,11 @@ from pathlib import Path
 
 import requests as _requests
 
-from services.config import load_config, DATA_DIR, SRC_DIR, PROJECT_ROOT
+from services.config import load_config, CONFIG_DIR, SRC_DIR, PROJECT_ROOT
 
 logger = logging.getLogger("cuckoo.media")
 
-_SONG_ID_FILE = DATA_DIR / "song_id_overrides.json"
+_SONG_ID_FILE = CONFIG_DIR / "song_id_overrides.json"
 
 import subprocess as _media_sp
 import threading
@@ -608,7 +608,7 @@ def get_media_info() -> dict:
     }
 
 
-_LYRIC_OFFSET_FILE = DATA_DIR / "lyric_offset.json"
+_LYRIC_OFFSET_FILE = CONFIG_DIR / "lyric_offset.json"
 _LYRIC_OFFSET_DEFAULT = 1.5
 
 

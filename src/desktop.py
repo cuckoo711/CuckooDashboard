@@ -104,6 +104,7 @@ def main():
         resizable=True,
         frameless=True,
         text_select=True,
+        on_top=True,
     )
 
     def on_loaded():

@@ -62,7 +62,7 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/131.0.0.0 Safari/537.36"
 )
-COOKIES_FILE = Path(__file__).resolve().parent.parent / "data" / "cookies.json"
+COOKIES_FILE = Path(__file__).resolve().parent.parent / "config" / "cookies.json"
 REQUEST_TIMEOUT = 15
 
 # ============================================================

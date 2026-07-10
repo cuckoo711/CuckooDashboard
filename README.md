@@ -144,43 +144,46 @@ Environment variables or `cookies.json`:
 ├── run_dashboard.py      # Entry point: start web dashboard
 ├── run_desktop.py        # Entry point: start native desktop app
 ├── requirements.txt      # Python dependencies
-├── config.example.json   # Configuration template
+├── config/               # User-editable configuration
+│   ├── config.example.json   # Template (copy to config.json)
+│   ├── config.json           # Private config (git-ignored)
+│   ├── cookies.json          # MiMo login cookies
+│   ├── display_theme.json    # Theme preference
+│   └── lyric_offset.json     # Lyric timing offset
 ├── src/
 │   ├── dashboard.py      # Flask app, routes, and WebSocket orchestration
 │   ├── desktop.py        # PyWebView native window wrapper
 │   ├── mimo_usage.py     # MiMo login & CLI tool
 │   ├── smtc_worker.py    # Windows SMTC media info worker
 │   ├── services/
-│   │   ├── cache.py          # Small cache primitives
-│   │   ├── config.py         # Config + path constants (DATA_DIR, SRC_DIR)
+│   │   ├── config.py         # Config + path constants (CONFIG_DIR, DATA_DIR)
 │   │   ├── github_service.py # GitHub heatmap fetch/cache
 │   │   ├── health_service.py # Service health aggregation
 │   │   ├── local_platform_service.py # Local platform clients
 │   │   ├── media_service.py  # SMTC media state and Netease lyrics
-│   │   ├── mimo_service.py   # MiMo API access and data aggregation
+│   │   ├── mimo_service.py   # MiMo API and data aggregation
 │   │   ├── nug_service.py    # NUG balance API client
 │   │   ├── player_service.py # Windows SMTC playback controls
 │   │   ├── system_service.py # System hardware and runtime metrics
 │   │   └── theme.py          # Theme metadata and persistence
 │   ├── static/
-│   │   ├── dashboard.html    # Dashboard HTML skeleton
-│   │   ├── dashboard.css     # Dashboard styles
-│   │   └── dashboard.js      # Dashboard client-side logic
+│   │   ├── dashboard.html
+│   │   ├── dashboard.css
+│   │   └── dashboard.js
 │   └── tests/
-│       └── test_lyrics.py    # Lyrics parsing unit tests
-├── data/                     # Runtime files (git-ignored)
-│   ├── config.json           # Private config (copy from config.example.json)
-│   ├── cookies.json          # MiMo login cookies
-│   └── ...                   # Caches, tokens, offsets
-└── LICENSE
+│       └── test_lyrics.py
+├── data/                     # Auto-generated caches (git-ignored)
+│   ├── github_cache.json
+│   └── local_tokens.json
+└── venv/
 ```
 
 ## Security
 
-- The entire `data/` directory is git-ignored and stores all secrets and caches locally.
-- `config.example.json` contains structure only; never copy real credentials into it.
+- `config/` stores all user secrets and is git-ignored (except the example template).
+- `data/` stores auto-generated caches and is fully git-ignored.
+- `config/config.example.json` contains structure only; never put real credentials in it.
 - Protected POST endpoints reject cross-site requests unless they are same-origin or include `X-Dashboard-Token`.
-- If real passwords, cookies, or tokens were ever committed to Git history, rotate those credentials.
 
 ## Acknowledgments
 

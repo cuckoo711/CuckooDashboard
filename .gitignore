@@ -1,7 +1,11 @@
 .narrafork/
 .worktrees/
 
-# Runtime data (all local secrets and caches)
+# User config (secrets)
+config/*
+!config/config.example.json
+
+# Runtime cache (auto-generated)
 data/*
 !data/.gitkeep
 

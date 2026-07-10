@@ -12,10 +12,13 @@ SRC_DIR = Path(__file__).resolve().parent.parent
 # Project root (parent of src/)
 PROJECT_ROOT = SRC_DIR.parent
 
-# Runtime data directory
+# User-editable config directory
+CONFIG_DIR = PROJECT_ROOT / "config"
+
+# Runtime cache directory (auto-generated, user should not edit)
 DATA_DIR = PROJECT_ROOT / "data"
 
-CONFIG_FILE = DATA_DIR / "config.json"
+CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
 def load_config() -> dict[str, Any]:
