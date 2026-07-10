@@ -41,6 +41,7 @@ from services.media_service import (
 )
 from services.mimo_service import fetch_all_data, get_mimo_api
 from services.nug_service import get_nug_payload
+from services.player_service import ALLOWED_PLAYER_ACTIONS, control_player
 from services.system_service import get_system_info
 from services.theme import (
     THEMES,
@@ -327,51 +328,13 @@ def api_media_offset():
 # ============================================================
 
 
-def _smtc_control(action: str) -> dict:
-    """通过 Windows SMTC 发送系统级媒体控制指令"""
-    import asyncio
-
-    async def _do():
-        from winrt.windows.media.control import (
-            GlobalSystemMediaTransportControlsSessionManager as MediaManager,
-        )
-        manager = await MediaManager.request_async()
-        session = manager.get_current_session()
-        if not session:
-            return {"ok": False, "error": "no active session"}
-
-        props = await session.try_get_media_properties_async()
-        title = props.title or ""
-
-        if action == "next":
-            ok = await session.try_skip_next_async()
-        elif action == "prev":
-            ok = await session.try_skip_previous_async()
-        elif action == "play":
-            ok = await session.try_play_async()
-        elif action == "pause":
-            ok = await session.try_pause_async()
-        elif action == "toggle":
-            ok = await session.try_toggle_play_pause_async()
-        else:
-            return {"ok": False, "error": "unknown action"}
-
-        return {"ok": ok, "title": title}
-
-    try:
-        return asyncio.run(_do())
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
 @app.route("/api/player/<action>", methods=["POST"])
 def api_player_control(action):
     """播放控制：play/pause/next/prev/toggle（通过 Windows SMTC 系统级指令）"""
     require_post_protection()
-    allowed = {"play", "pause", "next", "prev", "toggle"}
-    if action not in allowed:
+    if action not in ALLOWED_PLAYER_ACTIONS:
         return jsonify({"error": "unknown action"}), 400
-    result = _smtc_control(action)
+    result = control_player(action)
     return jsonify(result), 200 if result.get("ok") else 500
 
 

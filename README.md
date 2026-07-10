@@ -153,6 +153,7 @@ Environment variables or `cookies.json`:
 │   ├── media_service.py  # SMTC media state and Netease lyrics
 │   ├── mimo_service.py   # MiMo API access and dashboard aggregation
 │   ├── nug_service.py    # NUG balance API client
+│   ├── player_service.py # Windows SMTC playback controls
 │   ├── system_service.py # System hardware and runtime metrics
 │   └── theme.py          # Theme metadata and persistence
 ├── static/
