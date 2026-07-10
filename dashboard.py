@@ -41,6 +41,17 @@ except ImportError:
     print("错误: 无法导入 mimo_usage.py，请确保文件存在")
     sys.exit(1)
 
+from services.cache import TTLCache
+from services.config import load_config
+from services.theme import (
+    THEMES,
+    load_theme_index,
+    next_theme_index,
+    save_theme_index,
+    theme_index_by_name,
+    theme_response,
+)
+
 import requests as _requests
 
 app = Flask(__name__, static_folder="static")
@@ -188,28 +199,14 @@ def start_background_threads_once() -> bool:
 GITHUB_USER = "cuckoo711"
 
 # 全局缓存
-_cache = {
-    "data": None,
-    "timestamp": 0,
-}
+CACHE_TTL = 55  # 缓存55秒（前端60秒刷新）
+GITHUB_CACHE_TTL = 600  # GitHub 缓存10分钟
+_mimo_cache = TTLCache(CACHE_TTL)
 _github_cache = {
     "data": None,
     "timestamp": 0,
 }
-CACHE_TTL = 55  # 缓存55秒（前端60秒刷新）
-GITHUB_CACHE_TTL = 600  # GitHub 缓存10分钟
-CONFIG_FILE = Path(__file__).parent / "config.json"
 _DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN") or secrets.token_urlsafe(24)
-
-
-def load_config() -> dict:
-    """加载本地私有配置文件。"""
-    if CONFIG_FILE.exists():
-        try:
-            return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
-    return {}
 
 
 def get_dashboard_token() -> str:
@@ -250,71 +247,11 @@ def require_post_protection():
 # 显示主题管理
 # ============================================================
 
-THEME_FILE = Path(__file__).parent / "display_theme.json"
-
-# 每个主题包含 name + 背景配置（bg_type: "image" | "color"）
-_THEMES = [
-    {
-        "name": "dark",
-        "bg_type": "image",
-        "bg_image": "/static/bg/101b3e01db1548b96ea5413ce9bbe1d8.jpg",
-        "bg_color": "#0a0618",
-    },
-    {
-        "name": "mono",
-        "bg_type": "color",
-        "bg_color": "#f8f8fa",
-    },
-]
-
-
-def _theme_response(idx: int) -> dict:
-    """构建标准的主题 API 响应"""
-    t = _THEMES[idx]
-    return {
-        "theme": t["name"],
-        "index": idx,
-        "themes": [t["name"] for t in _THEMES],
-        "bg": {k: t[k] for k in ("bg_type", "bg_image", "bg_color") if k in t},
-    }
-
-
-def _theme_index_by_name(name: str | None) -> int | None:
-    """根据主题名查找索引。"""
-    for i, theme in enumerate(_THEMES):
-        if theme["name"] == name:
-            return i
-    return None
-
-
-def _load_theme() -> int:
-    """读取当前主题索引；兼容旧的 {"index": 0} 格式。"""
-    try:
-        data = json.loads(THEME_FILE.read_text(encoding="utf-8"))
-        if "theme" in data:
-            idx = _theme_index_by_name(data.get("theme"))
-            if idx is not None:
-                return idx
-        idx = int(data.get("index", 0))
-        if 0 <= idx < len(_THEMES):
-            return idx
-    except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError):
-        pass
-    return 0
-
-
-def _save_theme(index: int):
-    """持久化主题名到磁盘。"""
-    try:
-        THEME_FILE.write_text(json.dumps({"theme": _THEMES[index]["name"]}, ensure_ascii=False), encoding="utf-8")
-    except OSError:
-        pass
-
 
 def _set_theme_response(idx: int) -> dict:
     """保存主题并广播给所有客户端。"""
-    _save_theme(idx)
-    data = _theme_response(idx)
+    save_theme_index(idx)
+    data = theme_response(idx)
     _ws_broadcast({"type": "theme", "data": data})
     return data
 
@@ -323,12 +260,12 @@ def _set_theme_response(idx: int) -> dict:
 def api_theme_get_or_set():
     """GET 返回当前主题；POST 指定主题。"""
     if request.method == "GET":
-        return jsonify(_theme_response(_load_theme()))
+        return jsonify(theme_response(load_theme_index()))
     require_post_protection()
     payload = request.get_json(silent=True) or {}
-    idx = _theme_index_by_name(payload.get("theme"))
+    idx = theme_index_by_name(payload.get("theme"))
     if idx is None:
-        return jsonify({"error": "unknown theme", "themes": [t["name"] for t in _THEMES]}), 400
+        return jsonify({"error": "unknown theme", "themes": [t["name"] for t in THEMES]}), 400
     return jsonify(_set_theme_response(idx))
 
 
@@ -336,7 +273,7 @@ def api_theme_get_or_set():
 def api_theme_next():
     """循环切换到下一个主题。"""
     require_post_protection()
-    idx = (_load_theme() + 1) % len(_THEMES)
+    idx = next_theme_index()
     return jsonify(_set_theme_response(idx))
 
 
@@ -727,9 +664,9 @@ def fetch_github_contributions() -> dict:
 
 def fetch_all_data() -> dict:
     """获取所有数据（带缓存）"""
-    now = time.time()
-    if _cache["data"] and (now - _cache["timestamp"]) < CACHE_TTL:
-        return _cache["data"]
+    cached = _mimo_cache.get()
+    if cached:
+        return cached
 
     try:
         api = get_mimo_api()
@@ -829,9 +766,7 @@ def fetch_all_data() -> dict:
             "mimo_inMiss": mimo_inMiss,
         }
 
-        _cache["data"] = result
-        _cache["timestamp"] = now
-        return result
+        return _mimo_cache.set(result)
 
     except Exception as e:
         import traceback
