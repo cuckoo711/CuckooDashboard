@@ -8,7 +8,6 @@ from services.media_service import (
     _has_extra_junk,
     _is_fake_artist_variant,
     _parse_lrc,
-    _parse_yrc,
     _strip_paren,
 )
 
@@ -43,34 +42,6 @@ class TestParseLrc:
     def test_integer_seconds(self):
         result = _parse_lrc("[00:30]Half")
         assert abs(result[0][0] - 30) < 0.01
-
-
-# ── _parse_yrc ──
-
-
-class TestParseYrc:
-    def test_basic(self):
-        yrc = "[16210,3460](16210,670,0)还(16880,410,0)没"
-        result = _parse_yrc(yrc)
-        assert len(result) == 1
-        assert result[0]["start"] == 16210
-        assert len(result[0]["chars"]) == 2
-        assert result[0]["chars"][0]["text"] == "还"
-        assert result[0]["chars"][0]["start"] == 16210
-        assert result[0]["chars"][0]["dur"] == 670
-
-    def test_skip_json_metadata(self):
-        yrc = '{"t":0,"c":[]}\n[16210,3460](16210,670,0)Test'
-        result = _parse_yrc(yrc)
-        assert len(result) == 1
-
-    def test_empty(self):
-        assert _parse_yrc("") == []
-        assert _parse_yrc(None) == []
-
-    def test_no_header(self):
-        result = _parse_yrc("(16210,670,0)还")
-        assert result == []
 
 
 # ── _strip_paren ──

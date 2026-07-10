@@ -14,11 +14,6 @@
     "username": "",
     "password": ""
   },
-  "netease_api": {
-    "enabled": false,
-    "base_url": "",
-    "cookie": ""
-  },
   "hardware_overrides": {
     "mem_installed_gb": null,
     "gpu_vram_gb": {},
