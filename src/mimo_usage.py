@@ -564,13 +564,13 @@ def _extract_cookie_field(cookie_str: str, name: str) -> str:
 
 def refresh_mimo_cookie(cookie_str: str) -> str | None:
     """
-    用 passToken 刷新 MiMo 平台的 serviceToken。
+    用 passToken 刷新 MiMo 平台的 api-platform_serviceToken。
     返回新的 cookie 字符串，失败返回 None。
 
-    流程（参考 mijiaAPI_V2 + MiMo STS 机制）：
-    1. 先探测获取 loginUrl（包含正确的 callback + sign）
-    2. 用 passToken 访问 serviceLogin（带 callback 参数）
-    3. 跟随 STS 重定向获取新的 api-platform_serviceToken
+    流程：
+    1. 设置 passToken cookie，请求 serviceLogin（platform callback + sid=api-platform）
+    2. 跟随 302 → platform.xiaomimimo.com/sts 重定向
+    3. STS 返回 api-platform_serviceToken cookie
     4. 构建新 cookie 字符串
     """
     pass_token = _extract_cookie_field(cookie_str, "passToken")
@@ -584,55 +584,34 @@ def refresh_mimo_cookie(cookie_str: str) -> str | None:
     session.headers.update({"User-Agent": USER_AGENT})
 
     try:
-        # Step 0: 探测获取 loginUrl（从 401 响应中提取 callback）
-        test_api = MiMoAPI(cookie_str)
-        test_resp = test_api.get_user_profile()
-        login_url = test_resp.get("loginUrl", "")
-
-        if not login_url:
-            print("[MiMo] 无法获取 loginUrl", flush=True)
-            return None
-
-        # 从 loginUrl 中提取 callback 参数
-        parsed = urllib.parse.urlparse(login_url)
-        login_params = urllib.parse.parse_qs(parsed.query)
-        callback = login_params.get("callback", [""])[0]
-
-        if not callback:
-            print("[MiMo] loginUrl 中无 callback", flush=True)
-            return None
-
-        # Step 1: 设置 passToken cookie，请求 serviceLogin（带 callback）
+        # 设置 passToken cookie
         session.cookies.set("passToken", pass_token, domain="xiaomi.com")
         session.cookies.set("userId", user_id, domain="xiaomi.com")
 
-        params = {
-            "callback": callback,
-            "sid": MIMO_LOGIN_SID,
-            "_json": "true",
-            "_group": "DEFAULT",
-        }
+        # Step 1: serviceLogin，使用 platform callback + sid=api-platform
         resp = session.get(
             "https://account.xiaomi.com/pass/serviceLogin",
-            params=params,
+            params={
+                "callback": MIMO_LOGIN_CALLBACK,
+                "sid": MIMO_LOGIN_SID,
+                "_group": "DEFAULT",
+            },
             timeout=REQUEST_TIMEOUT,
+            allow_redirects=False,
         )
 
-        text = resp.text.replace("&&&START&&&", "").strip()
-        data = json.loads(text)
-
-        if data.get("code") != 0:
-            print(f"[MiMo] passToken 刷新失败 (code={data.get('code')}): {data.get('desc', '')}", flush=True)
+        if resp.status_code not in (302, 303):
+            print(f"[MiMo] serviceLogin 返回 {resp.status_code}，期望 302/303", flush=True)
             return None
 
-        location = data.get("location", "")
-        if not location:
-            print("[MiMo] passToken 刷新失败: 无 location", flush=True)
+        sts_url = resp.headers.get("location", "")
+        if not sts_url:
+            print("[MiMo] serviceLogin 无 location", flush=True)
             return None
 
-        # Step 2: 跟随 location → STS 重定向获取新 serviceToken
+        # Step 2: 跟随 STS 重定向，获取 api-platform_serviceToken
         redirect_cookies = {}
-        url = location
+        url = sts_url
         for _ in range(15):
             resp = session.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=False)
             new_cookies = parse_set_cookies(resp.headers)
@@ -641,8 +620,10 @@ def refresh_mimo_cookie(cookie_str: str) -> str | None:
 
             redirect_url = resp.headers.get("location")
             if redirect_url and resp.status_code in (301, 302, 303, 307):
-                url = redirect_url if redirect_url.startswith("http") else \
-                    f"https://account.xiaomi.com{redirect_url}"
+                if redirect_url.startswith("/"):
+                    parsed_url = urllib.parse.urlparse(url)
+                    redirect_url = f"{parsed_url.scheme}://{parsed_url.netloc}{redirect_url}"
+                url = redirect_url
             else:
                 break
 
@@ -650,8 +631,8 @@ def refresh_mimo_cookie(cookie_str: str) -> str | None:
         all_cookies = {**session.cookies.get_dict(), **redirect_cookies}
         new_cookie = build_platform_cookies(redirect_cookies, all_cookies)
 
-        if "api-platform_serviceToken" not in new_cookie and "serviceToken" not in new_cookie:
-            print("[MiMo] 刷新后未获取到 serviceToken", flush=True)
+        if "api-platform_serviceToken" not in new_cookie:
+            print("[MiMo] 刷新后未获取到 api-platform_serviceToken", flush=True)
             return None
 
         print("[MiMo] Cookie 刷新成功 [OK]", flush=True)

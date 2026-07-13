@@ -13,7 +13,8 @@ from pathlib import Path
 
 import requests as _requests
 
-from services.config import CONFIG_DIR, SRC_DIR, PROJECT_ROOT
+from core.config import CONFIG_DIR, SRC_DIR, PROJECT_ROOT
+from core.proc import popen_hidden
 
 logger = logging.getLogger("cuckoo.media")
 
@@ -35,7 +36,7 @@ def _smtc_reader_loop():
     while True:
         proc = None
         try:
-            proc = _media_sp.Popen(
+            proc = popen_hidden(
                 [_SMTC_PYTHON, _SMTC_WORKER],
                 stdout=_media_sp.PIPE, stderr=_media_sp.DEVNULL,
                 bufsize=1,
@@ -408,23 +409,17 @@ def get_media_info() -> dict:
 # Lyric Offset
 # ============================================================
 
-_LYRIC_OFFSET_FILE = CONFIG_DIR / "lyric_offset.json"
 _LYRIC_OFFSET_DEFAULT = 1.5
 
 
 def _load_lyric_offset() -> float:
-    try:
-        data = json.loads(_LYRIC_OFFSET_FILE.read_text(encoding="utf-8"))
-        return float(data.get("offset", _LYRIC_OFFSET_DEFAULT))
-    except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError):
-        return _LYRIC_OFFSET_DEFAULT
+    from core.config import load_config as _lc
+    return float(_lc().get("lyric_offset", _LYRIC_OFFSET_DEFAULT))
 
 
 def _save_lyric_offset(val: float):
-    try:
-        _LYRIC_OFFSET_FILE.write_text(json.dumps({"offset": val}), encoding="utf-8")
-    except OSError:
-        pass
+    from core.config import set_config_value
+    set_config_value("lyric_offset", val)
 
 
 # ============================================================

@@ -7,6 +7,8 @@ MiMo Usage Desktop App
     python desktop.py              # 默认端口 5000
     python desktop.py --port 8080  # 指定端口
     python desktop.py --dev        # 开发模式（显示控制台）
+    python desktop.py --install    # 注册开机自启
+    python desktop.py --uninstall  # 取消开机自启
 """
 
 import argparse
@@ -16,11 +18,20 @@ import socket
 import sys
 import threading
 import time
+from pathlib import Path
 
 import webview
 
 # 导入Flask应用
-from dashboard import app, get_mimo_api, start_background_threads_once
+from dashboard import app, start_background_threads_once
+from core.monitor import load_target_monitor
+from providers.mimo.api import get_mimo_api
+
+logger = logging.getLogger(__name__)
+
+APP_NAME = "MiMoUsageDashboard"
+SCRIPT_PATH = Path(__file__).resolve().parent.parent / "run_desktop.py"
+PYTHONW = Path(__file__).resolve().parent.parent / "venv" / "Scripts" / "pythonw.exe"
 
 
 def enable_dpi_awareness():
@@ -48,14 +59,50 @@ def wait_for_server(host: str, port: int, timeout: float = 5.0) -> bool:
 
 def start_flask(port: int, debug: bool = False):
     """在后台线程启动Flask服务器"""
-    app.run(host='127.0.0.1', port=port, debug=debug, use_reloader=False)
+    app.run(host='0.0.0.0', port=port, debug=debug, use_reloader=False)
+
+
+def install_autostart():
+    """写入注册表实现开机自启"""
+    import winreg
+    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                         r"Software\Microsoft\Windows\CurrentVersion\Run",
+                         0, winreg.KEY_SET_VALUE)
+    cmd = f'"{PYTHONW}" "{SCRIPT_PATH}"'
+    winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, cmd)
+    winreg.CloseKey(key)
+    print(f"[OK] 已注册开机自启: {APP_NAME}")
+    print(f"     命令: {cmd}")
+
+
+def uninstall_autostart():
+    """删除注册表开机自启"""
+    import winreg
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"Software\Microsoft\Windows\CurrentVersion\Run",
+                             0, winreg.KEY_SET_VALUE)
+        winreg.DeleteValue(key, APP_NAME)
+        winreg.CloseKey(key)
+        print(f"[OK] 已取消开机自启: {APP_NAME}")
+    except FileNotFoundError:
+        print(f"[INFO] 未找到自启项: {APP_NAME}")
 
 
 def main():
     parser = argparse.ArgumentParser(description='MiMo Usage Desktop App')
     parser.add_argument('--port', type=int, default=5000, help='服务器端口 (默认: 5000)')
     parser.add_argument('--dev', action='store_true', help='开发模式 (显示Flask日志)')
+    parser.add_argument('--install', action='store_true', help='注册开机自启后退出')
+    parser.add_argument('--uninstall', action='store_true', help='取消开机自启后退出')
     args = parser.parse_args()
+
+    if args.install:
+        install_autostart()
+        return
+    if args.uninstall:
+        uninstall_autostart()
+        return
 
     # Windows DPI 设置
     enable_dpi_awareness()
@@ -64,6 +111,14 @@ def main():
     if not args.dev:
         log = logging.getLogger('werkzeug')
         log.setLevel(logging.ERROR)
+
+    # 检测目标显示器
+    monitor = load_target_monitor()
+    if monitor is None:
+        print("[EXIT] 目标显示器未找到，自动退出")
+        sys.exit(0)
+    win_x, win_y = monitor['left'], monitor['top']
+    print(f"[OK] 找到目标显示器: {monitor['name']} ({monitor['width']}x{monitor['height']}) at ({win_x},{win_y})")
 
     # MiMo Cookie 仅影响 MiMo 卡片，不应阻塞桌面看板启动
     try:
@@ -99,12 +154,15 @@ def main():
     window = webview.create_window(
         title='MiMo Usage Dashboard',
         url=url,
-        width=960,
-        height=640,
+        x=win_x,
+        y=win_y,
+        width=monitor['width'],
+        height=monitor['height'],
         resizable=True,
         frameless=True,
         text_select=True,
         on_top=True,
+        fullscreen=True,
     )
 
     def on_loaded():

@@ -188,13 +188,16 @@ async def main_loop():
     manager = await MediaManager.request_async()
     while True:
         try:
-            # 优先尝试 YesPlayMusic 本地 API
+            # 始终从 SMTC 获取真实播放状态（playing/paused/idle）
+            smtc_info = await get_smtc_info(manager)
+
+            # 优先尝试 YesPlayMusic 本地 API（更精确的 position + duration）
             ypm = _get_ypm_progress()
 
             if ypm:
-                # API 成功：直接用 position + duration 计算 ratio
+                # API 成功：用 SMTC 的真实状态 + YPM 的精确位置
                 info = {
-                    "status": "playing",
+                    "status": smtc_info["status"],
                     "title": ypm["title"],
                     "artist": ypm["artist"],
                     "progress_ratio": ypm["position"] / ypm["duration"] if ypm["duration"] > 0 else None,
@@ -204,7 +207,7 @@ async def main_loop():
                 }
             else:
                 # fallback: SMTC + UIA
-                info = await get_smtc_info(manager)
+                info = smtc_info
                 ratio = _get_uia_progress_ratio()
                 info["progress_ratio"] = ratio
         except Exception as e:

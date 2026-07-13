@@ -2,12 +2,7 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
-from services.config import CONFIG_DIR
-
-THEME_FILE = CONFIG_DIR / "display_theme.json"
+from core.config import load_config, set_config_value
 
 # 每个主题包含 name + 背景配置（bg_type: "image" | "color"）
 THEMES = [
@@ -45,30 +40,19 @@ def theme_index_by_name(name: str | None) -> int | None:
 
 
 def load_theme_index() -> int:
-    """Load active theme index; compatible with the legacy {\"index\": 0} format."""
-    try:
-        data = json.loads(THEME_FILE.read_text(encoding="utf-8"))
-        if "theme" in data:
-            idx = theme_index_by_name(data.get("theme"))
-            if idx is not None:
-                return idx
-        idx = int(data.get("index", 0))
-        if 0 <= idx < len(THEMES):
+    """Load active theme index from unified config."""
+    config = load_config()
+    name = config.get("theme")
+    if name:
+        idx = theme_index_by_name(name)
+        if idx is not None:
             return idx
-    except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError):
-        pass
     return 0
 
 
 def save_theme_index(index: int):
-    """Persist active theme by stable theme name."""
-    try:
-        THEME_FILE.write_text(
-            json.dumps({"theme": THEMES[index]["name"]}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-    except OSError:
-        pass
+    """Persist active theme to unified config."""
+    set_config_value("theme", THEMES[index]["name"])
 
 
 def next_theme_index() -> int:

@@ -9,13 +9,12 @@ import json
 import os
 import platform
 import re
-import subprocess
-import tempfile
 import time
 
 import psutil
 
-from services.config import load_config
+from core.config import load_config
+from core.proc import run_ps
 
 logger = logging.getLogger("cuckoo.system")
 
@@ -34,6 +33,11 @@ _DEFAULT_VRAM_MAP = {
     "7800 XT": 16 * 1024**3, "7700 XT": 12 * 1024**3,
 }
 _DEFAULT_APU_DEVS = {"13c0", "13e0", "15bf", "1681", "164f", "15e4"}
+
+# ── Async dynamic refresh state ──
+_dynamic_refresh_lock = threading.Lock()
+_dynamic_cpu_freq_mhz: int = 0
+_dynamic_refresh_started = False
 
 
 def _get_overrides() -> dict:
@@ -69,16 +73,70 @@ def _get_cpu_model_override() -> str | None:
     return str(override).strip() if isinstance(override, str) and override.strip() else None
 
 
-def _collect_system_info() -> dict:
-    """获取系统硬件信息（双层缓存：静态5分钟，动态1秒）"""
-    now = time.time()
+def _get_mem_name_override() -> str | None:
+    override = _get_overrides().get("mem_name")
+    return str(override).strip() if isinstance(override, str) and override.strip() else None
 
-    # ── 动态缓存（1秒）──
-    if not hasattr(_collect_system_info, "_dyn_cache"):
-        _collect_system_info._dyn_cache = {"data": None, "ts": 0}
-    dyn = _collect_system_info._dyn_cache
-    if dyn["data"] and (now - dyn["ts"]) < 1:
-        return dyn["data"]
+
+def _get_gpu_model_override() -> str | None:
+    override = _get_overrides().get("gpu_model")
+    return str(override).strip() if isinstance(override, str) and override.strip() else None
+
+
+_SMBIOS_TO_DDR = {20: "DDR2", 21: "DDR2", 22: "DDR2", 24: "DDR4", 25: "DDR4", 26: "DDR5", 34: "DDR5"}
+
+
+def _smbios_to_ddr_name(smbios_type: int) -> str:
+    return _SMBIOS_TO_DDR.get(smbios_type, "DDR")
+
+
+def _async_dynamic_loop():
+    """后台线程：每 2s 异步刷新 GPU 利用率/显存 + 磁盘用量 + CPU实时频率"""
+    global _dynamic_cpu_freq_mhz
+    while True:
+        try:
+            # 读取静态快照中的 gpus / disks 列表（共享引用，直接原地更新）
+            if not hasattr(_collect_system_info, "_static"):
+                time.sleep(2); continue
+            static = _collect_system_info._static
+            s = static.get("data")
+
+            # ── CPU 实时频率：Get-Counter 比 psutil.cpu_freq() 准确 ──
+            try:
+                out = run_ps(r"""
+$c = Get-Counter '\Processor Information(_Total)\Actual Frequency' -ErrorAction Stop
+[math]::Round($c.CounterSamples.CookedValue, 0)
+""", timeout=3)
+                if out:
+                    with _dynamic_refresh_lock:
+                        _dynamic_cpu_freq_mhz = int(out)
+            except Exception:
+                pass
+
+            if s and s.get("gpus") is not None:
+                _refresh_dynamic(s["gpus"], s["disks"])
+            # 磁盘插拔检测（每30秒）
+            if s and s.get("disks") is not None:
+                _check_disk_changes(s["disks"])
+        except Exception as e:
+            logger.error(f"[sys] async dynamic refresh error: {e}")
+        time.sleep(2)
+
+
+def _ensure_dynamic_thread():
+    """启动异步动态刷新线程（仅一次）"""
+    global _dynamic_refresh_started
+    if _dynamic_refresh_started:
+        return
+    _dynamic_refresh_started = True
+    t = threading.Thread(target=_async_dynamic_loop, daemon=True, name="sys-dynamic")
+    t.start()
+    logger.info("[sys] async dynamic refresh thread started (2s interval)")
+
+
+def _collect_system_info() -> dict:
+    """获取系统硬件信息（静态5分钟缓存 + 动态psutil即时采集，GPU/磁盘由异步线程刷新）"""
+    now = time.time()
 
     # ── 静态缓存（5分钟）：CPU型号、内存频率、GPU名称/显存、磁盘型号 ──
     if not hasattr(_collect_system_info, "_static"):
@@ -89,23 +147,37 @@ def _collect_system_info() -> dict:
     if need_static:
         hw = _fetch_static_hardware()
         if hw:
-            # GPU: 应用 VRAM 型号映射修正
+            # GPU: 注册表显存 → VRAM 型号映射兜底 → 手动覆盖
+            gpu_model_override = _get_gpu_model_override()
+            registry_vram = _detect_gpu_vram(hw.get("GPUs", []))
             vram_map = _get_vram_map()
             apu_devs = _get_apu_devs()
             gpus = []
             for g in hw.get("GPUs", []):
                 name = g.get("Name", "")
-                vram = g.get("VRAM", 0) or 0
-                for key, val in vram_map.items():
-                    if key.lower() in name.lower():
-                        vram = val; break
                 pnp = g.get("PNP", "")
+                vram = registry_vram.get(pnp.lower(), 0)
+                if not vram:
+                    vram = g.get("VRAM", 0) or 0
+                if not vram:
+                    for key, val in vram_map.items():
+                        if key.lower() in name.lower():
+                            vram = val; break
                 dm = re.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
                 is_discrete = bool(dm and dm.group(1).lower() not in apu_devs)
+                # 应用 GPU 型号覆盖（仅独显）
+                display_name = gpu_model_override if (gpu_model_override and is_discrete) else name
                 gpus.append({
-                    "name": name, "vram": vram, "util": 0, "pnp": pnp,
+                    "name": display_name, "vram": vram, "util": 0, "pnp": pnp,
                     "vram_used": 0, "is_discrete": is_discrete,
                 })
+
+            # 内存名称：DDR型号 + 空格 + 频率
+            smbios_type = hw.get("MemSmbiosType", 0) or 0
+            mem_freq = hw.get("MemFreq", 0) or 0
+            detected_mem_name = f"{_smbios_to_ddr_name(smbios_type)} {mem_freq}".strip()
+            if detected_mem_name == "DDR":
+                detected_mem_name = hw.get("MemType", "") or "DDR"
 
             # 磁盘: 计算用量
             disks = []
@@ -123,9 +195,10 @@ def _collect_system_info() -> dict:
                 "cpu_freq_max": 0,
                 "cpu_cores_p": hw.get("CpuCoresPhysical", psutil.cpu_count(logical=False)),
                 "cpu_cores_l": hw.get("CpuCores", psutil.cpu_count(logical=True)),
-                "mem_freq": hw.get("MemFreq", 0) or 0,
+                "mem_freq": mem_freq,
                 "mem_type": hw.get("MemType", ""),
-                "mem_installed": _get_mem_installed() or 78.3 * 1024**3,
+                "mem_name": _get_mem_name_override() or detected_mem_name,
+                "mem_installed": _get_mem_installed() or psutil.virtual_memory().total,
                 "gpus": gpus,
                 "disks": disks,
             }
@@ -135,7 +208,7 @@ def _collect_system_info() -> dict:
     s = static["data"]
 
     # ── 动态数据（每次都采集，很快）──
-    cpu_percent = psutil.cpu_percent(interval=0.3)
+    cpu_percent = psutil.cpu_percent(interval=None)
     cpu_freq = psutil.cpu_freq()
     mem = psutil.virtual_memory()
 
@@ -149,12 +222,9 @@ def _collect_system_info() -> dict:
     rate_down = max(0, (net.bytes_recv - np["recv"]) / dt) if dt > 0 else 0
     _collect_system_info._net_prev = {"sent": net.bytes_sent, "recv": net.bytes_recv, "ts": now}
 
-    # 刷新 GPU 利用率 + 磁盘用量 + CPU频率（一次 PowerShell 调用）
-    _refresh_dynamic(s["gpus"], s["disks"])
-    cpu_freq_dynamic = getattr(_refresh_dynamic, "cpu_freq_mhz", 0)
-
-    # 检测磁盘插拔（每30秒一次，独立函数）
-    _check_disk_changes(s["disks"])
+    # GPU 利用率 + 磁盘用量 + CPU频率：由 _async_dynamic_loop 后台刷新，这里直接读快照
+    with _dynamic_refresh_lock:
+        cpu_freq_dynamic = _dynamic_cpu_freq_mhz
 
     uptime_sec = now - psutil.boot_time()
 
@@ -174,6 +244,7 @@ def _collect_system_info() -> dict:
             "percent": mem.percent,
             "freq": s["mem_freq"],
             "type": s["mem_type"],
+            "name": s.get("mem_name", ""),
             "installed": s.get("mem_installed", 0),
         },
         "gpus": s["gpus"],
@@ -192,8 +263,6 @@ def _collect_system_info() -> dict:
         },
     }
 
-    dyn["data"] = data
-    dyn["ts"] = now
     return data
 
 
@@ -214,11 +283,12 @@ def get_system_info() -> dict:
             _last_error = str(e)
             raise
     _ensure_snapshot_thread()
+    _ensure_dynamic_thread()
     return data
 
 
 def _snapshot_loop():
-    """Background thread: collect system metrics every 3 seconds."""
+    """Background thread: collect system metrics every 2 seconds."""
     global _snapshot_data, _last_success_at, _last_error
     while True:
         try:
@@ -229,7 +299,7 @@ def _snapshot_loop():
             _last_error = None
         except Exception as e:
             _last_error = str(e)
-        time.sleep(3)
+        time.sleep(2)
 
 
 def _ensure_snapshot_thread():
@@ -261,30 +331,46 @@ def get_system_status() -> dict:
     }
 
 
-def _run_ps(script: str, timeout=8) -> str:
-    """执行一次 PowerShell，返回 stdout（使用临时脚本文件避免转义问题）"""
-    ps_path = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".ps1", delete=False, encoding="utf-8")
+def _detect_gpu_vram(gpu_list: list[dict]) -> dict[str, int]:
+    """通过注册表 qwMemorySize 获取各 GPU 的正确显存（字节），返回 {pnp_id_lower: vram_bytes}。"""
+    if not gpu_list:
+        return {}
+    out = run_ps(r"""
+$reg = @{}
+try {
+    $entries = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0*" -ErrorAction SilentlyContinue
+    foreach ($e in $entries) {
+        $mdid = $e.MatchingDeviceId
+        $vram = [long]$e.'HardwareInformation.qwMemorySize'
+        if ($mdid -and $vram -gt 0) { $reg[$mdid.ToUpper()] = $vram }
+    }
+} catch {}
+$reg | ConvertTo-Json -Compress
+""", timeout=5)
     try:
-        tmp.write(script)
-        tmp.close()
-        r = subprocess.run(
-            [ps_path, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", tmp.name],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
-        )
-        return r.stdout.strip()
+        raw = json.loads(out) if out else {}
     except Exception:
-        return ""
-    finally:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
+        return {}
+    if not raw:
+        return {}
+    # 匹配：用 PNPDeviceID 的 VEN_xxxx&DEV_xxxxx 前缀与 MatchingDeviceId 比对
+    result = {}
+    for g in gpu_list:
+        pnp = g.get("PNP", "")
+        dm = re.search(r"(VEN_[0-9A-F]{4}&DEV_[0-9A-F]{4})", pnp, re.I)
+        if not dm:
+            continue
+        prefix = dm.group(1).upper()
+        for reg_key, vram_val in raw.items():
+            if prefix in reg_key:
+                result[pnp.lower()] = int(vram_val)
+                break
+    return result
 
 
 def _fetch_static_hardware() -> dict:
     """一次 PowerShell 调用获取所有静态硬件信息"""
-    out = _run_ps(r"""
+    out = run_ps(r"""
 $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
 $mem = Get-CimInstance Win32_PhysicalMemory | Select-Object -First 1
 $gpuList = Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notlike '*Idd*' -and $_.Name -notlike '*Microsoft*' }
@@ -306,6 +392,7 @@ foreach ($pd in $physDisks) {
     CpuCoresPhysical = $cpu.NumberOfCores
     MemFreq = $mem.ConfiguredClockSpeed
     MemType = switch($mem.SMBIOSMemoryType){24{'DDR4'}26{'DDR5'}34{'DDR5'}default{''}}
+    MemSmbiosType = [int]$mem.SMBIOSMemoryType
     GPUs = $gpuArr
     Disks = $diskArr
 } | ConvertTo-Json -Depth 4
@@ -317,120 +404,86 @@ foreach ($pd in $physDisks) {
 
 
 def _refresh_dynamic(gpus: list, disks: list):
-    """一次 PowerShell 调用刷新 GPU 利用率 + 显存占用 + 磁盘用量 + CPU当前频率"""
-    out = _run_ps(r"""
-# GPU 利用率 + 显存
-$engines = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine | Select-Object Name, UtilizationPercentage
-$adapterMem = Get-Counter "\GPU Adapter Memory(*)\Dedicated Usage" -ErrorAction SilentlyContinue
-$engines | ConvertTo-Json -Depth 2
+    """一次 PowerShell 调用刷新 GPU 利用率 + 显存占用"""
+
+    # ── GPU 利用率 + 显存：仅 WMI 查询，不用 Get-Counter（避免通配符展开的 1-3 秒开销）──
+    out = run_ps(r"""
+# GPU 引擎利用率：聚合每个 LUID 的最大利用率（跳过拷贝/视频引擎）
+$engines = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -Property Name, UtilizationPercentage |
+    Where-Object { $_.Name -notmatch 'copy|video|session' }
+$luids = @{}
+foreach ($e in $engines) {
+    if ($e.Name -match 'luid_0x[0-9a-f]+_0x([0-9a-f]+)') {
+        $id = $Matches[1].ToLower()
+        $u = [int]($e.UtilizationPercentage)
+        if ($u -gt ($luids[$id] -as [int])) { $luids[$id] = $u }
+    }
+}
+$luids | ConvertTo-Json -Compress
 Write-Output '---SPLIT1---'
-if ($adapterMem) { $adapterMem.CounterSamples | Select-Object Path, CookedValue | ConvertTo-Json -Depth 2 }
-Write-Output '---SPLIT2---'
-# CPU 当前频率 = MaxClockSpeed * % Processor Performance / 100
-$cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue
-$maxClock = if ($cpu) { $cpu[0].MaxClockSpeed } else { 0 }
-$perf = Get-Counter '\Processor Information(_Total)\% Processor Performance' -ErrorAction SilentlyContinue
-if ($perf) { [math]::Round($maxClock * $perf.CounterSamples.CookedValue / 100, 0) } else { $maxClock }
+# GPU 显存占用：Win32_VideoController.CurrentUsage（字节），排除核显
+$gpus = Get-CimInstance Win32_VideoController -Property PNPDeviceID, CurrentUsage |
+    Where-Object { $_.PNPDeviceID -match 'DEV_' -and $_.Name -notmatch 'Microsoft|Idd' }
+$memMap = @{}
+foreach ($g in $gpus) {
+    if ($g.PNPDeviceID -match 'DEV_([0-9A-Fa-f]{4})') {
+        $memMap[$Matches[1].ToLower()] = [long]($g.CurrentUsage)
+    }
+}
+$memMap | ConvertTo-Json -Compress
 """, timeout=8)
     if not out:
         return
 
     parts1 = out.split("---SPLIT1---")
-    engines_json = parts1[0].strip() if len(parts1) > 0 else ""
-    rest = parts1[1] if len(parts1) > 1 else ""
-    parts2 = rest.split("---SPLIT2---")
-    mem_json = parts2[0].strip()
-    cpu_freq_mhz = 0
-    if len(parts2) > 1:
-        try:
-            cpu_freq_mhz = int(float(parts2[1].strip()))
-        except Exception:
-            pass
-    _refresh_dynamic.cpu_freq_mhz = cpu_freq_mhz
+    util_json = parts1[0].strip() if parts1 else ""
+    mem_json = parts1[1].strip() if len(parts1) > 1 else ""
 
-    # ── GPU 利用率 ──
+    # ── GPU 利用率（已由 PS 聚合为 {luid_suffix: max_util}）──
     luid_util = {}
     try:
-        engines = json.loads(engines_json)
-        if isinstance(engines, dict): engines = [engines]
-        for e in engines:
-            m = re.search(r"luid_0x[0-9a-fA-F]+_0x([0-9a-fA-F]+)", e.get("Name", ""))
-            if m:
-                low = m.group(1).lower()
-                u = e.get("UtilizationPercentage") or 0
-                luid_util[low] = max(luid_util.get(low, 0), u)
+        luid_util = json.loads(util_json)
+        luid_util = {k: int(v) for k, v in luid_util.items()}
     except Exception:
         pass
 
-    luid_vram = {}
+    # ── GPU 显存（Win32_VideoController.CurrentUsage，按 PCI DEV_ID 索引）──
+    dev_vram = {}
     try:
-        mem_data = json.loads(mem_json)
-        if isinstance(mem_data, dict): mem_data = [mem_data]
-        for d in mem_data:
-            m = re.search(r"luid_0x[0-9a-fA-F]+_0x([0-9a-fA-F]+)", d.get("Path", ""))
-            if m:
-                low = m.group(1).lower()
-                luid_vram[low] = luid_vram.get(low, 0) + int(d.get("CookedValue", 0))
+        dev_vram = json.loads(mem_json)
+        dev_vram = {k: int(v) for k, v in dev_vram.items()}
     except Exception:
         pass
 
     _APU_DEVS = {"13c0", "13e0", "15bf", "1681", "164f", "15e4"}
-    sorted_luids = sorted(luid_vram.items(), key=lambda x: -x[1])
-    luid_to_id = {}
-    matched = set()
 
-    # 优先用 VRAM counter 匹配（有显存数据更准确）
-    for low, vram_bytes in sorted_luids:
-        if vram_bytes <= 0: continue
-        target = None
-        for gpu in gpus:
-            if id(gpu) in matched: continue
-            pnp = gpu.get("pnp", "")
-            dm = re.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
-            if dm and dm.group(1).lower() not in _APU_DEVS:
-                target = gpu; break
-        if not target:
-            for gpu in gpus:
-                if id(gpu) not in matched:
-                    target = gpu; break
-        if target:
-            luid_to_id[low] = (id(target), vram_bytes)
-            matched.add(id(target))
+    # ── 匹配：GPU engine LUID 和 Win32_VideoController PCI DEV_ID 是不同的标识符，
+    #    无法直接对应。策略：分别按 VRAM 大小排序，用位置索引匹配。──
 
-    # 回退：VRAM counter 为空时（AMD 常见），用利用率 LUID 直接按顺序匹配
-    if not luid_to_id and luid_util:
-        sorted_util_luids = sorted(luid_util.items(), key=lambda x: -x[1])
-        for low, _ in sorted_util_luids:
-            target = None
-            for gpu in gpus:
-                if id(gpu) in matched: continue
-                pnp = gpu.get("pnp", "")
-                dm = re.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
-                if dm and dm.group(1).lower() not in _APU_DEVS:
-                    target = gpu; break
-            if not target:
-                for gpu in gpus:
-                    if id(gpu) not in matched:
-                        target = gpu; break
-            if target:
-                luid_to_id[low] = (id(target), 0)
-                matched.add(id(target))
-
+    # 收集独显列表（排除 APU）
+    discrete = []
     for gpu in gpus:
-        gpu["util"] = 0
-    for low, util in luid_util.items():
-        if low in luid_to_id:
-            uid, _ = luid_to_id[low]
-            for gpu in gpus:
-                if id(gpu) == uid:
-                    gpu["util"] = max(gpu.get("util", 0), util)
-                    break
-    for low, (uid, vram_bytes) in luid_to_id.items():
-        if vram_bytes > 0:
-            for gpu in gpus:
-                if id(gpu) == uid:
-                    gpu["vram_used"] = vram_bytes
-                    break
+        pnp = gpu.get("pnp", "")
+        dm = re.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
+        if dm and dm.group(1).lower() not in _APU_DEVS:
+            discrete.append(gpu)
+    if not discrete:
+        discrete = list(gpus)
+
+    # 将 LUID 利用率按值降序排列 → 匹配独显（按 VRAM 降序排列）
+    sorted_util = sorted(luid_util.items(), key=lambda x: -x[1])
+    sorted_discrete = sorted(discrete, key=lambda g: -g.get("vram", 0))
+    for i, gpu in enumerate(sorted_discrete):
+        gpu["util"] = int(sorted_util[i][1]) if i < len(sorted_util) else 0
+
+    # 显存占用：按 DEV_ID 匹配独显
+    for gpu in gpus:
+        pnp = gpu.get("pnp", "")
+        dm = re.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
+        if dm:
+            dev_id = dm.group(1).lower()
+            if dev_id in dev_vram:
+                gpu["vram_used"] = dev_vram[dev_id]
 
     # ── 磁盘用量 + 分区明细（psutil 直接读取）──
     try:
@@ -470,7 +523,7 @@ def _check_disk_changes(disks: list):
         return
     _check_disk_changes._last_ts = now
 
-    out = _run_ps(r"""
+    out = run_ps(r"""
 $physDisks = Get-PhysicalDisk | ForEach-Object {
     $pd = $_
     $letters = (Get-Partition -DiskNumber $pd.DeviceId -ErrorAction SilentlyContinue |

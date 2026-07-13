@@ -16,6 +16,7 @@ function updateHealthDots(health) {
         'system': 'sysCard',
         'github': 'ghCard',
         'nug': 'tokenCard',
+        'media': 'playerCard',
     };
     for (var svc in map) {
         var el = document.getElementById('dot-' + svc);
@@ -43,7 +44,7 @@ async function refreshHealth() {
     } catch(e) {}
 }
 refreshHealth();
-setInterval(refreshHealth, 30000);
+setInterval(refreshHealth, 15000);
 
 var DASHBOARD_TOKEN = '';
 try { DASHBOARD_TOKEN = localStorage.getItem('dashboardToken') || ''; } catch(e) {}
@@ -240,7 +241,7 @@ function drawSystem(sys) {
     var freqGHz = c.freq_current >= 1000 ? (c.freq_current / 1000).toFixed(2) : c.freq_current;
     var cpuSub = freqGHz + 'GHz';
 
-    var memLabel = (m.type || '内存') + (m.freq ? ' ' + m.freq : '');
+    var memLabel = m.name || ((m.type || '内存') + (m.freq ? ' ' + m.freq : ''));
     var memTotalGB = m.installed ? (m.installed / 1073741824) : (m.total / 1073741824);
     var memSub = (m.used / 1073741824).toFixed(1) + '/' + memTotalGB.toFixed(1) + 'G';
 
@@ -416,6 +417,8 @@ function handleMimoData(d) {
             var mu=usage.monthUsage;
             drawRing(mu.percent*100,mu.items[0]?mu.items[0].used:0,mu.items[0]?mu.items[0].limit:0);
         }
+        // 按模型用量条形图
+        if(d.tp_usage_detail&&d.tp_usage_detail.length) drawModels(d.tp_usage_detail);
     }
 
     // 余额
@@ -468,7 +471,7 @@ function adjOffset(delta) {
     });
 }
 
-var LYRIC_LINE_H = 30;       // 每行固定高度(px)，需与CSS .lyric-line的height一致
+var LYRIC_LINE_H = 34;       // 每行固定高度(px)，需与CSS .lyric-line的height一致
 var _pendingIdx = -2;        // 待确认的候选索引（用于防抖，过滤UIA测量抖动）
 var _pendingSince = 0;       // 候选索引首次出现的时刻（ms）
 var LYRIC_DEBOUNCE_MS = 300; // 候选索引需要稳定多少毫秒才真正切换
@@ -513,6 +516,8 @@ function drawLyric(data) {
         idleEl.style.display = hasAny ? 'none' : 'block';
         idleEl.textContent = '暂无歌词';
         renderLyricLines();
+        // 首次加载/切歌时强制同步到当前播放位置（暂停时也要定位）
+        updateLyricLine(true);
     } else if (data.position_source === 'api') {
         // YesPlayMusic API 直接返回精确 position，无抖动，每次都校准
         var newPos = data.position || 0;
@@ -638,6 +643,8 @@ function updateYrcHighlight(idx, posMs) {
 }
 
 function updateLyricLine(force) {
+    // 暂停时冻结歌词：不更新位置、不滚动、不刷逐字高亮
+    if (!_mediaPlaying && !force) return;
     var lyricsForLine = _mediaHasYrc ? _mediaLyricsYrc : _mediaLyrics;
     if (!lyricsForLine.length) return;
 
@@ -701,7 +708,7 @@ async function refreshNug() {
         var d = await r.json();
         if (!d.enabled) return;
         if (d.error) { console.error('NUG error:', d.error); return; }
-        document.getElementById('nugBal').textContent = '$' + (d.balance || 0).toFixed(2);
+        document.getElementById('nugBal').textContent = '$' + Number(d.balance || 0).toFixed(2);
     } catch(e) { console.error('NUG refresh error:', e); }
 }
 
@@ -719,7 +726,7 @@ function connectWS(){
     _ws.onopen = function(){
         _wsRetry = 1000;
         if(_wsFallbackTimer){clearInterval(_wsFallbackTimer); _wsFallbackTimer=null;}
-        sendVibeState(); // 同步 Vibe Coding 状态到后端
+        // vibe 状态由后端通过 WS vibe_state 消息主动推送，无需 REST 请求
         console.log('[ws] connected');
     };
     _ws.onmessage = function(ev){
@@ -727,8 +734,16 @@ function connectWS(){
             var msg = JSON.parse(ev.data);
             if(msg.type === 'system') drawSystem(msg.data);
             else if(msg.type === 'media') drawLyric(msg.data);
-            else if(msg.type === 'mimo'){ handleMimoData(msg.data); }
-            else if(msg.type === 'nug'){ if(msg.data.enabled && msg.data.balance!=null) document.getElementById('nugBal').textContent='$'+msg.data.balance.toFixed(2); }
+            else if(msg.type === 'github'){ drawGitHub(msg.data.contributions||{}, msg.data.user||''); }
+            else if(msg.type === 'mimo'){ handleMimoData(msg.data); refreshHealth(); }
+            else if(msg.type === 'vibe_state'){
+                _vibeActive = !!msg.data.active;
+                _vibeSyncedFromServer = true;
+                try { localStorage.setItem('vibeActive', _vibeActive ? '1' : '0'); } catch(e) {}
+                applyVibeUI();
+                // 后端主动推送的即是权威值，无需再回推
+            }
+            else if(msg.type === 'nug'){ if(msg.data.enabled && msg.data.balance!=null) document.getElementById('nugBal').textContent='$'+Number(msg.data.balance).toFixed(2); }
             else if(msg.type === 'nug_channels'){ if(msg.data.enabled) drawNugChannels(msg.data.rows); }
             else if(msg.type === 'theme'){ applyTheme(msg.data); }
         } catch(e){ console.error('[ws] parse error:', e); }
@@ -756,8 +771,9 @@ async function refreshNugChannels(){
 }
 refreshNugChannels(); setInterval(refreshNugChannels, 60000);
 
-/* ── Vibe Coding 状态切换（仅 UI 标记，数据由 WS 统一推送）── */
+/* ── Vibe Coding 状态切换（后端 config 是唯一真值，WS + REST 双通道同步）── */
 var _vibeActive = false;
+var _vibeSyncedFromServer = false;
 
 function applyVibeUI() {
     var toggle = document.getElementById('vibeToggle');
@@ -772,10 +788,18 @@ function applyVibeUI() {
     }
 }
 
+/** 把当前 vibe 状态推送到后端（WS 优先，失败或未就绪时走 REST 兜底）。 */
 function sendVibeState() {
+    var payload = {type: 'vibe', active: _vibeActive};
     if (_ws && _ws.readyState === 1) {
-        _ws.send(JSON.stringify({type: 'vibe', active: _vibeActive}));
+        try { _ws.send(JSON.stringify(payload)); return; } catch(e) { /* fall through */ }
     }
+    // WS 未就绪 → REST 兜底，保证后端 config 一定被更新
+    secureFetch('/api/vibe', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({active: _vibeActive})
+    }).catch(function(e){ console.error('[vibe] REST sync failed:', e); });
 }
 
 function toggleVibe() {
@@ -786,13 +810,28 @@ function toggleVibe() {
     refresh(); // 切换时立即请求一次 mimo 数据
 }
 
+/** 从后端 REST 拉取权威 vibe 状态（作为 WS 兜底，避免依赖 localStorage 缓存）。 */
+function fetchVibeFromServer() {
+    if (_vibeSyncedFromServer) return;
+    secureFetch('/api/vibe').then(function(r){ return r.json(); }).then(function(d){
+        if (_vibeSyncedFromServer) return; // WS 已经先到，就不要覆盖
+        _vibeActive = !!d.active;
+        _vibeSyncedFromServer = true;
+        try { localStorage.setItem('vibeActive', _vibeActive ? '1' : '0'); } catch(e) {}
+        applyVibeUI();
+    }).catch(function(e){ console.error('[vibe] REST fetch failed:', e); });
+}
+
 (function initVibe(){
+    // 先用 localStorage 快速渲染（避免闪烁），再用后端权威值覆盖
     try { _vibeActive = localStorage.getItem('vibeActive') === '1'; } catch(e) { _vibeActive = false; }
     applyVibeUI();
+    // 立即拉一次，但如果 WS 更快到，会自己把 _vibeSyncedFromServer 置为 true
+    fetchVibeFromServer();
 })();
 
-// 首次立即拉取 mimo 数据（WS 启动后每 60s 自动推送）
-refresh();
+// 首次数据由 WS init 推送，不再单独 REST 拉取（避免和 WS 数据竞争 DOM）
+// refresh();
 
 /* ── 主题切换（点击左上角红圈，通过后端 API 循环切换）── */
 function applyTheme(d){

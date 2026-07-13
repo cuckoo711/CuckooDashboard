@@ -11,8 +11,10 @@ from pathlib import Path
 
 import requests
 
-from services.cache import TTLCache
-from services.config import DATA_DIR
+from core.cache import TTLCache
+from core.config import DATA_DIR, load_config
+
+logger = logging.getLogger("cuckoo.github")
 
 GITHUB_USER = "cuckoo711"
 GITHUB_CACHE_TTL = 600
@@ -22,13 +24,21 @@ GITHUB_DISK_CACHE_TTL = 86400
 _cache = TTLCache(GITHUB_CACHE_TTL)
 _last_error: str | None = None
 _last_success_at: float | None = None
+_use_api: bool = False  # True 当 token 可用时
 
 
-def _github_payload(contributions: dict, *, stale: bool = False, error: str | None = None) -> dict:
+def _get_token() -> str | None:
+    """从配置读取 GitHub Personal Access Token。"""
+    if not hasattr(_get_token, "_cache"):
+        _get_token._cache = load_config().get("github_token")
+    return _get_token._cache
+
+
+def _github_payload(contributions: dict, *, stale: bool = False, error: str | None = None, estimated: bool = True) -> dict:
     return {
         "user": GITHUB_USER,
         "contributions": contributions,
-        "estimated": True,
+        "estimated": estimated,
         "stale": stale,
         "error": error,
     }
@@ -56,6 +66,50 @@ def _write_disk_cache(contributions: dict):
         )
     except OSError:
         pass
+
+
+def _fetch_from_github_api(token: str) -> dict:
+    """通过 GitHub GraphQL API 获取精确贡献数据。"""
+    query = """
+    query($login: String!) {
+      user(login: $login) {
+        contributionsCollection {
+          contributionCalendar {
+            weeks {
+              contributionDays {
+                date
+                contributionCount
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+    resp = requests.post(
+        "https://api.github.com/graphql",
+        json={"query": query, "variables": {"login": GITHUB_USER}},
+        headers={
+            "Authorization": f"bearer {token}",
+            "Content-Type": "application/json",
+        },
+        timeout=15,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"GitHub API 返回 {resp.status_code}: {resp.text[:200]}")
+
+    data = resp.json()
+    if "errors" in data:
+        raise RuntimeError(f"GitHub API error: {data['errors'][0].get('message', '')}")
+
+    weeks = data["data"]["user"]["contributionsCollection"]["contributionCalendar"]["weeks"]
+    contributions = {}
+    for week in weeks:
+        for day in week["contributionDays"]:
+            count = day["contributionCount"]
+            if count > 0:
+                contributions[day["date"]] = count
+    return contributions
 
 
 def _fetch_from_github() -> dict:
@@ -101,29 +155,38 @@ def _fetch_from_github() -> dict:
 
 
 def get_github_data() -> dict:
-    """Return GitHub heatmap data plus status fields."""
-    global _last_error, _last_success_at
+    """Return GitHub contribution data plus status fields.
+    优先使用 GraphQL API（需配置 github_token），回退到网页爬取。
+    """
+    global _last_error, _last_success_at, _use_api
 
     cached = _cache.get()
     if cached:
-        return _github_payload(cached, error=_last_error)
+        return _github_payload(cached, error=_last_error, estimated=not _use_api)
 
     disk_fresh = _read_disk_cache(max_age=GITHUB_DISK_CACHE_TTL)
     if disk_fresh is not None:
         _cache.set(disk_fresh)
         _last_success_at = time.time()
         logger.info(f"GitHub: 从磁盘缓存恢复 {len(disk_fresh)} 天数据")
-        return _github_payload(disk_fresh)
+        return _github_payload(disk_fresh, estimated=not _use_api)
+
+    token = _get_token()
+    _use_api = bool(token)
 
     for attempt in range(3):
         try:
-            contributions = _fetch_from_github()
-            logger.info(f"GitHub: fetched {len(contributions)} days of contributions")
+            if _use_api:
+                contributions = _fetch_from_github_api(token)
+                logger.info(f"GitHub API: fetched {len(contributions)} days of contributions")
+            else:
+                contributions = _fetch_from_github()
+                logger.info(f"GitHub scrape: fetched {len(contributions)} days of contributions")
             _last_error = None
             _last_success_at = time.time()
             _cache.set(contributions)
             _write_disk_cache(contributions)
-            return _github_payload(contributions)
+            return _github_payload(contributions, estimated=not _use_api)
         except Exception as e:
             _last_error = str(e)
             logger.error(f"GitHub fetch attempt {attempt+1}/3 failed: {e}")
@@ -134,7 +197,7 @@ def get_github_data() -> dict:
     stale = _cache.data if isinstance(_cache.data, dict) else None
     if stale is None:
         stale = _read_disk_cache(max_age=None)
-    return _github_payload(stale or {}, stale=bool(stale), error=_last_error)
+    return _github_payload(stale or {}, stale=bool(stale), error=_last_error, estimated=not _use_api)
 
 
 def get_github_status() -> dict:
@@ -160,7 +223,7 @@ def get_github_status() -> dict:
         "stale": stale,
         "error": _last_error,
         "last_success_at": _last_success_at,
-        "details": {"estimated": True, "cached_days": len(_cache.data or {})},
+        "details": {"estimated": not _use_api, "cached_days": len(_cache.data or {})},
     }
 
 
