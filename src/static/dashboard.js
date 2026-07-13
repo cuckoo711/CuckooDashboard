@@ -174,10 +174,14 @@ function drawRing(pct, used, limit) {
     document.getElementById('ringLabel').textContent = fmtTok(remainAmt)+' 剩余';
 }
 
+var _lastModelsKey = '';
 function drawModels(data) {
     var el = document.getElementById('modelBars');
     if (!data||!data.length) { el.innerHTML='<div class="ld">暂无数据</div>'; return; }
     data.sort(function(a,b){return b.totalToken-a.totalToken});
+    var key = data.map(function(d){return d.model+':'+d.totalToken;}).join('|');
+    if (key === _lastModelsKey) return;
+    _lastModelsKey = key;
     var mx = data[0].totalToken;
     var fills = ['f1','f2','f3'];
     el.innerHTML = data.map(function(d,i){
@@ -190,12 +194,16 @@ function drawModels(data) {
     }).join('');
 }
 
+var _lastNugKey = '';
 function drawNugChannels(rows) {
     var el = document.getElementById('modelBars');
     if (!rows||!rows.length) { el.innerHTML='<div class="ld">暂无数据</div>'; return; }
     rows = rows.filter(function(d){ return d.requestCount >= 5; });
     if (!rows.length) { el.innerHTML='<div class="ld">暂无数据</div>'; return; }
     rows.sort(function(a,b){return parseFloat(b.totalQuotaCost)-parseFloat(a.totalQuotaCost)});
+    var key = rows.map(function(d){return d.groupKey+':'+d.totalQuotaCost;}).join('|');
+    if (key === _lastNugKey) return;
+    _lastNugKey = key;
     var mx = parseFloat(rows[0].totalQuotaCost)||1;
     var colors = {'kiro':'#5e8eaf','codex':'#7b68ae','anthropic':'#c47a3a','antigravity':'#5fa89e'};
     el.innerHTML = rows.map(function(d){
@@ -417,8 +425,7 @@ function handleMimoData(d) {
             var mu=usage.monthUsage;
             drawRing(mu.percent*100,mu.items[0]?mu.items[0].used:0,mu.items[0]?mu.items[0].limit:0);
         }
-        // 按模型用量条形图
-        if(d.tp_usage_detail&&d.tp_usage_detail.length) drawModels(d.tp_usage_detail);
+        // NUG channel 用量条形图（由 NUG 数据单独渲染）
     }
 
     // 余额
