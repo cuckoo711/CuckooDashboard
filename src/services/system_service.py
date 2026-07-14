@@ -13,7 +13,7 @@ import time
 
 import psutil
 
-from core.config import load_config
+from core.config import CONFIG_FILE, load_config
 from core.perfcounters import get_cpu_actual_frequency_mhz, get_gpu_dynamic_metrics
 from core.proc import run_ps
 
@@ -42,10 +42,30 @@ _dynamic_refresh_started = False
 
 
 def _get_overrides() -> dict:
-    """Read hardware overrides from config.json (cached per import)."""
-    if not hasattr(_get_overrides, "_cache"):
-        _get_overrides._cache = load_config().get("hardware_overrides", {})
-    return _get_overrides._cache
+    """按配置文件 mtime 缓存硬件覆盖，修改后台配置后自动失效。"""
+    try:
+        mtime = CONFIG_FILE.stat().st_mtime_ns if CONFIG_FILE.exists() else 0
+    except OSError:
+        mtime = 0
+    if getattr(_get_overrides, "_mtime", None) != mtime:
+        value = load_config().get("hardware_overrides", {})
+        _get_overrides._cache = value if isinstance(value, dict) else {}
+        _get_overrides._mtime = mtime
+    return getattr(_get_overrides, "_cache", {})
+
+
+def reload_config() -> None:
+    """清理硬件覆盖缓存，并让下一次采样读取最新配置。"""
+    global _snapshot_data, _last_success_at, _last_error
+    _get_overrides._cache = {}
+    _get_overrides._mtime = None
+    _snapshot_data = None
+    _last_success_at = None
+    _last_error = None
+    static = getattr(_collect_system_info, "_static", None)
+    if isinstance(static, dict):
+        static["data"] = None
+        static["ts"] = 0
 
 
 def _get_vram_map() -> dict:

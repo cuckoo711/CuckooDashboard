@@ -28,10 +28,18 @@ _use_api: bool = False  # True 当 token 可用时
 
 
 def _get_token() -> str | None:
-    """从配置读取 GitHub Personal Access Token。"""
-    if not hasattr(_get_token, "_cache"):
-        _get_token._cache = load_config().get("github_token")
-    return _get_token._cache
+    """从热重载配置读取 GitHub Personal Access Token。"""
+    token = load_config().get("github_token")
+    return token if isinstance(token, str) and token else None
+
+
+def reload_config() -> None:
+    """清理 GitHub 数据和配置相关状态。"""
+    global _last_error, _last_success_at, _use_api
+    _cache.clear()
+    _last_error = None
+    _last_success_at = None
+    _use_api = False
 
 
 def _github_payload(contributions: dict, *, stale: bool = False, error: str | None = None, estimated: bool = True) -> dict:

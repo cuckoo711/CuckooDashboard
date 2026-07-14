@@ -10,6 +10,7 @@ Web 看板服务器，用于副屏显示 MiMo 使用情况。
 """
 
 import argparse
+import ipaddress
 import json
 import logging
 import os
@@ -51,6 +52,12 @@ from services.media_service import (
 )
 from providers import fetch_all_data, get_nug_payload, get_nug_channel_breakdown
 from services.player_service import ALLOWED_PLAYER_ACTIONS, control_player
+from services.settings_service import (
+    SettingsValidationError,
+    get_settings_payload,
+    reveal_secret,
+    save_settings_payload,
+)
 from services.system_service import get_system_info
 from services.vibe_data_service import get_vibe_data
 from services.theme import (
@@ -321,6 +328,103 @@ def require_post_protection():
     abort(403)
 
 
+def require_loopback_access():
+    """限制配置后台只接受 127.0.0.1 / ::1 回环请求。"""
+    remote_addr = request.remote_addr
+    try:
+        address = ipaddress.ip_address(remote_addr) if remote_addr else None
+        is_loopback = bool(address and address.is_loopback)
+        if not is_loopback and isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+            is_loopback = address.ipv4_mapped.is_loopback
+    except ValueError:
+        is_loopback = False
+    if not is_loopback:
+        abort(403, description="settings is only available from loopback")
+
+
+@app.before_request
+def protect_settings_static_assets():
+    """阻止通过 Flask 默认 /static 路径绕过配置页的回环限制。"""
+    if request.path.startswith("/static/settings"):
+        require_loopback_access()
+
+
+def _broadcast_settings_update():
+    """广播配置更新后的非敏感运行时状态。"""
+    _ws_broadcast({"type": "config_updated", "data": {"ok": True}})
+    try:
+        _ws_broadcast({"type": "theme", "data": theme_response(load_theme_index())})
+    except Exception:
+        pass
+    try:
+        active = _load_vibe_state()
+        global _ws_vibe_coding
+        with _ws_clients_lock:
+            _ws_vibe_coding = active
+            for state in _ws_client_states.values():
+                state["vibe"] = active
+        _ws_broadcast({"type": "vibe_state", "data": {"active": active}})
+    except Exception:
+        pass
+
+
+# ============================================================
+# 本地配置后台
+# ============================================================
+
+
+@app.route("/settings")
+def settings_index():
+    """配置后台页面；即使服务监听所有网卡也只允许回环访问。"""
+    require_loopback_access()
+    return send_from_directory("static", "settings.html")
+
+
+@app.route("/settings-assets/<path:filename>")
+def settings_assets(filename):
+    """配置后台专用静态文件。"""
+    require_loopback_access()
+    if filename not in {"settings.css", "settings.js"}:
+        abort(404)
+    return send_from_directory("static", filename)
+
+
+@app.route("/api/settings", methods=["GET", "POST"])
+def api_settings():
+    """读取或保存脱敏后的用户配置。"""
+    require_loopback_access()
+    if request.method == "GET":
+        response = jsonify(get_settings_payload())
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    require_post_protection()
+    try:
+        result = save_settings_payload(request.get_json(silent=True) or {})
+    except SettingsValidationError as exc:
+        return jsonify({"error": exc.as_dict()}), 400
+    except Exception:
+        logger.exception("[settings] 保存配置失败")
+        return jsonify({"error": {"message": "保存配置失败，请查看日志"}}), 500
+    _broadcast_settings_update()
+    response = jsonify(result)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/api/settings/reveal", methods=["POST"])
+def api_settings_reveal():
+    """按用户明确操作读取一个敏感字段。"""
+    require_loopback_access()
+    require_post_protection()
+    payload = request.get_json(silent=True) or {}
+    try:
+        path = payload.get("path")
+        return jsonify({"path": path, "value": reveal_secret(path)})
+    except SettingsValidationError as exc:
+        return jsonify({"error": exc.as_dict()}), 400
+
+
 # ============================================================
 # 显示主题管理
 # ============================================================
@@ -358,7 +462,12 @@ def api_theme_next():
 @app.after_request
 def no_cache_static(response):
     """禁止浏览器缓存静态文件，改了 HTML/CSS/JS 刷新即生效，不用重启"""
-    if request.path.startswith("/static/") or request.path == "/":
+    if (
+        request.path.startswith("/static/")
+        or request.path.startswith("/settings")
+        or request.path.startswith("/api/settings")
+        or request.path == "/"
+    ):
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     return response
 
@@ -509,6 +618,9 @@ def main():
             str(Path(__file__).parent / "static" / "dashboard.html"),
             str(Path(__file__).parent / "static" / "dashboard.css"),
             str(Path(__file__).parent / "static" / "dashboard.js"),
+            str(Path(__file__).parent / "static" / "settings.html"),
+            str(Path(__file__).parent / "static" / "settings.css"),
+            str(Path(__file__).parent / "static" / "settings.js"),
         ] if args.dev else None,
     )
 

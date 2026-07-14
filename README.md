@@ -120,6 +120,12 @@ python run_dashboard.py --port 8080 --host 0.0.0.0
 python run_dashboard.py --dev   # Debug mode with auto-reload
 ```
 
+#### 配置后台
+
+启动 Dashboard 后直接访问 `http://127.0.0.1:5000/settings`，即可在网页中修改 `config/config.yaml` 中的主要配置，无需手动编辑 YAML。配置页面只接受 `127.0.0.1` / `::1` 回环请求；即使服务使用 `--host 0.0.0.0`，局域网地址也不能访问该页面或配置 API。
+
+密码、Token 默认以掩码显示，点击“查看”才会读取明文；留空默认保持原值，使用“清空”按钮才会删除敏感配置。保存后会清理相关缓存并立即应用，大多数配置无需重启服务。
+
 ### 3. Desktop App (optional)
 
 ```bash
@@ -153,8 +159,11 @@ The desktop app reads `data/monitor.json` to determine which display to use, the
 | `/api/theme` | GET/POST | Read or set the active theme by name |
 | `/api/theme/next` | POST | Switch to the next theme |
 | `/api/off-peak-badge` | GET | Off-peak time range configuration for badge display |
+| `/settings` | GET | Local-only configuration management page |
+| `/api/settings` | GET/POST | Read sanitized configuration or save validated configuration (local-only) |
+| `/api/settings/reveal` | POST | Reveal one explicitly requested secret field (local-only) |
 
-POST endpoints require same-origin `Origin`/`Referer` or an `X-Dashboard-Token` header. Set `dashboard.token` in `config.yaml` or `DASHBOARD_TOKEN` env var when exposing the server beyond `127.0.0.1`.
+POST endpoints require same-origin `Origin`/`Referer` or an `X-Dashboard-Token` header. The `/settings` page and `/api/settings*` endpoints additionally require a loopback client address (`127.0.0.1` or `::1`). Set `dashboard.token` in `config.yaml` or `DASHBOARD_TOKEN` env var when exposing other Dashboard APIs beyond `127.0.0.1`.
 
 ## Configuration
 

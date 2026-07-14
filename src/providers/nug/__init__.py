@@ -42,6 +42,15 @@ def _get_client() -> NUGClient | None:
     return _client
 
 
+def reload_config() -> None:
+    """清理 NUG 客户端单例，让下一次调用按最新配置登录。"""
+    global _client, _client_initialized, _last_success_at, _last_error
+    _client = None
+    _client_initialized = False
+    _last_success_at = None
+    _last_error = None
+
+
 # ============================================================
 # balance 相关
 # ============================================================

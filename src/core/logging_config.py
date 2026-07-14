@@ -175,3 +175,17 @@ def setup_logging(config: dict[str, Any] | None = None) -> None:
             logging.Formatter("%(name)s %(message)s")
         )
         root.addHandler(console_handler)
+
+
+def reload_logging(config: dict[str, Any] | None = None) -> None:
+    """运行时重新应用日志配置。"""
+    global _setup_done
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        try:
+            handler.close()
+        except Exception:
+            pass
+    root.handlers.clear()
+    _setup_done = False
+    setup_logging(config)

@@ -116,6 +116,15 @@ _last_success_at: str | None = None
 _last_error: str | None = None
 
 
+def invalidate_data_cache() -> None:
+    """清理依赖配置的聚合缓存，使配置后台保存后立即重新取数。"""
+    global _last_result, _last_success_at, _last_error
+    _mimo_cache.clear()
+    _last_result = None
+    _last_success_at = None
+    _last_error = None
+
+
 def _mimo_expired_payload() -> dict:
     return {
         "success": False,

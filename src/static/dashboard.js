@@ -849,6 +849,12 @@ function connectWS(){
             else if(msg.type === 'media') drawLyric(msg.data);
             else if(msg.type === 'github'){ drawGitHub(msg.data.contributions||{}, msg.data.user||''); }
             else if(msg.type === 'dashboard_data'){ handleDashboardData(msg.data); refreshHealth(); }
+            else if(msg.type === 'config_updated'){
+                refreshOffPeakBadgeConfig();
+                if (_ws && _ws.readyState === 1) {
+                    try { _ws.send(JSON.stringify({type: 'init'})); } catch(e) {}
+                }
+            }
             else if(msg.type === 'vibe_state'){
                 _vibeActive = !!msg.data.active;
                 _vibeSyncedFromServer = true;

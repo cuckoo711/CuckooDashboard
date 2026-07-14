@@ -7,6 +7,8 @@ cookies 由各插件自行管理。
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +69,30 @@ def save_config(config: dict) -> None:
         allow_unicode=True,
         sort_keys=False,
     )
-    CONFIG_FILE.write_text(text, encoding="utf-8")
+    temporary_path: Path | None = None
+    try:
+        # 在配置文件同一目录创建临时文件，再原子替换目标文件；这样读线程不会看到半写入内容。
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=CONFIG_DIR,
+            prefix=f".{CONFIG_FILE.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary.write(text)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        os.replace(temporary_path, CONFIG_FILE)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     _config_cache = config
     try:
         _config_mtime = CONFIG_FILE.stat().st_mtime

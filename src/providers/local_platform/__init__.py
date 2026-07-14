@@ -50,6 +50,15 @@ def _get_apis() -> list[LocalMimoAPI]:
     return _local_apis
 
 
+def reload_config() -> None:
+    """清理客户端单例，让下一次请求按最新配置重建。"""
+    global _local_apis, _last_success_at, _last_error, _last_available_count
+    _local_apis = None
+    _last_success_at = None
+    _last_error = None
+    _last_available_count = None
+
+
 def _empty_usage() -> dict:
     return {
         "requestCount": 0,
