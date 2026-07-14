@@ -954,6 +954,20 @@
     $('#reloadButton').addEventListener('click', function () {
         if (!state.dirty || window.confirm('当前有未保存修改，确定重新加载吗？')) loadSettings();
     });
+    $('#reloadClientsButton').addEventListener('click', async function () {
+        var btn = this;
+        btn.disabled = true;
+        btn.textContent = '正在刷新…';
+        try {
+            await requestJson('/api/settings/reload-clients', {method: 'POST'});
+            btn.textContent = '已发送';
+            setTimeout(function(){ btn.textContent = '刷新看板'; btn.disabled = false; }, 1500);
+        } catch (error) {
+            btn.textContent = '失败';
+            showMessage('刷新看板失败：' + error.message, 'error');
+            setTimeout(function(){ btn.textContent = '刷新看板'; btn.disabled = false; }, 1500);
+        }
+    });
     window.addEventListener('beforeunload', function (event) {
         if (state.dirty) { event.preventDefault(); event.returnValue = ''; }
     });

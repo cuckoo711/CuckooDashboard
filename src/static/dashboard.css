@@ -164,6 +164,19 @@
             font-size:var(--fs-date); font-weight:500; color:var(--text);
             text-shadow:var(--ts2); white-space:nowrap; text-align:right;
         }
+        .hdr-r { display:flex; align-items:center; justify-content:flex-end; gap:12px; }
+        .hdr-latency { display:inline-flex; align-items:center; gap:5px; font-size:calc(var(--fs-date) * 0.92); font-variant-numeric:tabular-nums; text-shadow:var(--ts2); color:var(--text-muted); white-space:nowrap; }
+        .latency-dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; background:var(--text-muted); transition:background .3s; }
+        .hdr-latency.good .latency-dot { background:#5fa89e; box-shadow:0 0 4px rgba(95,168,158,.5); }
+        .hdr-latency.good .latency-val { color:#5fa89e; }
+        .hdr-latency.ok .latency-dot { background:#e8c98f; box-shadow:0 0 4px rgba(232,201,143,.4); }
+        .hdr-latency.ok .latency-val { color:#e8c98f; }
+        .hdr-latency.warn .latency-dot { background:#d1a15c; box-shadow:0 0 4px rgba(209,161,92,.4); }
+        .hdr-latency.warn .latency-val { color:#d1a15c; }
+        .hdr-latency.bad .latency-dot { background:#cf5b68; box-shadow:0 0 4px rgba(207,91,104,.5); }
+        .hdr-latency.bad .latency-val { color:#cf5b68; }
+        .hdr-latency.disconnected .latency-dot { background:var(--text-muted); opacity:.5; }
+        .hdr-latency.disconnected .latency-val { opacity:.5; }
 
         /* ── Card ── */
         .card {

@@ -266,6 +266,8 @@ def ws_handler(ws):
                         logger.info(f"[ws] vibe coding: {'ON' if vibe else 'OFF'}")
                     elif msg.get("type") == "init":
                         _ws_send_all_data(ws)
+                    elif msg.get("type") == "ping":
+                        ws.send(json.dumps({"type": "pong", "ts": msg.get("ts")}, ensure_ascii=False))
                 except (json.JSONDecodeError, KeyError):
                     pass
     except Exception:
@@ -453,6 +455,15 @@ def api_settings():
     response = jsonify(result)
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@app.route("/api/settings/reload-clients", methods=["POST"])
+def api_settings_reload_clients():
+    """通过 WebSocket 让所有看板页面立即刷新。"""
+    require_loopback_access()
+    require_post_protection()
+    _ws_broadcast({"type": "reload"})
+    return jsonify({"ok": True})
 
 
 @app.route("/api/settings/reveal", methods=["POST"])

@@ -850,6 +850,7 @@ function connectWS(){
             else if(msg.type === 'media') drawLyric(msg.data);
             else if(msg.type === 'github'){ drawGitHub(msg.data.contributions||{}, msg.data.user||''); }
             else if(msg.type === 'dashboard_data'){ handleDashboardData(msg.data); refreshHealth(); }
+            else if(msg.type === 'reload'){ location.reload(); }
             else if(msg.type === 'config_updated'){
                 refreshOffPeakBadgeConfig();
                 if (_ws && _ws.readyState === 1) {
@@ -863,11 +864,13 @@ function connectWS(){
                 applyVibeUI();
                 // 后端主动推送的即是权威值，无需再回推
             }
+            else if(msg.type === 'pong'){ updateLatency(performance.now() - msg.ts); }
             else if(msg.type === 'theme'){ applyTheme(msg.data); }
             else if(msg.type === 'font'){ applyFont(msg.data); }
         } catch(e){ console.error('[ws] parse error:', e); }
     };
     _ws.onclose = function(){
+        updateLatency(-1);
         console.log('[ws] disconnected, retry in ' + (_wsRetry/1000) + 's');
         setTimeout(connectWS, _wsRetry);
         _wsRetry = Math.min(_wsRetry * 2, 30000);
@@ -879,6 +882,26 @@ function connectWS(){
     };
 }
 connectWS();
+
+/* ── 延迟心跳 ── */
+var _pingTs = 0, _latency = -1;
+function sendPing(){
+    if (_ws && _ws.readyState === 1) {
+        _pingTs = performance.now();
+        try { _ws.send(JSON.stringify({type:'ping',ts:_pingTs})); } catch(e){}
+    }
+}
+function updateLatency(ms){
+    _latency = ms;
+    var wrap = document.getElementById('hdrLatency');
+    if (!wrap) return;
+    var val = wrap.querySelector('.latency-val');
+    if (ms < 0){ wrap.className='hdr-latency disconnected'; if(val) val.textContent='--'; return; }
+    wrap.className = 'hdr-latency ' + (ms < 20 ? 'good' : ms < 60 ? 'ok' : ms < 150 ? 'warn' : 'bad');
+    if(val) val.textContent = (ms < 1 ? ms.toFixed(2) : ms < 10 ? ms.toFixed(1) : Math.round(ms)) + 'ms';
+}
+setInterval(sendPing, 5000);
+sendPing();
 
 /* ── Vibe Coding 状态切换（后端 config 是唯一真值，WS + REST 双通道同步）── */
 var _vibeActive = false;
