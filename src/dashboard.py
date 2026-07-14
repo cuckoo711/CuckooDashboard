@@ -1,5 +1,3 @@
-import logging
-
 #!/usr/bin/env python3
 """
 MiMo Usage Dashboard
@@ -21,11 +19,12 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(name)s %(message)s",
-    stream=sys.stderr,
-)
+from core.config import load_config
+from core.logging_config import setup_logging
+
+# 初始化日志系统（需在其他模块 import 之前完成）
+setup_logging(load_config())
+
 logger = logging.getLogger("cuckoo.dashboard")
 
 try:
@@ -40,7 +39,6 @@ except ImportError:
     print("错误: 缺少 flask-sock 库，请运行: pip install flask-sock")
     sys.exit(1)
 
-from core.config import load_config
 from services.github_service import get_github_data
 from services.health_service import get_health_snapshot
 from services.off_peak_service import get_off_peak_badge_config

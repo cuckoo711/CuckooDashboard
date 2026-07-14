@@ -54,6 +54,16 @@ hardware_overrides:
   gpu_vram_gb: {}          # 手动指定 GPU 显存（GB），如 {"9070 XT": 16}
   apu_device_ids: null     # 覆盖 APU 设备 ID 列表（影响独显识别）
 
+# 日志系统
+logging:
+  level: "INFO"            # 日志级别：DEBUG / INFO / WARNING / ERROR
+  mode: "daily"            # daily（按天切割）或 size（按大小轮转）
+  dir: "logs"              # 日志目录，相对项目根目录（也可写绝对路径）
+  keep_days: 7             # daily 模式：保留天数，超过自动删除
+  max_size_mb: 5           # size 模式：单文件最大 MB
+  max_backups: 5           # size 模式：保留轮转文件数
+  console: true            # 是否同时输出到 stderr（桌面模式建议 false）
+
 # ===== 以下为 UI 运行时状态（自动保存，无需手动编辑） =====
 
 # 显示主题

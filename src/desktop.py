@@ -22,6 +22,12 @@ from pathlib import Path
 
 import webview
 
+from core.config import load_config
+from core.logging_config import setup_logging
+
+# 在 dashboard import 之前初始化日志（desktop 模式可能需要 console: false）
+setup_logging(load_config())
+
 # 导入Flask应用
 from dashboard import app, start_background_threads_once
 from core.monitor import load_target_monitor
