@@ -43,6 +43,7 @@ except ImportError:
 from core.config import load_config
 from services.github_service import get_github_data
 from services.health_service import get_health_snapshot
+from services.off_peak_service import get_off_peak_badge_config
 from services.media_service import (
     get_media_info,
     load_lyric_offset,
@@ -378,6 +379,12 @@ def api_data():
 def api_health():
     """返回轻量服务健康摘要，不主动刷新外部数据。"""
     return jsonify(get_health_snapshot())
+
+
+@app.route("/api/off-peak-badge")
+def api_off_peak_badge():
+    """返回顶部闲时倍率标签的配置。"""
+    return jsonify(get_off_peak_badge_config())
 
 
 # ============================================================

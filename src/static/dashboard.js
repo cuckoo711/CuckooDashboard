@@ -116,6 +116,49 @@ function getDayType(d) {
     return {type:'workday', label:WEEKDAYS[dow]};
 }
 
+/* ── 闲时倍率标签配置（后端 YAML；未加载时保持旧的 00:00-08:00 行为）── */
+var _offPeakBadgeConfig = {
+    enabled: true,
+    ranges: [{start: '00:00', end: '08:00'}]
+};
+
+function timeToMinutes(value) {
+    var match = typeof value === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.exec(value);
+    return match ? Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5)) : null;
+}
+
+function isInOffPeakRange(minuteOfDay, ranges) {
+    if (!Array.isArray(ranges)) return false;
+    return ranges.some(function(range) {
+        var start = timeToMinutes(range && range.start);
+        var end = timeToMinutes(range && range.end);
+        if (start === null || end === null || start === end) return false;
+        // start < end 是同日区间；start > end 表示跨午夜。
+        return start < end
+            ? minuteOfDay >= start && minuteOfDay < end
+            : minuteOfDay >= start || minuteOfDay < end;
+    });
+}
+
+function applyOffPeakBadgeConfig(data) {
+    if (!data || typeof data !== 'object') return;
+    _offPeakBadgeConfig = {
+        enabled: data.enabled !== false,
+        ranges: Array.isArray(data.ranges) ? data.ranges : []
+    };
+    tickClock();
+}
+
+async function refreshOffPeakBadgeConfig() {
+    try {
+        var response = await secureFetch('/api/off-peak-badge');
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        applyOffPeakBadgeConfig(await response.json());
+    } catch (e) {
+        console.warn('[off-peak] config refresh failed:', e);
+    }
+}
+
 function tickClock() {
     var d = new Date();
     /* 12小时制时钟 */
@@ -137,16 +180,15 @@ function tickClock() {
     }
     document.getElementById('hdrDate').textContent = dateStr;
 
-    /* 闲时标签（北京时间 0:00-8:00） */
-    var bjH = (d.getUTCHours()+8)%24;
+    /* 闲时标签：按北京时间和配置的多个区间判断。 */
     var rateEl = document.getElementById('hdrRate');
-    if (bjH>=0 && bjH<8) {
-        rateEl.textContent = '0.8x';
-        rateEl.style.display = 'inline';
-    } else {
-        rateEl.textContent = '1.0x';
-        rateEl.style.display = 'inline';
+    if (!_offPeakBadgeConfig.enabled) {
+        rateEl.style.display = 'none';
+        return;
     }
+    var bjMinutes = ((d.getUTCHours() + 8) % 24) * 60 + d.getUTCMinutes();
+    rateEl.textContent = isInOffPeakRange(bjMinutes, _offPeakBadgeConfig.ranges) ? '0.8x' : '1.0x';
+    rateEl.style.display = 'inline';
 }
 
 /* ── 今日消耗堆叠条 ── */
@@ -720,6 +762,7 @@ async function refreshNug() {
 }
 
 tickClock(); setInterval(tickClock,1000);
+refreshOffPeakBadgeConfig(); setInterval(refreshOffPeakBadgeConfig, 60000);
 
 // 初始化歌词偏移量显示
 document.getElementById('lyricOffsetVal').textContent = LYRIC_OFFSET.toFixed(1);

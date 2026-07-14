@@ -3,7 +3,7 @@
 
 # User config (secrets)
 config/*
-!config/config.example.json
+!config/config.example.yaml
 
 # Runtime cache (auto-generated)
 data/*

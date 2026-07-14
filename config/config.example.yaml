@@ -1,0 +1,66 @@
+# MiMo Usage Dashboard 配置文件
+# 所有运行时配置统一在此管理
+
+# Dashboard 设置
+dashboard:
+  token: ""
+
+  # 顶部“0.8x / 1.0x”闲时倍率标签（按北京时间判断）
+  off_peak_badge:
+    enabled: true           # false 时完全隐藏标签
+    ranges:
+      - start: "00:00"     # 左闭右开：[00:00, 08:00)
+        end: "08:00"
+      # 可添加多个时段，例如：
+      # - start: "12:00"
+      #   end: "14:00"
+      # 支持跨午夜，例如：
+      # - start: "22:00"
+      #   end: "02:00"
+
+# GitHub
+github_token: ""
+
+# 本地平台（MiMo 兼容）
+local_platforms:
+  enabled: false
+  username: ""
+  password: ""
+  urls: []
+  # urls 格式示例:
+  # - url: "http://192.168.1.100:7778"
+  # - url: "https://192.168.1.200:7778"
+  #   password: "custom_password"
+
+# NUG (NarraFork) 平台
+nug:
+  enabled: false
+  url: ""
+  username: ""
+  password: ""
+
+# 网易云音乐 API（歌词获取）
+netease_api:
+  enabled: false
+  base_url: ""
+  cookie: ""
+
+# 硬件信息覆盖（用于修正自动检测不准确的情况）
+hardware_overrides:
+  cpu_model: null          # 手动指定 CPU 型号，如 "AMD Ryzen 9 9950X"
+  mem_installed_gb: null   # 手动指定内存总值（GB），如 64
+  mem_name: null           # 手动指定内存名称，如 "DDR5 6000"
+  gpu_model: null          # 手动指定 GPU 型号，如 "RX 9070 XT"
+  gpu_vram_gb: {}          # 手动指定 GPU 显存（GB），如 {"9070 XT": 16}
+  apu_device_ids: null     # 覆盖 APU 设备 ID 列表（影响独显识别）
+
+# ===== 以下为 UI 运行时状态（自动保存，无需手动编辑） =====
+
+# 显示主题
+theme: dark
+
+# 歌词偏移（秒）
+lyric_offset: 0.0
+
+# Vibe Coding 模式
+vibe_active: false
