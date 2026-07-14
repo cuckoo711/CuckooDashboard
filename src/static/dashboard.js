@@ -273,6 +273,7 @@ function drawModelBars(data) {
     }
 
     rows.sort(function(a,b){ return b.value-a.value || a.label.localeCompare(b.label); });
+    if (rows.length > 3) rows = rows.slice(0, 3);
     var key = String(data.provider || '')+'|'+String(data.kind || '')+'|'+String(data.currency || '')+'|'+
         rows.map(function(row){return row.label+':'+row.value+':'+row.requests;}).join('|');
     if (key === _lastModelsKey) return;
