@@ -407,6 +407,138 @@
         setDirty(true);
     }
 
+    function formatBytes(bytes) {
+        if (!bytes) return '0 B';
+        var units = ['B', 'KB', 'MB', 'GB'];
+        var idx = 0;
+        var value = bytes;
+        while (value >= 1024 && idx < units.length - 1) { value /= 1024; idx += 1; }
+        return value.toFixed(value < 10 && idx > 0 ? 2 : 1) + ' ' + units[idx];
+    }
+
+    function renderFontPanel(fonts, currentFilename, enabled) {
+        var select = $('#fontFilename');
+        var list = $('#fontList');
+        if (!select || !list) return;
+        select.replaceChildren();
+        var placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = fonts.length ? '未选择' : '暂无可用字体，请先上传';
+        select.appendChild(placeholder);
+        fonts.forEach(function (item) {
+            var option = document.createElement('option');
+            option.value = item.filename;
+            option.textContent = item.filename + '  (' + formatBytes(item.size) + ')';
+            select.appendChild(option);
+        });
+        if (currentFilename && !fonts.some(function (item) { return item.filename === currentFilename; })) {
+            var missing = document.createElement('option');
+            missing.value = currentFilename;
+            missing.textContent = currentFilename + '（缺失）';
+            select.appendChild(missing);
+        }
+        select.value = currentFilename || '';
+        setChecked('fontEnabled', !!enabled);
+
+        list.replaceChildren();
+        if (!fonts.length) {
+            list.appendChild(el('div', 'empty-row', '尚未上传字体'));
+            return;
+        }
+        fonts.forEach(function (item) {
+            var row = el('div', 'font-item' + (item.filename === currentFilename ? ' is-current' : ''));
+            row.appendChild(el('span', 'font-item-name', item.filename));
+            row.appendChild(el('span', 'font-item-size', formatBytes(item.size)));
+            var del = el('button', 'small-btn danger-btn', '删除');
+            del.type = 'button';
+            del.dataset.deleteFont = item.filename;
+            row.appendChild(del);
+            list.appendChild(row);
+        });
+    }
+
+    function renderFontSizePanel(cfg) {
+        cfg = cfg || {};
+        setValue('fontSizeTitleText', cfg.title_text || 'Cuckoo Dashboard');
+        setValue('fontSizeTitle',     cfg.title);
+        setValue('fontSizeClock',     cfg.clock);
+        setValue('fontSizeDate',      cfg.date);
+        setValue('fontSizeCardHead',  cfg.card_head);
+        setValue('fontSizeCardFoot',  cfg.card_foot);
+        setValue('fontSizeCardBody',  cfg.card_body);
+        setValue('fontSizeOffset',    cfg.offset);
+    }
+
+    function setFontUploadStatus(text, kind) {
+        var node = $('#fontUploadStatus');
+        if (!node) return;
+        node.className = 'field-help font-upload-status' + (kind ? ' ' + kind : '');
+        node.textContent = text || '';
+    }
+
+    function readFileAsBase64(file) {
+        return new Promise(function (resolve, reject) {
+            var reader = new FileReader();
+            reader.onload = function () {
+                var result = reader.result || '';
+                var idx = String(result).indexOf(',');
+                resolve(idx >= 0 ? String(result).slice(idx + 1) : String(result));
+            };
+            reader.onerror = function () { reject(new Error('读取文件失败')); };
+            reader.readAsDataURL(file);
+        });
+    }
+
+    async function refreshFontList(currentFilename) {
+        var data = await requestJson('/api/fonts');
+        var fonts = (data && data.fonts) || [];
+        // 更新 options 里的 fonts 缓存
+        if (state.payload && state.payload.options) state.payload.options.fonts = fonts;
+        var enabled = !!$('#fontEnabled').checked;
+        var selected = currentFilename !== undefined ? currentFilename : $('#fontFilename').value;
+        renderFontPanel(fonts, selected, enabled);
+    }
+
+    async function handleFontUpload(file) {
+        if (!file) return;
+        if (file.size > 20 * 1024 * 1024) {
+            setFontUploadStatus('文件超过 20MB，无法上传', 'error');
+            return;
+        }
+        var button = $('#fontUploadBtn');
+        button.disabled = true;
+        setFontUploadStatus('正在上传 ' + file.name + '…');
+        try {
+            var data = await readFileAsBase64(file);
+            var result = await requestJson('/api/fonts/upload', {
+                method: 'POST',
+                body: {filename: file.name, data: data}
+            });
+            setFontUploadStatus('已上传 ' + result.filename, 'success');
+            await refreshFontList(result.filename);
+            setDirty(true);
+        } catch (error) {
+            var field = error.payload && error.payload.error && error.payload.error.field;
+            setFontUploadStatus((field ? field + '：' : '') + error.message, 'error');
+        } finally {
+            button.disabled = false;
+        }
+    }
+
+    async function handleFontDelete(filename) {
+        if (!filename) return;
+        if (!window.confirm('确定删除字体 ' + filename + ' 吗？')) return;
+        try {
+            await requestJson('/api/fonts/delete', {method: 'POST', body: {filename: filename}});
+            setFontUploadStatus('已删除 ' + filename, 'success');
+            var current = $('#fontFilename').value;
+            await refreshFontList(current === filename ? '' : current);
+            if (current === filename) setDirty(true);
+        } catch (error) {
+            setFontUploadStatus(error.message, 'error');
+        }
+    }
+
     function renderThemeOptions(options, current) {
         var select = $('#theme');
         select.replaceChildren();
@@ -444,6 +576,10 @@
         fillSelect($('#modelBarsProvider'), payload.options.model_bar_providers || [], (vibe.model_bars || {}).provider || '', '自动选择');
         renderBalances(vibe.balances || [], payload.options || {});
         renderProviderPanels(payload.providers || []);
+        var fontCfg = dashboard.font || {};
+        renderFontPanel((payload.options || {}).fonts || [], fontCfg.filename || '', !!fontCfg.enabled);
+        setFontUploadStatus('');
+        renderFontSizePanel(dashboard.font_size || {});
 
         setValue('cpuModel', hardware.cpu_model);
         setValue('memInstalled', hardware.mem_installed_gb);
@@ -512,6 +648,17 @@
                     ring: {provider: $('#ringProvider').value, item: $('#ringItem').value},
                     model_bars: {provider: $('#modelBarsProvider').value},
                     balances: balances
+                },
+                font: {enabled: $('#fontEnabled').checked, filename: $('#fontFilename').value},
+                font_size: {
+                    title_text: $('#fontSizeTitleText').value || 'Cuckoo Dashboard',
+                    title:     numberValue('#fontSizeTitle', 16),
+                    clock:     numberValue('#fontSizeClock', 22),
+                    date:      numberValue('#fontSizeDate', 15),
+                    card_head: numberValue('#fontSizeCardHead', 10),
+                    card_foot: numberValue('#fontSizeCardFoot', 10),
+                    card_body: numberValue('#fontSizeCardBody', 10),
+                    offset:    numberValue('#fontSizeOffset', 0)
                 }
             },
             hardware_overrides: {
@@ -752,6 +899,49 @@
     $('#addOffPeakRange').addEventListener('click', addOffPeakRange);
     $('#addBalance').addEventListener('click', addBalance);
     $('#addVram').addEventListener('click', addVram);
+    $('#fontUploadBtn').addEventListener('click', function () { $('#fontUploadInput').click(); });
+    $('#fontUploadInput').addEventListener('change', function (event) {
+        var file = event.target.files && event.target.files[0];
+        handleFontUpload(file);
+        event.target.value = '';
+    });
+    // ── 拖拽上传 ──
+    (function () {
+        var zone = document.getElementById('fontDropZone');
+        if (!zone) return;
+        var dragCount = 0;  // 嵌套 dragenter/dragleave 计数器，防止闪烁
+        zone.addEventListener('dragenter', function (e) {
+            e.preventDefault();
+            dragCount += 1;
+            zone.classList.add('drag-over');
+        });
+        zone.addEventListener('dragover', function (e) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+        });
+        zone.addEventListener('dragleave', function (e) {
+            e.preventDefault();
+            dragCount -= 1;
+            if (dragCount <= 0) {
+                dragCount = 0;
+                zone.classList.remove('drag-over');
+            }
+        });
+        zone.addEventListener('drop', function (e) {
+            e.preventDefault();
+            dragCount = 0;
+            zone.classList.remove('drag-over');
+            var files = e.dataTransfer && e.dataTransfer.files;
+            if (files && files.length) handleFontUpload(files[0]);
+        });
+    })();
+    document.addEventListener('click', function (event) {
+        var btn = event.target.closest ? event.target.closest('[data-delete-font]') : null;
+        if (btn) {
+            event.preventDefault();
+            handleFontDelete(btn.dataset.deleteFont);
+        }
+    });
     $('#saveButton').addEventListener('click', saveSettings);
     $('#reloadButton').addEventListener('click', function () {
         if (!state.dirty || window.confirm('当前有未保存修改，确定重新加载吗？')) loadSettings();

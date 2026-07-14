@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from core.config import CONFIG_VERSION, load_config, migrate_config, save_config
 from providers import get_provider_config_schemas, get_providers
+from services.font_service import font_exists, list_fonts
 from services.theme import THEMES
 
 SECRET_MASK = "••••••"
@@ -164,6 +165,52 @@ def _validate_vibe(value: Any) -> dict[str, Any]:
             raise SettingsValidationError("颜色必须为 #RRGGBB", f"{field}.color")
         balances.append({"provider": provider, "name": name, "color": color, "enabled": enabled})
     return {"ring": ring, "model_bars": model_bars, "balances": balances}
+
+
+def _validate_font(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise SettingsValidationError("必须是对象", "dashboard.font")
+    enabled = _boolean(value.get("enabled", False), "dashboard.font.enabled")
+    raw_filename = value.get("filename")
+    filename = _optional_string(raw_filename, "dashboard.font.filename")
+    if filename and not font_exists(filename):
+        raise SettingsValidationError("字体文件不存在，请先上传", "dashboard.font.filename")
+    return {"enabled": enabled, "filename": filename or ""}
+
+
+# font_size 各分类的最小/最大合法 px 值
+_FONT_SIZE_KEYS: dict[str, tuple[int, int, int]] = {
+    # (field_key, min_px, max_px, default_px)
+    "title":     (4, 80, 16),
+    "clock":     (4, 80, 22),
+    "date":      (4, 80, 15),
+    "card_head": (4, 80, 10),
+    "card_foot": (4, 80, 10),
+    "card_body": (4, 80, 10),
+}
+_FONT_OFFSET_RANGE = (-20, 20)
+
+
+def _validate_font_size(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise SettingsValidationError("必须是对象", "dashboard.font_size")
+    result: dict[str, Any] = {}
+    title_text = _optional_string(value.get("title_text"), "dashboard.font_size.title_text")
+    result["title_text"] = title_text or "Cuckoo Dashboard"
+    for key, (lo, hi, default) in _FONT_SIZE_KEYS.items():
+        raw = value.get(key, default)
+        field = f"dashboard.font_size.{key}"
+        num = _integer(raw, field, minimum=lo)
+        if num > hi:
+            raise SettingsValidationError(f"不能超过 {hi}px", field)
+        result[key] = num
+    raw_offset = value.get("offset", 0)
+    field = "dashboard.font_size.offset"
+    num = _integer(raw_offset, field, minimum=_FONT_OFFSET_RANGE[0])
+    if num > _FONT_OFFSET_RANGE[1]:
+        raise SettingsValidationError(f"不能超过 {_FONT_OFFSET_RANGE[1]}", field)
+    result["offset"] = num
+    return result
 
 
 def _validate_hardware(value: Any) -> dict[str, Any]:
@@ -345,6 +392,7 @@ def get_settings_options() -> dict[str, Any]:
         "model_bar_providers": model_bars,
         "balance_providers": balances,
         "themes": [item["name"] for item in THEMES],
+        "fonts": list_fonts(),
     }
 
 
@@ -366,6 +414,8 @@ def _public_global_config(config: Mapping[str, Any]) -> dict[str, Any]:
         for item in raw_balances
         if isinstance(item, Mapping)
     ] if isinstance(raw_balances, list) else []
+    font = _mapping(dashboard.get("font"))
+    font_size = _mapping(dashboard.get("font_size"))
     hardware = _mapping(active.get("hardware_overrides"))
     logging_config = _mapping(active.get("logging"))
     return {
@@ -380,6 +430,20 @@ def _public_global_config(config: Mapping[str, Any]) -> dict[str, Any]:
                 "ring": {"provider": ring.get("provider") or "", "item": ring.get("item") or ""},
                 "model_bars": {"provider": model_bars.get("provider") or ""},
                 "balances": balances,
+            },
+            "font": {
+                "enabled": bool(font.get("enabled", False)),
+                "filename": str(font.get("filename") or ""),
+            },
+            "font_size": {
+                "title_text": str(font_size.get("title_text") or "Cuckoo Dashboard"),
+                "title": int(font_size.get("title", 16)),
+                "clock": int(font_size.get("clock", 22)),
+                "date": int(font_size.get("date", 15)),
+                "card_head": int(font_size.get("card_head", 10)),
+                "card_foot": int(font_size.get("card_foot", 10)),
+                "card_body": int(font_size.get("card_body", 10)),
+                "offset": int(font_size.get("offset", 0)),
             },
         },
         "github_token": _secret_view(active.get("github_token")),
@@ -670,6 +734,10 @@ def save_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             dashboard["off_peak_badge"] = _validate_off_peak(dashboard_input["off_peak_badge"])
         if "vibe_coding" in dashboard_input:
             dashboard["vibe_coding"] = _validate_vibe(dashboard_input["vibe_coding"])
+        if "font" in dashboard_input:
+            dashboard["font"] = _validate_font(dashboard_input["font"])
+        if "font_size" in dashboard_input:
+            dashboard["font_size"] = _validate_font_size(dashboard_input["font_size"])
         dashboard["token"] = _global_secret_update(
             secrets, "dashboard.token", _mapping(current.get("dashboard")).get("token", "")
         )

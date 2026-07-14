@@ -177,6 +177,40 @@ select option { color: #181326; background: #f5f1ff; }
 .link-btn { margin-top: 10px; padding: 0; border: 0; color: var(--accent-strong); background: transparent; font-size: 12px; }
 .link-btn:hover { color: var(--text); }
 
+.font-drop-zone {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+    padding: 12px 14px;
+    border: 1.5px dashed rgba(255, 255, 255, .12);
+    border-radius: 10px;
+    transition: border-color .2s, background .2s;
+}
+.font-drop-zone.drag-over {
+    border-color: var(--accent-strong);
+    background: rgba(166, 145, 209, .1);
+}
+.font-drop-hint { color: var(--muted-2); font-size: 12px; }
+.font-upload-status { margin: 0; color: var(--muted); }
+.font-upload-status.error { color: var(--red); }
+.font-upload-status.success { color: var(--green); }
+.font-list .font-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+    border: 1px solid rgba(255, 255, 255, .08);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, .035);
+    font-size: 12px;
+}
+.font-list .font-item-name { color: var(--text); word-break: break-all; }
+.font-list .font-item-size { color: var(--muted-2); font-variant-numeric: tabular-nums; }
+.font-list .font-item.is-current { border-color: rgba(112, 196, 173, .4); background: rgba(112, 196, 173, .08); }
+
 .switch { display: inline-flex; flex: 0 0 auto; align-items: center; cursor: pointer; }
 .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .switch span { position: relative; display: block; width: 42px; height: 23px; border: 1px solid var(--border); border-radius: 999px; background: rgba(255, 255, 255, .08); transition: background .16s ease, border-color .16s ease; }

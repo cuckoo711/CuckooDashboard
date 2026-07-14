@@ -40,6 +40,12 @@ except ImportError:
     print("错误: 缺少 flask-sock 库，请运行: pip install flask-sock")
     sys.exit(1)
 
+from services.font_service import (
+    FontError,
+    delete_font,
+    list_fonts,
+    upload_font,
+)
 from services.github_service import get_github_data
 from services.health_service import get_health_snapshot
 from services.off_peak_service import get_off_peak_badge_config
@@ -70,7 +76,39 @@ from services.theme import (
 )
 
 app = Flask(__name__, static_folder="static")
+# 字体上传走 JSON body（base64），20MB 原始文件约 27MB base64，留一些余量。
+app.config["MAX_CONTENT_LENGTH"] = 40 * 1024 * 1024
 sock = Sock(app)
+
+
+def _get_font_payload() -> dict:
+    """从配置读取当前字体和字号设置并生成前端 payload。
+
+    ``enabled`` 且指定的文件确实存在于 fonts/ 才返回 url；否则回落到系统字体。
+    """
+    from services.font_service import font_exists as _font_exists
+    dashboard_cfg = (load_config().get("dashboard") or {})
+    font_cfg = dashboard_cfg.get("font") or {}
+    enabled = bool(font_cfg.get("enabled"))
+    filename = str(font_cfg.get("filename") or "")
+    active = enabled and filename and _font_exists(filename)
+    font_size_cfg = dashboard_cfg.get("font_size") or {}
+    return {
+        "enabled": enabled,
+        "filename": filename,
+        "url": f"/static/fonts/{filename}" if active else "",
+        "active": bool(active),
+        "font_size": {
+            "title_text": str(font_size_cfg.get("title_text") or "Cuckoo Dashboard"),
+            "title":     int(font_size_cfg.get("title", 16)),
+            "clock":     int(font_size_cfg.get("clock", 22)),
+            "date":      int(font_size_cfg.get("date", 15)),
+            "card_head": int(font_size_cfg.get("card_head", 10)),
+            "card_foot": int(font_size_cfg.get("card_foot", 10)),
+            "card_body": int(font_size_cfg.get("card_body", 10)),
+            "offset":    int(font_size_cfg.get("offset", 0)),
+        },
+    }
 
 
 def _get_dashboard_data() -> dict:
@@ -156,6 +194,7 @@ def _ws_send_all_data(ws):
         _send("theme", theme_response(load_theme_index()))
     except Exception:
         pass
+    _safe_send("font", _get_font_payload)
     logger.info("[ws] init: all data sent")
 
 
@@ -354,6 +393,10 @@ def _broadcast_settings_update():
     _ws_broadcast({"type": "config_updated", "data": {"ok": True}})
     try:
         _ws_broadcast({"type": "theme", "data": theme_response(load_theme_index())})
+    except Exception:
+        pass
+    try:
+        _ws_broadcast({"type": "font", "data": _get_font_payload()})
     except Exception:
         pass
     try:
@@ -588,6 +631,52 @@ def api_nug():
 def api_nug_channels():
     """返回 NUG 按 channel 分组的用量明细"""
     return jsonify(get_nug_channel_breakdown(days=7))
+
+
+# ============================================================
+# 字体管理
+# ============================================================
+
+
+@app.route("/api/font")
+def api_font():
+    """返回当前生效字体（enabled + filename + url）。看板页据此动态注入 @font-face。"""
+    return jsonify(_get_font_payload())
+
+
+@app.route("/api/fonts")
+def api_fonts_list():
+    """列出 fonts/ 目录下所有字体。settings 页面下拉使用。"""
+    require_loopback_access()
+    return jsonify({"fonts": list_fonts()})
+
+
+@app.route("/api/fonts/upload", methods=["POST"])
+def api_fonts_upload():
+    """上传新的字体文件到 fonts/ 目录。仅本机回环可用。"""
+    require_loopback_access()
+    require_post_protection()
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = upload_font(payload.get("filename", ""), payload.get("data", ""))
+    except FontError as exc:
+        return jsonify({"error": exc.as_dict()}), 400
+    return jsonify(result)
+
+
+@app.route("/api/fonts/delete", methods=["POST"])
+def api_fonts_delete():
+    """删除 fonts/ 目录下的字体文件。仅本机回环可用。"""
+    require_loopback_access()
+    require_post_protection()
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = delete_font(payload.get("filename", ""))
+    except FontError as exc:
+        return jsonify({"error": exc.as_dict()}), 400
+    # 如果删掉的是当前 enabled 的字体，前端拿到的 /api/font 会自动回落。
+    _ws_broadcast({"type": "font", "data": _get_font_payload()})
+    return jsonify(result)
 
 
 def main():

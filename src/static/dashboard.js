@@ -863,6 +863,7 @@ function connectWS(){
                 // 后端主动推送的即是权威值，无需再回推
             }
             else if(msg.type === 'theme'){ applyTheme(msg.data); }
+            else if(msg.type === 'font'){ applyFont(msg.data); }
         } catch(e){ console.error('[ws] parse error:', e); }
     };
     _ws.onclose = function(){
@@ -961,6 +962,58 @@ secureFetch('/api/theme').then(r=>r.json()).then(applyTheme).catch(()=>{
     // 后端不可用时回退到 localStorage 缓存
     try { var c=JSON.parse(localStorage.getItem('themeData')); if(c) applyTheme(c); } catch(e){}
 });
+
+/* ── 自定义字体（settings 页面配置，后端下发 url）── */
+var _fontStyleEl = null;
+var _fontUrlCache = null;
+function applyFont(d){
+    d = d || {};
+    var url = d.url || '';
+    if (_fontUrlCache !== url) {
+        _fontUrlCache = url;
+        // 清理旧的 @font-face
+        if (_fontStyleEl && _fontStyleEl.parentNode) _fontStyleEl.parentNode.removeChild(_fontStyleEl);
+        _fontStyleEl = null;
+        if (url) {
+            var style = document.createElement('style');
+            var family = 'DashboardFont_' + Date.now();
+            style.textContent = '@font-face{font-family:"' + family + '";'
+                + 'src:url("' + url + '") format("' + guessFontFormat(url) + '");'
+                + 'font-display:swap;}';
+            document.head.appendChild(style);
+            _fontStyleEl = style;
+            document.body.style.fontFamily = '"' + family + '","Segoe UI",-apple-system,BlinkMacSystemFont,sans-serif';
+        } else {
+            document.body.style.fontFamily = '"Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif';
+        }
+    }
+    // 字号始终应用（URL 未变但字号参数可能已变）
+    if (d.font_size) applyFontSize(d.font_size);
+}
+function applyFontSize(d){
+    d = d || {};
+    var r = document.documentElement.style;
+    r.setProperty('--fs-offset', (d.offset || 0) + 'px');
+    r.setProperty('--fs-title',     (d.title     || 16) + 'px');
+    r.setProperty('--fs-clock',     (d.clock     || 22) + 'px');
+    r.setProperty('--fs-date',      (d.date      || 15) + 'px');
+    r.setProperty('--fs-card-head', (d.card_head || 10) + 'px');
+    r.setProperty('--fs-card-head-c', (Math.round((d.card_head || 10) * 1.1)) + 'px');
+    r.setProperty('--fs-card-foot', (d.card_foot || 10) + 'px');
+    r.setProperty('--fs-body',      (d.card_body || 10) + 'px');
+    // 标题文字
+    var h1 = document.querySelector('.hdr h1');
+    if (h1) h1.textContent = d.title_text || 'Cuckoo Dashboard';
+}
+function guessFontFormat(url){
+    var ext = (url.split('.').pop() || '').toLowerCase();
+    if (ext === 'woff2') return 'woff2';
+    if (ext === 'woff') return 'woff';
+    if (ext === 'otf') return 'opentype';
+    return 'truetype';
+}
+// 启动时读取字体设置
+secureFetch('/api/font').then(r=>r.json()).then(applyFont).catch(function(){});
 // 点击红圈 → 后端切换下一个主题
 document.querySelector('.mark').addEventListener('click', function(){
     secureFetch('/api/theme/next',{method:'POST'}).then(r=>r.json()).then(applyTheme);

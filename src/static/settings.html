@@ -166,6 +166,72 @@
 
                 <section class="panel">
                     <div class="panel-title">
+                        <div><span class="section-mark"></span><h2>字体</h2></div>
+                        <span class="panel-hint">看板页专用；关闭则回落系统字体</span>
+                    </div>
+                    <div class="subsection-head">
+                        <div><h3>启用自定义字体</h3><span>选择下方列表中的字体作为看板正文</span></div>
+                        <label class="switch"><input id="fontEnabled" type="checkbox"><span></span></label>
+                    </div>
+                    <div class="field">
+                        <label for="fontFilename">当前字体</label>
+                        <select id="fontFilename"></select>
+                        <div class="field-help">仅列出 static/fonts/ 目录下的 .ttf/.otf/.woff/.woff2 文件</div>
+                    </div>
+                    <div class="subsection-inline-head"><h3>字体文件</h3><span>支持 .ttf / .otf / .woff / .woff2，单个 ≤ 20MB</span></div>
+                    <div class="font-drop-zone" id="fontDropZone">
+                        <input id="fontUploadInput" type="file" accept=".ttf,.otf,.woff,.woff2" hidden>
+                        <div class="font-drop-hint">拖放字体文件到这里，或</div>
+                        <button type="button" class="small-btn" id="fontUploadBtn">选择文件</button>
+                        <span id="fontUploadStatus" class="field-help font-upload-status"></span>
+                    </div>
+                    <div id="fontList" class="repeat-list font-list"></div>
+
+                    <div class="subsection">
+                        <div class="subsection-head">
+                            <div><h3>字号配置</h3><span>调整看板各区域文字大小（px）；偏移量对所有字号统一加减</span></div>
+                        </div>
+                        <div class="field">
+                            <label for="fontSizeTitleText">标题文字</label>
+                            <input id="fontSizeTitleText" type="text" placeholder="Cuckoo Dashboard">
+                            <div class="field-help">左上角标题文字内容</div>
+                        </div>
+                        <div class="field-grid compact-grid">
+                            <div class="field">
+                                <label for="fontSizeTitle">标题（px）</label>
+                                <input id="fontSizeTitle" type="number" min="4" max="80" step="1">
+                            </div>
+                            <div class="field">
+                                <label for="fontSizeClock">时钟（px）</label>
+                                <input id="fontSizeClock" type="number" min="4" max="80" step="1">
+                            </div>
+                            <div class="field">
+                                <label for="fontSizeDate">日期（px）</label>
+                                <input id="fontSizeDate" type="number" min="4" max="80" step="1">
+                            </div>
+                            <div class="field">
+                                <label for="fontSizeCardHead">卡片头（px）</label>
+                                <input id="fontSizeCardHead" type="number" min="4" max="80" step="1">
+                            </div>
+                            <div class="field">
+                                <label for="fontSizeCardFoot">卡片脚（px）</label>
+                                <input id="fontSizeCardFoot" type="number" min="4" max="80" step="1">
+                            </div>
+                            <div class="field">
+                                <label for="fontSizeCardBody">卡片正文（px）</label>
+                                <input id="fontSizeCardBody" type="number" min="4" max="80" step="1">
+                            </div>
+                        </div>
+                        <div class="field">
+                            <label for="fontSizeOffset">整体偏移（px）</label>
+                            <input id="fontSizeOffset" type="number" min="-20" max="20" step="1">
+                            <div class="field-help">对所有区域统一加减，范围 -20 ~ +20</div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-title">
                         <div><span class="section-mark"></span><h2>UI 状态</h2></div>
                         <span class="panel-hint">也可在主看板操作</span>
                     </div>
