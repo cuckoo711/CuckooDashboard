@@ -682,7 +682,7 @@ def api_fonts_delete():
 def main():
     parser = argparse.ArgumentParser(description="MiMo Usage Dashboard")
     parser.add_argument("--port", "-p", type=int, default=5000, help="端口号 (默认 5000)")
-    parser.add_argument("--host", default="127.0.0.1", help="监听地址 (默认 127.0.0.1)")
+    parser.add_argument("--host", default="0.0.0.0", help="监听地址 (默认 0.0.0.0)")
     parser.add_argument("--open", "-o", action="store_true", help="自动打开浏览器")
     parser.add_argument("--dev", action="store_true", help="开发模式：启用 Flask debug/reloader")
     args = parser.parse_args()
