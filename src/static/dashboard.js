@@ -8,14 +8,20 @@ function escHtml(s) {
 
 /* ── Health status dots ── */
 var _healthServices = {};
+var _vibeStatusProvider = null;
+
+function updateVibeHealthDot() {
+    var el = document.getElementById('dot-vibe');
+    if (!el) return;
+    var status = (_healthServices[_vibeStatusProvider] || {}).status || 'unknown';
+    el.className = 'svc-dot ' + status;
+}
 
 function updateHealthDots(health) {
     _healthServices = health.services || {};
     var map = {
-        'mimo': 'tokenCard',
         'system': 'sysCard',
         'github': 'ghCard',
-        'nug': 'tokenCard',
         'media': 'playerCard',
     };
     for (var svc in map) {
@@ -24,6 +30,7 @@ function updateHealthDots(health) {
         var s = (_healthServices[svc] || {}).status || 'unknown';
         el.className = 'svc-dot ' + s;
     }
+    updateVibeHealthDot();
     // GitHub estimated hint
     var ghHint = document.getElementById('ghHint');
     if (ghHint) {
@@ -203,8 +210,22 @@ function drawTodayStacked(inMiss, outTok, cacheTok) {
     document.getElementById('todayOutPct').textContent = (outTok/total*100).toFixed(1)+'%';
 }
 
-/* ── Token Plan 环形图 ── */
-function drawRing(pct, used, limit) {
+/* ── 可配置的 Token Plan 环、模型条与余额 ── */
+function safeNumber(value) {
+    var number = Number(value);
+    return Number.isFinite(number) ? number : 0;
+}
+
+function currencyPrefix(currency) {
+    var code = typeof currency === 'string' ? currency.trim().toUpperCase() : '';
+    var symbols = {CNY:'¥', USD:'$', EUR:'€', GBP:'£', JPY:'¥', KRW:'₩'};
+    return symbols[code] || (code ? code + ' ' : '');
+}
+
+function drawRing(pct, used, limit, itemName) {
+    pct = Math.max(0, Math.min(100, safeNumber(pct)));
+    used = safeNumber(used);
+    limit = safeNumber(limit);
     window._lastRingArgs = [pct, used, limit];
     var C = 2*Math.PI*35;
     var remain = 100 - pct;
@@ -213,51 +234,118 @@ function drawRing(pct, used, limit) {
     fg.style.strokeDashoffset = C*(1-remain/100);
     fg.style.stroke = pct>=90?cssVar('--crimson'):pct>=70?cssVar('--warn'):cssVar('--gold');
     document.getElementById('ringPct').textContent = remain.toFixed(1)+'%';
-    document.getElementById('ringLabel').textContent = fmtTok(remainAmt)+' 剩余';
+    var label = document.getElementById('ringLabel');
+    label.textContent = fmtTok(remainAmt)+' 剩余';
+    label.title = itemName || '';
+}
+
+function resetRing() {
+    var C = 2*Math.PI*35;
+    var fg = document.getElementById('ringFg');
+    fg.style.strokeDashoffset = C;
+    fg.style.stroke = cssVar('--ring-bg');
+    document.getElementById('ringPct').textContent = '--%';
+    var label = document.getElementById('ringLabel');
+    label.textContent = '暂无数据';
+    label.title = '';
 }
 
 var _lastModelsKey = '';
-function drawModels(data) {
+function drawModelBars(data) {
     var el = document.getElementById('modelBars');
-    if (!data||!data.length) { el.innerHTML='<div class="ld">暂无数据</div>'; return; }
-    data.sort(function(a,b){return b.totalToken-a.totalToken});
-    var key = data.map(function(d){return d.model+':'+d.totalToken;}).join('|');
+    if (!data || !data.available || !Array.isArray(data.rows) || !data.rows.length) {
+        _lastModelsKey = '';
+        el.innerHTML='<div class="ld">暂无数据</div>';
+        return;
+    }
+
+    var rows = data.rows.map(function(row) {
+        return {
+            label: String(row.label || ''),
+            value: safeNumber(row.value),
+            requests: Math.max(0, Math.trunc(safeNumber(row.requests)))
+        };
+    }).filter(function(row) { return row.label; });
+    if (!rows.length) {
+        _lastModelsKey = '';
+        el.innerHTML='<div class="ld">暂无数据</div>';
+        return;
+    }
+
+    rows.sort(function(a,b){ return b.value-a.value || a.label.localeCompare(b.label); });
+    var key = String(data.provider || '')+'|'+String(data.kind || '')+'|'+String(data.currency || '')+'|'+
+        rows.map(function(row){return row.label+':'+row.value+':'+row.requests;}).join('|');
     if (key === _lastModelsKey) return;
     _lastModelsKey = key;
-    var mx = data[0].totalToken;
+
+    var mx = rows[0].value || 1;
     var fills = ['f1','f2','f3'];
-    el.innerHTML = data.map(function(d,i){
-        var w = mx>0?(d.totalToken/mx*100):0;
+    var isCurrency = data.kind === 'currency';
+    el.innerHTML = rows.map(function(row, index){
+        var width = Math.max(0, Math.min(100, row.value/mx*100));
+        var valueText = isCurrency
+            ? currencyPrefix(data.currency) + row.value.toFixed(2)
+            : fmtTok(row.value);
+        var fill = ' class="bar-fill '+fills[index%fills.length]+'" style="width:'+width+'%"';
         return '<div class="bar-row">'+
-            '<span class="bar-name">'+escHtml(d.model)+'</span>'+
-            '<div class="bar-track"><div class="bar-fill '+fills[i%fills.length]+'" style="width:'+w+'%"></div></div>'+
-            '<div class="bar-info"><div class="v">'+fmtTok(d.totalToken)+'</div><div class="s">'+fmtNum(d.requestCount)+' 次</div></div>'+
+            '<span class="bar-name" title="'+escHtml(row.label)+'">'+escHtml(row.label)+'</span>'+
+            '<div class="bar-track"><div'+fill+'></div></div>'+
+            '<div class="bar-info"><div class="v">'+escHtml(valueText)+'</div><div class="s">'+fmtNum(row.requests)+' 次</div></div>'+
         '</div>';
     }).join('');
 }
 
-var _lastNugKey = '';
-function drawNugChannels(rows) {
-    var el = document.getElementById('modelBars');
-    if (!rows||!rows.length) { el.innerHTML='<div class="ld">暂无数据</div>'; return; }
-    rows = rows.filter(function(d){ return d.requestCount >= 5; });
-    if (!rows.length) { el.innerHTML='<div class="ld">暂无数据</div>'; return; }
-    rows.sort(function(a,b){return parseFloat(b.totalQuotaCost)-parseFloat(a.totalQuotaCost)});
-    var key = rows.map(function(d){return d.groupKey+':'+d.totalQuotaCost;}).join('|');
-    if (key === _lastNugKey) return;
-    _lastNugKey = key;
-    var mx = parseFloat(rows[0].totalQuotaCost)||1;
-    var colors = {'kiro':'#5e8eaf','codex':'#7b68ae','anthropic':'#c47a3a','antigravity':'#5fa89e'};
-    el.innerHTML = rows.map(function(d){
-        var cost = parseFloat(d.totalQuotaCost)||0;
-        var w = mx>0?(cost/mx*100):0;
-        var clr = colors[d.groupKey]||'#888';
-        return '<div class="bar-row">'+
-            '<span class="bar-name">'+escHtml(d.groupKey)+'</span>'+
-            '<div class="bar-track"><div class="bar-fill" style="width:'+w+'%;background:'+clr+'"></div></div>'+
-            '<div class="bar-info"><div class="v">$'+cost.toFixed(2)+'</div><div class="s">'+fmtNum(d.requestCount)+' 次</div></div>'+
-        '</div>';
-    }).join('');
+function isHexColor(value) {
+    return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value);
+}
+
+function renderVibeBalances(items) {
+    var footer = document.getElementById('vibeBalances');
+    if (!footer) return;
+    while (footer.firstChild) footer.removeChild(footer.firstChild);
+    if (!Array.isArray(items) || !items.length) {
+        footer.hidden = true;
+        return;
+    }
+
+    items.slice(0, 2).forEach(function(item) {
+        var row = document.createElement('span');
+        row.className = 'vibe-balance';
+
+        var name = document.createElement('span');
+        name.className = 'vibe-balance-name';
+        name.textContent = String(item.name || item.provider || '');
+
+        var dot = document.createElement('span');
+        dot.className = 'vibe-balance-dot';
+        var color = isHexColor(item.color) ? item.color : '#888888';
+        dot.style.backgroundColor = color;
+        dot.style.color = color;
+
+        var value = document.createElement('b');
+        value.className = 'vibe-balance-value';
+        value.textContent = currencyPrefix(item.currency) + String(item.balance == null ? '--' : item.balance);
+
+        row.appendChild(name);
+        row.appendChild(dot);
+        row.appendChild(value);
+        footer.appendChild(row);
+    });
+    footer.hidden = false;
+}
+
+function handleVibeData(data) {
+    data = data || {};
+    var ring = data.ring || {};
+    _vibeStatusProvider = ring.provider || null;
+    updateVibeHealthDot();
+    if (ring.available) {
+        drawRing(ring.percent, ring.used, ring.limit, ring.item);
+    } else {
+        resetRing();
+    }
+    drawModelBars(data.model_bars || {});
+    renderVibeBalances(data.balances || []);
 }
 
 /* ── 系统信息（CPU / 内存 / 独显，纵向三列）── */
@@ -438,11 +526,12 @@ function drawGitHub(contrib, username) {
     document.getElementById('ghTotal').textContent=fmtNum(total)+' 次贡献';
 }
 
-/* MiMo 数据处理（WS 推送和 REST 调用共用） */
-function handleMimoData(d) {
-    if (!d.success) { console.error('API Error:',d.error); }
+/* Dashboard 数据处理（WS 推送和 REST 调用共用） */
+function handleDashboardData(d) {
+    d = d || {};
+    if (!d.success) { console.error('API Error:', d.error); }
 
-    // 今日消耗（后端已标准化，合并 MiMo + 本地平台）
+    // 今日消耗由后端历史聚合路径提供；与 Vibe 卡片的 Provider 选择相互独立。
     var t = d.today || {};
     var inTok=t.in||0, outTok=t.out||0, totalTok=t.total||0, cacheTok=t.cache||0, inMiss=t.inMiss||0;
     if (inTok > 0 || outTok > 0 || totalTok > 0) {
@@ -456,22 +545,7 @@ function handleMimoData(d) {
         drawTodayStacked(inMiss,outTok,cacheTok);
     }
 
-    // Token Plan
-    var expiredEl = document.getElementById('mimoExpired');
-    if(d.mimo_expired){
-        if(expiredEl) expiredEl.style.display='flex';
-    } else {
-        if(expiredEl) expiredEl.style.display='none';
-        var usage=d.usage;
-        if(usage&&usage.monthUsage){
-            var mu=usage.monthUsage;
-            drawRing(mu.percent*100,mu.items[0]?mu.items[0].used:0,mu.items[0]?mu.items[0].limit:0);
-        }
-        // NUG channel 用量条形图（由 NUG 数据单独渲染）
-    }
-
-    // 余额
-    if(d.balance) document.getElementById('sBal').textContent='\u00A5'+(d.balance.balance||'0.00');
+    handleVibeData(d.vibe || {});
 
     // GitHub
     if(d.github) drawGitHub(d.github.contributions||{},d.github.user||'');
@@ -481,7 +555,7 @@ async function refresh() {
     try {
         var r = await secureFetch('/api/data');
         var d = await r.json();
-        handleMimoData(d);
+        handleDashboardData(d);
     } catch(e){console.error('Refresh error:',e);}
 }
 
@@ -750,17 +824,6 @@ async function refreshMedia() {
 setInterval(updateLyricLine, 60);
 window.addEventListener('resize', function(){ updateLyricLine(true); });
 
-/* ── NUG 平台数据 ── */
-async function refreshNug() {
-    try {
-        var r = await secureFetch('/api/nug');
-        var d = await r.json();
-        if (!d.enabled) return;
-        if (d.error) { console.error('NUG error:', d.error); return; }
-        document.getElementById('nugBal').textContent = '$' + Number(d.balance || 0).toFixed(2);
-    } catch(e) { console.error('NUG refresh error:', e); }
-}
-
 tickClock(); setInterval(tickClock,1000);
 refreshOffPeakBadgeConfig(); setInterval(refreshOffPeakBadgeConfig, 60000);
 
@@ -785,7 +848,7 @@ function connectWS(){
             if(msg.type === 'system') drawSystem(msg.data);
             else if(msg.type === 'media') drawLyric(msg.data);
             else if(msg.type === 'github'){ drawGitHub(msg.data.contributions||{}, msg.data.user||''); }
-            else if(msg.type === 'mimo'){ handleMimoData(msg.data); refreshHealth(); }
+            else if(msg.type === 'dashboard_data'){ handleDashboardData(msg.data); refreshHealth(); }
             else if(msg.type === 'vibe_state'){
                 _vibeActive = !!msg.data.active;
                 _vibeSyncedFromServer = true;
@@ -793,8 +856,6 @@ function connectWS(){
                 applyVibeUI();
                 // 后端主动推送的即是权威值，无需再回推
             }
-            else if(msg.type === 'nug'){ if(msg.data.enabled && msg.data.balance!=null) document.getElementById('nugBal').textContent='$'+Number(msg.data.balance).toFixed(2); }
-            else if(msg.type === 'nug_channels'){ if(msg.data.enabled) drawNugChannels(msg.data.rows); }
             else if(msg.type === 'theme'){ applyTheme(msg.data); }
         } catch(e){ console.error('[ws] parse error:', e); }
     };
@@ -810,16 +871,6 @@ function connectWS(){
     };
 }
 connectWS();
-refreshNug(); setInterval(refreshNug, 60000);
-// 初始加载 NUG channel 用量（WS 推送前先 REST 拉一次）
-async function refreshNugChannels(){
-    try{
-        var r=await secureFetch('/api/nug/channels');
-        var d=await r.json();
-        if(d.enabled&&d.rows&&d.rows.length) drawNugChannels(d.rows);
-    }catch(e){}
-}
-refreshNugChannels(); setInterval(refreshNugChannels, 60000);
 
 /* ── Vibe Coding 状态切换（后端 config 是唯一真值，WS + REST 双通道同步）── */
 var _vibeActive = false;
@@ -857,7 +908,7 @@ function toggleVibe() {
     try { localStorage.setItem('vibeActive', _vibeActive ? '1' : '0'); } catch(e) {}
     applyVibeUI();
     sendVibeState();
-    refresh(); // 切换时立即请求一次 mimo 数据
+    refresh(); // 切换时立即请求一次聚合看板数据
 }
 
 /** 从后端 REST 拉取权威 vibe 状态（作为 WS 兜底，避免依赖 localStorage 缓存）。 */

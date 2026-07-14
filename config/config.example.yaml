@@ -18,6 +18,35 @@ dashboard:
       # - start: "22:00"
       #   end: "02:00"
 
+  # Vibe Coding 卡片的数据来源。Provider 名对应 src/providers/ 下的目录名。
+  vibe_coding:
+    # 环形图：可指定 token_plan Provider 和其中一个套餐项（id / planCode / name）。
+    # 留空时自动按稳定顺序选择第一个可用 Provider/套餐项，只显示一个环形图。
+    ring: {}
+    # 例如：
+    # ring:
+    #   provider: "your-token-plan-provider"
+    #   item: "你的套餐项名称或 planCode"
+
+    # 模型条：可选择提供模型/渠道明细的 Provider；未设置时按注册名稳定选择。
+    model_bars: {}
+    # 例如：
+    # model_bars:
+    #   provider: "your-model-provider"
+
+    # 余额 footer：未配置或空列表时隐藏；启用项按 Provider/名称稳定排序，最多显示前两个。
+    balances: []
+    # 例如：
+    # balances:
+    #   - provider: "provider-a"
+    #     name: "服务 A"
+    #     color: "#d1a15c"  # 必须为 #RRGGBB
+    #     enabled: true
+    #   - provider: "provider-b"
+    #     name: "服务 B"
+    #     color: "#5fa89e"
+    #     enabled: true
+
 # GitHub
 github_token: ""
 

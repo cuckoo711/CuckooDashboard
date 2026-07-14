@@ -166,8 +166,8 @@
             box-shadow:var(--card-shadow);
             position:relative; overflow:hidden;
         }
-        /* 有 footer 的卡片：底部内边距交给 footer 自己撑起，避免叠加两层间距 */
-        .card:has(.card-foot) { padding-bottom:0; }
+        /* 可见 footer 的卡片：底部内边距交给 footer 自己撑起，避免叠加两层间距。 */
+        .card:has(.card-foot:not([hidden])) { padding-bottom:0; }
         /* ── 统一卡片结构：头（左/中/右）+ 内容 + 脚（左/中/右，可不显示）── */
         .card-head { position:relative; display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; height:18px; flex-shrink:0; }
         .card-head-l {
@@ -190,6 +190,11 @@
         .card-foot-c { flex:1; min-width:0; text-align:center; font-size:10px; color:var(--text2); }
         .card-foot-r { flex-shrink:0; font-size:10px; color:var(--text2); text-shadow:var(--ts2); text-align:right; white-space:nowrap; }
         .card-foot-l b, .card-foot-r b { font-weight:700; }
+        .vibe-balances { gap:12px; }
+        .vibe-balance { display:flex; align-items:center; gap:5px; min-width:0; font-size:10px; color:var(--text2); text-shadow:var(--ts2); white-space:nowrap; }
+        .vibe-balance:first-child { margin-right:auto; }
+        .vibe-balance-dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; box-shadow:0 0 4px currentColor; }
+        .vibe-balance-value { color:var(--text); font-weight:700; font-variant-numeric:tabular-nums; }
 
         /* ── Vibe 状态切换按钮（Coding / Chilling）── */
         .vibe-toggle {

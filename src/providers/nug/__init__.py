@@ -87,8 +87,8 @@ def get_usage_summary() -> dict | None:
 def get_channel_breakdown(days: int = 7) -> list | None:
     """按 channel 分组用量。
 
-    返回原始 rows 格式:
-    [{"groupKey": str, "totalQuotaCost": str, "requestCount": int}, ...]
+    返回 rows 格式（附加插件自身的货币元数据）:
+    [{"groupKey": str, "totalQuotaCost": str, "requestCount": int, "currency": "USD"}, ...]
     """
     global _last_success_at, _last_error
     client = _get_client()
@@ -100,7 +100,11 @@ def get_channel_breakdown(days: int = 7) -> list | None:
         return None
     _last_error = None
     _last_success_at = datetime.now(timezone.utc).isoformat()
-    return rows
+    return [
+        {**row, "currency": row.get("currency", "USD")}
+        if isinstance(row, dict) else row
+        for row in rows
+    ]
 
 
 # ============================================================

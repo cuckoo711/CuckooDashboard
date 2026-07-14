@@ -79,12 +79,27 @@ get_channel_breakdown(days: int = 7) -> list | None
     [
         {
             "channel": str,    # 渠道/模型标识
-            "cost": str,       # 费用
-            "requests": int,   # 请求数
+            "cost": str,       # 费用（与 tokens 二选一即可）
             "tokens": int,     # token 数（可选）
+            "currency": str,   # 成本货币代码（成本数据建议提供）
+            "requests": int,   # 请求数
         },
         ...
     ]
+
+=== Vibe Coding 卡片来源选择 ===
+Dashboard 的 ``dashboard.vibe_coding`` 仅使用 Provider 注册名和 capability，
+不依赖任何内置 Provider 名称：
+- 环形图从 ``token_plan.get_plan_usage()`` 的 ``monthUsage.items`` 读取单个套餐项；
+  标准 Provider 也可直接返回 ``{items, percent}``。
+- 模型条优先消费 ``get_model_breakdown()``（模型 Token），缺失时消费
+  ``get_channel_breakdown()``；含 ``cost`` / ``totalCost`` 的行显示为成本，
+  含 ``tokens`` / ``totalToken`` 的行显示为 Token，货币读取可选 ``currency`` 字段。
+- 余额 footer 仅调用声明 ``balance`` capability 的 ``get_balance()``。
+
+聚合器如已在同一刷新周期取得 Provider 数据，可通过私有快照传递：
+``{provider_name: {method_name: result}}``。Vibe 层按注册名和标准方法名复用，
+未命中快照时直接调用当前选中 Provider，因此新增插件无需修改 Dashboard 代码。
 
 --- 通用（所有插件必须实现） ---
 get_status() -> dict

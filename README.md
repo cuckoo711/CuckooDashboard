@@ -140,7 +140,7 @@ The desktop app reads `data/monitor.json` to determine which display to use, the
 |---|---|---|
 | `/` | GET | Dashboard HTML page |
 | `/ws` | WebSocket | Bidirectional: server pushes data, client sends vibe/init commands |
-| `/api/data` | GET | MiMo usage data + GitHub contributions |
+| `/api/data` | GET | Aggregated daily usage, configurable Vibe card payload, and GitHub contributions |
 | `/api/health` | GET | Lightweight cached service health; does not refresh external data |
 | `/api/system` | GET | System hardware info (CPU/GPU/Memory/Disk/Network) |
 | `/api/nug` | GET | NUG platform balance |
@@ -166,6 +166,7 @@ Copy `config/config.example.yaml` to `config/config.yaml` and fill only values y
 |---|---|
 | `dashboard.token` | Optional token for POST endpoint protection |
 | `dashboard.off_peak_badge` | Off-peak time range and enable/disable |
+| `dashboard.vibe_coding` | Vibe ring, model-bar, and balance data-source selection |
 | `github_token` | GitHub Personal Access Token for precise contribution data |
 | `local_platforms` | Local MiMo-compatible platform instances (JWT auth) |
 | `nug` | NUG (NarraFork) platform credentials |
@@ -173,6 +174,33 @@ Copy `config/config.example.yaml` to `config/config.yaml` and fill only values y
 | `theme` | Active theme name (auto-saved) |
 | `lyric_offset` | Lyric timing offset in seconds (auto-saved) |
 | `vibe_active` | Vibe Coding mode state (auto-saved) |
+
+### Vibe Coding Data Sources
+
+```yaml
+dashboard:
+  vibe_coding:
+    ring:
+      provider: "token-plan-provider-id"  # optional: discovered Provider id
+      item: "plan-code-or-name"            # optional: id / planCode / name
+    model_bars:
+      provider: "usage-provider-id"        # optional: discovered Provider id
+    balances:
+      - provider: "balance-provider-a"
+        name: "Service A"
+        color: "#d1a15c"
+        enabled: true
+      - provider: "balance-provider-b"
+        name: "Service B"
+        color: "#5fa89e"
+        enabled: true
+```
+
+- Provider IDs are discovered from registered `src/providers/` plugins; adding a compatible plugin requires no Dashboard source-name changes.
+- The ring renders one Token Plan item only. When `provider` or `item` is missing or invalid, eligible Providers and plan items are sorted deterministically and the first usable item is selected.
+- `model_bars.provider` chooses the source of model/channel data. Without a value, available Providers are tried in stable name order.
+- `balances` is opt-in: omit it or set `[]` to hide the footer. Disabled, duplicate, unsupported, or unknown entries are ignored; valid entries are sorted by Provider/name and only the first two are rendered.
+- Balance colors must use `#RRGGBB`. Each rendered value follows `Name · colored dot · currency+balance`; common currency codes are shown with symbols.
 
 ### Environment Variables
 
@@ -248,9 +276,9 @@ Copy `config/config.example.yaml` to `config/config.yaml` and fill only values y
 
 The dashboard uses a single WebSocket connection (`/ws`) for all real-time data:
 
-1. On connect: server asynchronously pushes all data categories (vibe → mimo → github → media → system → nug → theme)
+1. On connect: server asynchronously pushes state plus `dashboard_data`, github, media, system, and theme payloads
 2. Background broadcaster thread (1s interval): parallel fetch of system + media + github, broadcast to all clients
-3. MiMo/NUG data refreshes at dynamic intervals based on Vibe Coding mode (20s coding / 60s chilling)
+3. Selected Vibe Providers refresh at dynamic intervals based on Vibe Coding mode (20s coding / 60s chilling)
 4. Client can send `{"type": "vibe", "active": true/false}` to toggle mode or `{"type": "init"}` to request full refresh
 
 ### Provider Plugin System

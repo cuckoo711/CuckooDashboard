@@ -84,9 +84,9 @@
     </div>
 
     <!-- 右栏：Vibe Coding & 今日消耗 -->
-    <div class="card tokenCard">
+    <div class="card tokenCard" id="vibeCard">
         <div class="card-head">
-            <span class="card-head-l"><span class="bar"></span>Vibe Coding<span class="svc-dot" id="dot-mimo"></span></span>
+            <span class="card-head-l"><span class="bar"></span>Vibe Coding<span class="svc-dot" id="dot-vibe"></span></span>
             <span class="card-head-r">
                 <span class="vibe-toggle" id="vibeToggle" onclick="toggleVibe()">
                     <span class="dot"></span><span id="vibeToggleLabel">Chilling</span>
@@ -130,21 +130,9 @@
                 <div class="leg-row"><span class="leg-dot" style="background:var(--accent)"></span>未命中<b id="todayIn">--</b><span class="leg-pct" id="todayInPct"></span></div>
                 <div class="leg-row"><span class="leg-dot" style="background:var(--crimson)"></span>输出<b id="todayOut">--</b><span class="leg-pct" id="todayOutPct"></span></div>
             </div>
-            <!-- MiMo Cookie 过期提示 -->
-            <div id="mimoExpired" style="display:none;position:absolute;inset:0;background:var(--overlay-bg);z-index:10;flex-direction:column;align-items:center;justify-content:center;border-radius:12px;">
-                <div style="font-size:20px;margin-bottom:8px;">🔑</div>
-                <div style="font-size:13px;color:var(--text);margin-bottom:4px;">MiMo Cookie 已过期</div>
-                <div style="font-size:11px;color:var(--text-muted);text-align:center;line-height:1.5;">
-                    请在终端运行：<br>
-                    <code style="background:var(--code-bg);padding:2px 6px;border-radius:4px;font-size:10px;">python mimo_usage.py --login qr --save</code><br>
-                    用小米手机扫码刷新
-                </div>
-            </div>
         </div>
-        <div class="card-foot">
-            <span class="card-foot-l">MiMo 余额 <b id="sBal" style="color:var(--gold)">--</b></span>
-            <span class="card-foot-r">NUG <span class="svc-dot" id="dot-nug"></span> <b id="nugBal" style="color:var(--green)">--</b></span>
-        </div>
+        <!-- 未配置余额时保持隐藏；由 dashboard.js 按配置动态生成最多两个条目。 -->
+        <div class="card-foot vibe-balances" id="vibeBalances" hidden></div>
     </div>
 
     <!-- 左下：歌词播放器 -->

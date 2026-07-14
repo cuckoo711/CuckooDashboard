@@ -132,8 +132,17 @@ def _mimo_expired_payload() -> dict:
         "today": {"in": 0, "out": 0, "cache": 0, "total": 0, "inMiss": 0},
         "github": {},
         "system": {},
+        "_provider_snapshots": {},
         "timestamp": time.time(),
     }
+
+
+def _provider_snapshots(provider: ModuleType, methods: dict[str, object]) -> dict[str, dict[str, object]]:
+    """按运行时注册名导出已拉取 Provider 数据，供可扩展 UI 层复用。"""
+    for name, registered in get_providers().items():
+        if registered is provider:
+            return {name: methods}
+    return {}
 
 
 def _calculate_mimo_in_miss(daily_data: dict) -> int:
@@ -254,6 +263,11 @@ def fetch_all_data() -> dict:
             "tp_usage_detail": tp_usage_detail or [],
             "daily_detail": daily_data,
             "local_usage": local_usage,
+            "_provider_snapshots": _provider_snapshots(_mimo, {
+                "get_plan_usage": usage,
+                "get_model_breakdown": tp_usage_detail,
+                "get_balance": balance_data,
+            }),
             "mimo_inMiss": mimo_in_miss,
             "today": today,
         }

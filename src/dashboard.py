@@ -50,9 +50,9 @@ from services.media_service import (
     save_lyric_offset,
 )
 from providers import fetch_all_data, get_nug_payload, get_nug_channel_breakdown
-from providers.mimo.api import get_mimo_api
 from services.player_service import ALLOWED_PLAYER_ACTIONS, control_player
 from services.system_service import get_system_info
+from services.vibe_data_service import get_vibe_data
 from services.theme import (
     THEMES,
     load_theme_index,
@@ -64,6 +64,19 @@ from services.theme import (
 
 app = Flask(__name__, static_folder="static")
 sock = Sock(app)
+
+
+def _get_dashboard_data() -> dict:
+    """组合既有今日用量与可配置的 Vibe 卡片数据。
+
+    ``fetch_all_data`` 可携带由任意聚合器产生的私有 Provider 快照；这里将其
+    传给 Vibe 服务复用后移除，避免向 API/WS 客户端泄露内部缓存结构。
+    """
+    data = dict(fetch_all_data())
+    snapshots = data.pop("_provider_snapshots", {})
+    data["vibe"] = get_vibe_data(prefetched_provider_data=snapshots)
+    return data
+
 
 # ============================================================
 # WebSocket 统一数据推送
@@ -107,8 +120,8 @@ def _ws_send_vibe(ws):
 
 def _ws_send_all_data(ws):
     """向单个客户端立即推送全部数据（连接时一次性调用）。
-    Vibe 状态最先发，之后再推轻量数据（mimo/balance），重量数据（system）放最后。
-    每一步都独立 try/except，避免任何 provider 异常打断整个推送链路。
+    Vibe 状态最先发，随后发送包含可配置环图、模型条和余额的聚合数据；
+    每一步都独立 try/except，避免任何 Provider 异常打断整个推送链路。
     """
     def _send(msg_type, data):
         try:
@@ -126,13 +139,11 @@ def _ws_send_all_data(ws):
     # 最先发 vibe 状态：保证 UI 立即能显示正确的 Coding/Chilling 标签，
     # 即便后续任何 provider 抛异常也不会影响。
     _ws_send_vibe(ws)
-    _safe_send("mimo", fetch_all_data)
+    _safe_send("dashboard_data", _get_dashboard_data)
     _safe_send("github", get_github_data)
     _safe_send("media", get_media_info)
     # system 最慢，放最后
     _safe_send("system", get_system_info)
-    _safe_send("nug", get_nug_payload)
-    _safe_send("nug_channels", lambda: get_nug_channel_breakdown(days=7))
     try:
         from services.theme import load_theme_index, theme_response
         _send("theme", theme_response(load_theme_index()))
@@ -244,23 +255,17 @@ def _ws_broadcaster():
                     except Exception as e:
                         logger.error(f"[ws] {msg_type} broadcast error: {e}")
 
-                # mimo + nug：Coding 模式 20 秒，Chilling 模式 60 秒
-                _nug_counter += 1
-                mimo_interval = 20 if _ws_vibe_coding else 60
-                if _nug_counter >= mimo_interval:
-                    _nug_counter = 0
+                # Vibe 卡片：Coding 模式 20 秒，Chilling 模式 60 秒。
+                # 环图、模型条和余额在同一个 payload 内刷新，避免跨消息拼装。
+                _vibe_counter += 1
+                vibe_interval = 20 if _ws_vibe_coding else 60
+                if _vibe_counter >= vibe_interval:
+                    _vibe_counter = 0
                     try:
-                        _ws_broadcast({"type": "mimo", "data": fetch_all_data()})
+                        _ws_broadcast({"type": "dashboard_data", "data": _get_dashboard_data()})
                     except Exception as e:
-                        logger.error(f"[ws] mimo broadcast error: {e}")
-                    try:
-                        _ws_broadcast({"type": "nug", "data": get_nug_payload()})
-                    except Exception as e:
-                        logger.error(f"[ws] nug broadcast error: {e}")
-                    try:
-                        _ws_broadcast({"type": "nug_channels", "data": get_nug_channel_breakdown(days=7)})
-                    except Exception as e:
-                        logger.error(f"[ws] nug_channels broadcast error: {e}")
+                        logger.error(f"[ws] vibe data broadcast error: {e}")
+
         except Exception as e:
             logger.error(f"[ws] broadcaster error: {e}")
         # 精确计时：扣除执行耗时，保证 1 秒间隔
@@ -367,8 +372,8 @@ def index():
 
 @app.route("/api/data")
 def api_data():
-    """返回所有 MiMo 数据 + GitHub 贡献"""
-    data = fetch_all_data()
+    """返回今日聚合数据、可配置 Vibe 卡片数据和 GitHub 贡献。"""
+    data = _get_dashboard_data()
     data["github"] = get_github_data()
     return jsonify(data)
 
