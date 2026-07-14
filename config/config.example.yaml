@@ -68,12 +68,6 @@ nug:
   username: ""
   password: ""
 
-# 网易云音乐 API（歌词获取）
-netease_api:
-  enabled: false
-  base_url: ""
-  cookie: ""
-
 # 硬件信息覆盖（用于修正自动检测不准确的情况）
 hardware_overrides:
   cpu_model: null          # 手动指定 CPU 型号，如 "AMD Ryzen 9 9950X"
