@@ -95,15 +95,19 @@
         select.value = current || '';
     }
 
+    var REMOVE_ICON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>';
+
     function rowParts(kind) {
         var row = el('div', 'repeat-row');
         row.dataset.rowKind = kind;
         var fields = el('div', 'row-fields');
-        var remove = el('button', 'remove-btn', '移除');
+        var remove = el('button', 'remove-btn');
         remove.type = 'button';
+        remove.innerHTML = REMOVE_ICON;
+        remove.title = '移除';
         remove.dataset.removeRow = '1';
+        fields.appendChild(remove);
         row.appendChild(fields);
-        row.appendChild(remove);
         return {row: row, fields: fields};
     }
 
@@ -175,15 +179,16 @@
         field._providerSpec = spec;
         var type = spec.type;
         if (type === 'boolean') {
-            var checkLine = el('label', 'check-line provider-check');
-            var checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.className = 'provider-input';
-            checkbox.dataset.fieldKey = spec.key;
-            checkbox.checked = !!value;
-            checkLine.appendChild(checkbox);
-            checkLine.appendChild(el('span', '', spec.label || spec.key));
-            field.appendChild(checkLine);
+            var switchLabel = el('label', 'switch provider-switch');
+            var switchInput = document.createElement('input');
+            switchInput.type = 'checkbox';
+            switchInput.className = 'provider-input';
+            switchInput.dataset.fieldKey = spec.key;
+            switchInput.checked = !!value;
+            switchLabel.appendChild(switchInput);
+            switchLabel.appendChild(el('span'));
+            field.appendChild(switchLabel);
+            field.appendChild(el('span', 'provider-switch-label', spec.label || spec.key));
             if (spec.description) field.appendChild(el('div', 'field-help', spec.description));
             return field;
         }
@@ -364,12 +369,15 @@
         addScalarControl(parts.fields, {key: 'name', label: '显示名称', type: 'string'}, entry.name || '', true).classList.add('balance-name');
         addScalarControl(parts.fields, {key: 'color', label: '颜色', type: 'color'}, entry.color || '#888888', true).classList.add('balance-color');
         var enabledField = el('label', 'row-field check-row');
+        var switchLabel = el('label', 'switch');
         var enabled = document.createElement('input');
         enabled.type = 'checkbox';
         enabled.className = 'balance-enabled';
         enabled.checked = entry.enabled !== false;
-        enabledField.appendChild(enabled);
-        enabledField.appendChild(el('span', 'row-label check-label', '启用'));
+        switchLabel.appendChild(enabled);
+        switchLabel.appendChild(el('span'));
+        enabledField.appendChild(switchLabel);
+        enabledField.appendChild(el('span', 'balance-enabled-label', '启用'));
         parts.fields.appendChild(enabledField);
         container.appendChild(parts.row);
     }
