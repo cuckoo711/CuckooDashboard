@@ -14,6 +14,7 @@ import time
 import psutil
 
 from core.config import load_config
+from core.perfcounters import get_cpu_actual_frequency_mhz, get_gpu_dynamic_metrics
 from core.proc import run_ps
 
 logger = logging.getLogger("cuckoo.system")
@@ -101,17 +102,20 @@ def _async_dynamic_loop():
             static = _collect_system_info._static
             s = static.get("data")
 
-            # ── CPU 实时频率：Get-Counter 比 psutil.cpu_freq() 准确 ──
-            try:
-                out = run_ps(r"""
+            # ── CPU 实时频率：优先使用常驻 PDH query，缺失时兼容旧 PS 路径 ──
+            freq_mhz = get_cpu_actual_frequency_mhz()
+            if freq_mhz is None:
+                try:
+                    out = run_ps(r"""
 $c = Get-Counter '\Processor Information(_Total)\Actual Frequency' -ErrorAction Stop
 [math]::Round($c.CounterSamples.CookedValue, 0)
 """, timeout=3)
-                if out:
-                    with _dynamic_refresh_lock:
-                        _dynamic_cpu_freq_mhz = int(out)
-            except Exception:
-                pass
+                    freq_mhz = int(out) if out else None
+                except Exception:
+                    freq_mhz = None
+            if freq_mhz is not None:
+                with _dynamic_refresh_lock:
+                    _dynamic_cpu_freq_mhz = freq_mhz
 
             if s and s.get("gpus") is not None:
                 _refresh_dynamic(s["gpus"], s["disks"])
@@ -403,10 +407,72 @@ foreach ($pd in $physDisks) {
         return {}
 
 
-def _refresh_dynamic(gpus: list, disks: list):
-    """一次 PowerShell 调用刷新 GPU 利用率 + 显存占用"""
+def _get_target_gpus(gpus: list) -> list:
+    """优先返回独显；没有独显时回退为全部 GPU。"""
+    apu_devs = _get_apu_devs()
+    discrete = []
+    for gpu in gpus:
+        pnp = gpu.get("pnp", "")
+        match = re.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
+        if match and match.group(1).lower() not in apu_devs:
+            discrete.append(gpu)
+    return discrete or list(gpus)
 
-    # ── GPU 利用率 + 显存：仅 WMI 查询，不用 Get-Counter（避免通配符展开的 1-3 秒开销）──
+
+def _apply_gpu_luid_metrics(
+    gpus: list,
+    luid_util: dict[str, int],
+    luid_vram: dict[str, int] | None = None,
+):
+    """将 LUID 指标匹配到展示 GPU，并尽可能稳定地复用已有映射。
+
+    PDH/WMI 的 GPU Adapter Memory 使用 LUID，静态硬件信息使用 PCI PNP ID；
+    Windows 没有在这两套公开数据中提供直接关联。首次仍按已有策略，以
+    显存容量/当前使用量的降序建立映射；后续刷新则复用保存到 GPU dict 的
+    ``luid``，避免采样波动导致卡片跳到另一张显卡。
+    """
+    target_gpus = _get_target_gpus(gpus)
+    if not target_gpus:
+        return
+
+    vram_by_luid = luid_vram or {}
+    known_luids = set(luid_util) | set(vram_by_luid)
+    if not known_luids:
+        for gpu in target_gpus:
+            gpu["util"] = 0
+            if luid_vram is not None:
+                gpu["vram_used"] = 0
+        return
+
+    assigned_luids = set()
+    for gpu in target_gpus:
+        luid = str(gpu.get("luid", "")).lower()
+        if luid in known_luids and luid not in assigned_luids:
+            assigned_luids.add(luid)
+        else:
+            gpu.pop("luid", None)
+
+    unassigned_gpus = [gpu for gpu in target_gpus if "luid" not in gpu]
+    candidate_luids = sorted(
+        known_luids - assigned_luids,
+        key=lambda luid: (vram_by_luid.get(luid, 0), luid_util.get(luid, 0)),
+        reverse=True,
+    )
+    for gpu, luid in zip(
+        sorted(unassigned_gpus, key=lambda gpu: -gpu.get("vram", 0)),
+        candidate_luids,
+    ):
+        gpu["luid"] = luid
+
+    for gpu in target_gpus:
+        luid = str(gpu.get("luid", "")).lower()
+        gpu["util"] = int(luid_util.get(luid, 0))
+        if luid_vram is not None:
+            gpu["vram_used"] = int(vram_by_luid.get(luid, 0))
+
+
+def _refresh_gpu_dynamic_from_powershell(gpus: list):
+    """兼容回退：pywin32/驱动计数器不可用时保留旧的 GPU 采样路径。"""
     out = run_ps(r"""
 # GPU 引擎利用率：聚合每个 LUID 的最大利用率（跳过拷贝/视频引擎）
 $engines = Get-CimInstance Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine -Property Name, UtilizationPercentage |
@@ -421,7 +487,7 @@ foreach ($e in $engines) {
 }
 $luids | ConvertTo-Json -Compress
 Write-Output '---SPLIT1---'
-# GPU 显存占用：Win32_VideoController.CurrentUsage（字节），排除核显
+# GPU 显存占用：Win32_VideoController.CurrentUsage（字节）
 $gpus = Get-CimInstance Win32_VideoController -Property PNPDeviceID, CurrentUsage |
     Where-Object { $_.PNPDeviceID -match 'DEV_' -and $_.Name -notmatch 'Microsoft|Idd' }
 $memMap = @{}
@@ -435,83 +501,77 @@ $memMap | ConvertTo-Json -Compress
     if not out:
         return
 
-    parts1 = out.split("---SPLIT1---")
-    util_json = parts1[0].strip() if parts1 else ""
-    mem_json = parts1[1].strip() if len(parts1) > 1 else ""
+    parts = out.split("---SPLIT1---")
+    util_json = parts[0].strip() if parts else ""
+    mem_json = parts[1].strip() if len(parts) > 1 else ""
 
-    # ── GPU 利用率（已由 PS 聚合为 {luid_suffix: max_util}）──
-    luid_util = {}
     try:
-        luid_util = json.loads(util_json)
-        luid_util = {k: int(v) for k, v in luid_util.items()}
+        raw_util = json.loads(util_json)
+        luid_util = {str(key).lower(): int(value) for key, value in (raw_util or {}).items()}
     except Exception:
-        pass
+        luid_util = {}
+    _apply_gpu_luid_metrics(gpus, luid_util)
 
-    # ── GPU 显存（Win32_VideoController.CurrentUsage，按 PCI DEV_ID 索引）──
-    dev_vram = {}
     try:
-        dev_vram = json.loads(mem_json)
-        dev_vram = {k: int(v) for k, v in dev_vram.items()}
+        raw_memory = json.loads(mem_json)
+        dev_vram = {str(key).lower(): int(value) for key, value in (raw_memory or {}).items()}
     except Exception:
-        pass
-
-    _APU_DEVS = {"13c0", "13e0", "15bf", "1681", "164f", "15e4"}
-
-    # ── 匹配：GPU engine LUID 和 Win32_VideoController PCI DEV_ID 是不同的标识符，
-    #    无法直接对应。策略：分别按 VRAM 大小排序，用位置索引匹配。──
-
-    # 收集独显列表（排除 APU）
-    discrete = []
+        dev_vram = {}
     for gpu in gpus:
-        pnp = gpu.get("pnp", "")
-        dm = re.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
-        if dm and dm.group(1).lower() not in _APU_DEVS:
-            discrete.append(gpu)
-    if not discrete:
-        discrete = list(gpus)
-
-    # 将 LUID 利用率按值降序排列 → 匹配独显（按 VRAM 降序排列）
-    sorted_util = sorted(luid_util.items(), key=lambda x: -x[1])
-    sorted_discrete = sorted(discrete, key=lambda g: -g.get("vram", 0))
-    for i, gpu in enumerate(sorted_discrete):
-        gpu["util"] = int(sorted_util[i][1]) if i < len(sorted_util) else 0
-
-    # 显存占用：按 DEV_ID 匹配独显
-    for gpu in gpus:
-        pnp = gpu.get("pnp", "")
-        dm = re.search(r"DEV_([0-9A-Fa-f]{4})", pnp)
-        if dm:
-            dev_id = dm.group(1).lower()
+        match = re.search(r"DEV_([0-9A-Fa-f]{4})", gpu.get("pnp", ""))
+        if match:
+            dev_id = match.group(1).lower()
             if dev_id in dev_vram:
                 gpu["vram_used"] = dev_vram[dev_id]
 
-    # ── 磁盘用量 + 分区明细（psutil 直接读取）──
+
+def _refresh_disk_usage(disks: list):
+    """使用 psutil 刷新物理盘聚合用量与各分区明细。"""
     try:
         for dk in disks:
             letters_str = dk.get("model", "")
-            m = re.search(r"\(([A-Z]+)\)", letters_str)
-            if m:
-                total = 0
-                used = 0
-                parts = []
-                for letter in m.group(1):
-                    try:
-                        u = psutil.disk_usage(f"{letter}:\\")
-                        total += u.total
-                        used += u.used
-                        parts.append({"letter": letter, "total": u.total, "used": u.used,
-                                       "percent": round(u.used / u.total * 100, 1) if u.total > 0 else 0})
-                    except Exception:
-                        pass
-                if total > 0:
-                    dk["total"] = total
-                    dk["used"] = used
-                    dk["percent"] = round(used / total * 100, 1)
-                dk["partitions"] = parts
-            else:
+            match = re.search(r"\(([A-Z]+)\)", letters_str)
+            if not match:
                 dk["partitions"] = []
+                continue
+
+            total = 0
+            used = 0
+            parts = []
+            for letter in match.group(1):
+                try:
+                    usage = psutil.disk_usage(f"{letter}:\\")
+                    total += usage.total
+                    used += usage.used
+                    parts.append({
+                        "letter": letter,
+                        "total": usage.total,
+                        "used": usage.used,
+                        "percent": round(usage.used / usage.total * 100, 1) if usage.total > 0 else 0,
+                    })
+                except Exception:
+                    pass
+            if total > 0:
+                dk["total"] = total
+                dk["used"] = used
+                dk["percent"] = round(used / total * 100, 1)
+            dk["partitions"] = parts
     except Exception:
         pass
+
+
+def _refresh_dynamic(gpus: list, disks: list):
+    """刷新 GPU 高频指标与磁盘用量，优先走常驻 PDH/WMI 采样。"""
+    metrics = get_gpu_dynamic_metrics()
+    if metrics is None:
+        _refresh_gpu_dynamic_from_powershell(gpus)
+    else:
+        _apply_gpu_luid_metrics(
+            gpus,
+            metrics.utilization_by_luid,
+            metrics.vram_used_by_luid,
+        )
+    _refresh_disk_usage(disks)
 
 
 def _check_disk_changes(disks: list):

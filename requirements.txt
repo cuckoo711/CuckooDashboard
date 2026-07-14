@@ -11,6 +11,7 @@ winrt-Windows.Foundation>=3.2.0
 winrt-Windows.Foundation.Collections>=3.2.0
 winrt-Windows.Storage.Streams>=3.2.0
 uiautomation>=2.0.20
+pywin32>=306
 # Optional QR login helpers
 segno>=1.6.0
 qrcode>=7.4.0

@@ -22,3 +22,6 @@ venv/
 
 # IDE
 .kiro/
+
+# Test artifacts
+dashboard_check.png
