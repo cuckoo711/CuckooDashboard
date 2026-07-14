@@ -92,55 +92,12 @@
                     </div>
                 </section>
 
-                <section class="panel">
+                <section class="panel panel-wide">
                     <div class="panel-title">
-                        <div><span class="section-mark"></span><h2>本地平台</h2></div>
-                        <label class="switch"><input id="localEnabled" type="checkbox"><span></span></label>
+                        <div><span class="section-mark"></span><h2>Provider 配置</h2></div>
+                        <span class="panel-hint">由 Provider Schema 自动渲染</span>
                     </div>
-                    <div class="field-grid compact-grid">
-                        <div class="field">
-                            <label for="localUsername">用户名</label>
-                            <input id="localUsername" type="text">
-                        </div>
-                        <div class="field">
-                            <label for="localPassword">默认密码</label>
-                            <div class="secret-control">
-                                <input id="localPassword" type="password" placeholder="留空保持当前值" data-secret-path="local_platforms.password">
-                                <button type="button" class="small-btn reveal-btn" data-reveal-for="localPassword">查看</button>
-                                <button type="button" class="small-btn danger-btn clear-secret-btn" data-clear-for="localPassword">清空</button>
-                            </div>
-                            <div class="field-help" data-secret-help-for="localPassword"></div>
-                        </div>
-                    </div>
-                    <div class="subsection-inline-head"><h3>实例 URL</h3><span>支持单个 URL 覆盖密码</span></div>
-                    <div id="localUrlRows" class="repeat-list"></div>
-                    <button type="button" class="link-btn" id="addLocalUrl">+ 添加实例</button>
-                </section>
-
-                <section class="panel">
-                    <div class="panel-title">
-                        <div><span class="section-mark"></span><h2>NUG</h2></div>
-                        <label class="switch"><input id="nugEnabled" type="checkbox"><span></span></label>
-                    </div>
-                    <div class="field-grid compact-grid">
-                        <div class="field field-wide">
-                            <label for="nugUrl">服务地址</label>
-                            <input id="nugUrl" type="url" placeholder="https://…">
-                        </div>
-                        <div class="field">
-                            <label for="nugUsername">用户名</label>
-                            <input id="nugUsername" type="text">
-                        </div>
-                        <div class="field">
-                            <label for="nugPassword">密码</label>
-                            <div class="secret-control">
-                                <input id="nugPassword" type="password" placeholder="留空保持当前值" data-secret-path="nug.password">
-                                <button type="button" class="small-btn reveal-btn" data-reveal-for="nugPassword">查看</button>
-                                <button type="button" class="small-btn danger-btn clear-secret-btn" data-clear-for="nugPassword">清空</button>
-                            </div>
-                            <div class="field-help" data-secret-help-for="nugPassword"></div>
-                        </div>
-                    </div>
+                    <div id="providerPanels" class="provider-panels"></div>
                 </section>
 
                 <section class="panel panel-wide">

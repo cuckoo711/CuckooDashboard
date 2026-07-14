@@ -111,4 +111,30 @@ get_status() -> dict
         "error": str | None,
         "last_success_at": str | None,
     }
+
+=== 配置 Schema（可选） ===
+
+Provider 可声明 ``CONFIG_SCHEMA``，让本地配置后台自动渲染配置表单：
+```python
+CONFIG_SCHEMA = {
+    "config_key": "provider_name",
+    "title": "显示名称",
+    "description": "配置说明",
+    "order": 30,
+    "fields": [
+        {"key": "enabled", "label": "启用", "type": "boolean", "default": False},
+        {"key": "url", "label": "服务地址", "type": "url"},
+        {"key": "password", "label": "密码", "type": "secret"},
+    ],
+}
+```
+
+支持的字段类型：``boolean``、``string``、``secret``、``url``、``integer``、
+``number``、``select``、``color``、``time``、``string_list``、``object_list``、
+``key_value_map``。``object_list`` 可以通过 ``identity_key`` 稳定匹配列表项，
+避免列表排序/删除后敏感字段错配。
+
+可选钩子：
+- ``validate_config(config)``：执行 Provider 专属的跨字段校验。
+- ``reload_config()``：配置保存后清理客户端和内存缓存。
 """

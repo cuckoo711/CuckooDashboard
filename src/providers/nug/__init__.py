@@ -9,12 +9,25 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from core.config import load_config
+from core.config import get_provider_config
 from providers.nug.client import NUGClient
 
 logger = logging.getLogger("cuckoo.providers.nug")
 
 CAPABILITIES = ["balance", "api_usage"]
+
+CONFIG_SCHEMA = {
+    "config_key": "nug",
+    "title": "NUG",
+    "description": "NarraFork 平台余额和渠道用量配置。",
+    "order": 30,
+    "fields": [
+        {"key": "enabled", "label": "启用", "type": "boolean", "default": False},
+        {"key": "url", "label": "服务地址", "type": "url", "default": ""},
+        {"key": "username", "label": "用户名", "type": "string", "default": ""},
+        {"key": "password", "label": "密码", "type": "secret", "default": ""},
+    ],
+}
 
 _client: NUGClient | None = None
 _client_initialized = False
@@ -29,8 +42,7 @@ def _get_client() -> NUGClient | None:
         return _client
     _client_initialized = True
 
-    config = load_config()
-    nug = config.get("nug", {})
+    nug = get_provider_config("nug", {})
     if not nug.get("enabled"):
         return None
     url = nug.get("url", "")
@@ -123,8 +135,7 @@ def get_channel_breakdown(days: int = 7) -> list | None:
 
 def get_status() -> dict:
     """插件状态。"""
-    config = load_config()
-    nug_config = config.get("nug", {})
+    nug_config = get_provider_config("nug", {})
     enabled = bool(nug_config.get("enabled"))
     if not enabled:
         status = "disabled"

@@ -1,6 +1,8 @@
 # MiMo Usage Dashboard 配置文件
 # 所有运行时配置统一在此管理
 
+config_version: 2
+
 # Dashboard 设置
 dashboard:
   token: ""
@@ -47,26 +49,33 @@ dashboard:
     #     color: "#5fa89e"
     #     enabled: true
 
-# GitHub
+# Provider 配置
+# 每个 src/providers/ 插件的配置统一放在 providers.<provider_name> 下。
+providers:
+  # MiMo 认证 Cookie 由 mimo_usage.py / config/cookies.json 管理。
+  mimo:
+    enabled: true
+
+  # 本地平台（MiMo 兼容）
+  local_platform:
+    enabled: false
+    username: ""
+    password: ""
+    urls: []
+    # urls 格式示例:
+    # - url: "http://192.168.1.100:7778"
+    # - url: "https://192.168.1.200:7778"
+    #   password: "custom_password"
+
+  # NUG (NarraFork) 平台
+  nug:
+    enabled: false
+    url: ""
+    username: ""
+    password: ""
+
+# GitHub（当前仍由独立 Service 管理，不属于 src/providers 插件）
 github_token: ""
-
-# 本地平台（MiMo 兼容）
-local_platforms:
-  enabled: false
-  username: ""
-  password: ""
-  urls: []
-  # urls 格式示例:
-  # - url: "http://192.168.1.100:7778"
-  # - url: "https://192.168.1.200:7778"
-  #   password: "custom_password"
-
-# NUG (NarraFork) 平台
-nug:
-  enabled: false
-  url: ""
-  username: ""
-  password: ""
 
 # 硬件信息覆盖（用于修正自动检测不准确的情况）
 hardware_overrides:

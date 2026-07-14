@@ -1,4 +1,4 @@
-"""配置后台的读取、脱敏、校验与保存逻辑。"""
+"""配置后台的读取、脱敏、Schema 校验与保存逻辑。"""
 
 from __future__ import annotations
 
@@ -9,20 +9,16 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
 
-from core.config import load_config, save_config
+from core.config import CONFIG_VERSION, load_config, migrate_config, save_config
+from providers import get_provider_config_schemas, get_providers
 from services.theme import THEMES
 
 SECRET_MASK = "••••••"
+_MISSING = object()
 _TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
 _LOG_MODES = {"daily", "size"}
-_SECRET_KEYS = {
-    "dashboard.token",
-    "github_token",
-    "local_platforms.password",
-    "nug.password",
-}
 
 
 class SettingsValidationError(ValueError):
@@ -77,9 +73,7 @@ def _finite_number(value: Any, field: str, *, minimum: float | None = None) -> i
         raise SettingsValidationError("必须是有限数字", field)
     if minimum is not None and number < minimum:
         raise SettingsValidationError(f"不能小于 {minimum:g}", field)
-    if isinstance(value, int):
-        return value
-    return number
+    return value if isinstance(value, int) else number
 
 
 def _integer(value: Any, field: str, *, minimum: int = 0) -> int:
@@ -133,7 +127,6 @@ def _validate_off_peak(value: Any) -> dict[str, Any]:
 def _validate_vibe(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise SettingsValidationError("必须是对象", "dashboard.vibe_coding")
-
     raw_ring = value.get("ring", {})
     raw_model = value.get("model_bars", {})
     if not isinstance(raw_ring, Mapping) or not isinstance(raw_model, Mapping):
@@ -159,7 +152,6 @@ def _validate_vibe(value: Any) -> dict[str, Any]:
         enabled = _boolean(raw.get("enabled", True), f"{field}.enabled")
         provider_raw = raw.get("provider")
         if not enabled and not provider_raw:
-            # 允许用户先添加空行再关闭，保存时直接忽略该行。
             continue
         provider = _required_string(provider_raw, f"{field}.provider")
         provider_key = provider.casefold()
@@ -171,98 +163,7 @@ def _validate_vibe(value: Any) -> dict[str, Any]:
         if not isinstance(color, str) or not _COLOR_RE.fullmatch(color):
             raise SettingsValidationError("颜色必须为 #RRGGBB", f"{field}.color")
         balances.append({"provider": provider, "name": name, "color": color, "enabled": enabled})
-
     return {"ring": ring, "model_bars": model_bars, "balances": balances}
-
-
-def _entry_url(entry: Any) -> str:
-    if isinstance(entry, Mapping):
-        value = entry.get("url", "")
-    else:
-        value = entry
-    return value.strip() if isinstance(value, str) else ""
-
-
-def _entry_password(entry: Any) -> str | None:
-    if isinstance(entry, Mapping):
-        password = entry.get("password")
-        return password if isinstance(password, str) and password else None
-    return None
-
-
-def _secret_action(value: Any, field: str) -> tuple[str, str | None]:
-    if value is None:
-        return "keep", None
-    if not isinstance(value, Mapping):
-        raise SettingsValidationError("敏感字段操作必须是对象", field)
-    action = value.get("action", "keep")
-    if action not in {"keep", "set", "clear"}:
-        raise SettingsValidationError("操作必须是 keep、set 或 clear", field)
-    if action == "set":
-        secret = value.get("value")
-        if not isinstance(secret, str) or not secret:
-            raise SettingsValidationError("设置敏感字段时不能为空", f"{field}.value")
-        return action, secret
-    return action, None
-
-
-def _validate_local_urls(
-    value: Any,
-    current_urls: Any,
-    url_secret_updates: Any,
-) -> list[str | dict[str, str]]:
-    if not isinstance(value, list):
-        raise SettingsValidationError("必须是列表", "local_platforms.urls")
-    if url_secret_updates is None:
-        url_secret_updates = []
-    if not isinstance(url_secret_updates, list):
-        raise SettingsValidationError("必须是列表", "secrets.local_platforms.url_passwords")
-
-    updates: dict[str, Mapping[str, Any]] = {}
-    for idx, item in enumerate(url_secret_updates):
-        if not isinstance(item, Mapping):
-            raise SettingsValidationError("必须是对象", f"secrets.local_platforms.url_passwords[{idx}]")
-        original = item.get("original_url") or item.get("url")
-        if not isinstance(original, str) or not original.strip():
-            raise SettingsValidationError("缺少原始 URL", f"secrets.local_platforms.url_passwords[{idx}]")
-        updates[original.strip()] = item
-
-    old_by_url = {_entry_url(item): item for item in (current_urls if isinstance(current_urls, list) else []) if _entry_url(item)}
-    result: list[str | dict[str, str]] = []
-    seen_urls: set[str] = set()
-    for idx, raw in enumerate(value):
-        if isinstance(raw, Mapping):
-            url = raw.get("url", "")
-            original_url = raw.get("original_url") or url
-        else:
-            url = raw
-            original_url = raw
-        if not isinstance(url, str):
-            raise SettingsValidationError("必须是字符串或对象", f"local_platforms.urls[{idx}]")
-        url = url.strip()
-        original_url = original_url.strip() if isinstance(original_url, str) else ""
-        if not url:
-            continue
-        url = _http_url(url, f"local_platforms.urls[{idx}].url", required=True)
-        if url.casefold() in seen_urls:
-            raise SettingsValidationError("URL 不能重复", f"local_platforms.urls[{idx}].url")
-        seen_urls.add(url.casefold())
-
-        old_entry = old_by_url.get(original_url) or old_by_url.get(url)
-        old_password = _entry_password(old_entry)
-        update = updates.get(original_url) or updates.get(url)
-        action, secret = _secret_action(update, f"secrets.local_platforms.url_passwords[{idx}]")
-        if action == "keep":
-            secret = old_password
-        if action == "set" and secret:
-            result.append({"url": url, "password": secret})
-        elif action == "clear":
-            result.append(url)
-        elif secret:
-            result.append({"url": url, "password": secret})
-        else:
-            result.append(url)
-    return result
 
 
 def _validate_hardware(value: Any) -> dict[str, Any]:
@@ -271,10 +172,7 @@ def _validate_hardware(value: Any) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key in ("cpu_model", "mem_name", "gpu_model"):
         raw = value.get(key)
-        if raw is None or raw == "":
-            result[key] = None
-        else:
-            result[key] = _required_string(raw, f"hardware_overrides.{key}")
+        result[key] = None if raw is None or raw == "" else _required_string(raw, f"hardware_overrides.{key}")
 
     mem = value.get("mem_installed_gb")
     result["mem_installed_gb"] = None if mem is None or mem == "" else _finite_number(
@@ -284,11 +182,12 @@ def _validate_hardware(value: Any) -> dict[str, Any]:
     raw_vram = value.get("gpu_vram_gb", {})
     if not isinstance(raw_vram, Mapping):
         raise SettingsValidationError("必须是对象", "hardware_overrides.gpu_vram_gb")
-    vram: dict[str, float | int] = {}
-    for name, amount in raw_vram.items():
-        key = _required_string(name, "hardware_overrides.gpu_vram_gb")
-        vram[key] = _finite_number(amount, f"hardware_overrides.gpu_vram_gb.{key}", minimum=0.01)
-    result["gpu_vram_gb"] = vram
+    result["gpu_vram_gb"] = {
+        _required_string(name, "hardware_overrides.gpu_vram_gb"): _finite_number(
+            amount, f"hardware_overrides.gpu_vram_gb.{name}", minimum=0.01
+        )
+        for name, amount in raw_vram.items()
+    }
 
     raw_apu = value.get("apu_device_ids")
     if raw_apu is None or raw_apu == "":
@@ -312,11 +211,10 @@ def _validate_logging(value: Any) -> dict[str, Any]:
     mode = _required_string(value.get("mode", "daily"), "logging.mode").lower()
     if mode not in _LOG_MODES:
         raise SettingsValidationError("模式必须为 daily 或 size", "logging.mode")
-    directory = _required_string(value.get("dir", "logs"), "logging.dir")
     return {
         "level": level,
         "mode": mode,
-        "dir": directory,
+        "dir": _required_string(value.get("dir", "logs"), "logging.dir"),
         "keep_days": _integer(value.get("keep_days", 7), "logging.keep_days", minimum=0),
         "max_size_mb": _integer(value.get("max_size_mb", 5), "logging.max_size_mb", minimum=1),
         "max_backups": _integer(value.get("max_backups", 5), "logging.max_backups", minimum=0),
@@ -324,44 +222,154 @@ def _validate_logging(value: Any) -> dict[str, Any]:
     }
 
 
-def _public_config(config: Mapping[str, Any]) -> dict[str, Any]:
+def _schema_default(spec: Mapping[str, Any]) -> Any:
+    if "default" in spec:
+        return copy.deepcopy(spec["default"])
+    field_type = spec.get("type")
+    if field_type == "boolean":
+        return False
+    if field_type in {"string", "secret", "url", "time", "select", "color"}:
+        return ""
+    if field_type in {"string_list", "object_list"}:
+        return []
+    if field_type == "key_value_map":
+        return {}
+    return None
+
+
+def _field_by_key(fields: Any, key: str) -> Mapping[str, Any] | None:
+    if not isinstance(fields, list):
+        return None
+    for field in fields:
+        if isinstance(field, Mapping) and field.get("key") == key:
+            return field
+    return None
+
+
+def _public_value(value: Any, spec: Mapping[str, Any]) -> Any:
+    field_type = spec.get("type")
+    if value is _MISSING or value is None:
+        value = _schema_default(spec)
+    if field_type == "secret":
+        return _secret_view(value)
+    if field_type == "object_list":
+        rows: list[dict[str, Any]] = []
+        identity_key = spec.get("identity_key")
+        raw_rows = value if isinstance(value, list) else []
+        item_fields = spec.get("item_fields", [])
+        for raw_row in raw_rows:
+            if isinstance(raw_row, str) and identity_key == "url":
+                raw_row = {"url": raw_row}
+            if not isinstance(raw_row, Mapping):
+                continue
+            row: dict[str, Any] = {}
+            if isinstance(identity_key, str) and identity_key in raw_row:
+                row[f"__original_{identity_key}"] = raw_row.get(identity_key)
+            for item_spec in item_fields if isinstance(item_fields, list) else []:
+                if not isinstance(item_spec, Mapping) or not isinstance(item_spec.get("key"), str):
+                    continue
+                key = item_spec["key"]
+                row[key] = _public_value(raw_row.get(key, _MISSING), item_spec)
+            rows.append(row)
+        return rows
+    if field_type == "key_value_map":
+        return copy.deepcopy(value) if isinstance(value, Mapping) else {}
+    if field_type == "string_list":
+        return [str(item) for item in value] if isinstance(value, list) else []
+    return copy.deepcopy(value)
+
+
+def _schema_provider_values(schema: Mapping[str, Any], raw_config: Any) -> dict[str, Any]:
+    current = _mapping(raw_config)
+    result: dict[str, Any] = {}
+    for spec in schema.get("fields", []):
+        if not isinstance(spec, Mapping) or not isinstance(spec.get("key"), str):
+            continue
+        key = spec["key"]
+        result[key] = _public_value(current.get(key, _MISSING), spec)
+    return result
+
+
+def _provider_status(provider: Any) -> dict[str, Any]:
+    get_status = getattr(provider, "get_status", None)
+    if not callable(get_status):
+        return {"status": "unknown", "ok": False, "enabled": True, "error": None}
+    try:
+        value = get_status()
+        return dict(value) if isinstance(value, Mapping) else {"status": "unknown", "ok": False}
+    except Exception as exc:
+        return {"status": "error", "ok": False, "enabled": True, "error": str(exc)}
+
+
+def _provider_panels(config: Mapping[str, Any]) -> list[dict[str, Any]]:
+    providers = get_providers()
+    raw_provider_config = _mapping(config.get("providers"))
+    panels: list[dict[str, Any]] = []
+    for schema in get_provider_config_schemas():
+        provider_name = schema["provider"]
+        config_key = schema["config_key"]
+        provider = providers.get(provider_name)
+        panel = {
+            "provider": provider_name,
+            "config_key": config_key,
+            "title": schema.get("title", provider_name),
+            "description": schema.get("description", ""),
+            "order": schema.get("order", 100),
+            "fields": copy.deepcopy(schema.get("fields", [])),
+            "status_only_auth": bool(schema.get("status_only_auth")),
+            "values": _schema_provider_values(schema, raw_provider_config.get(config_key, {})),
+        }
+        if provider is not None:
+            panel["status"] = _provider_status(provider)
+        panels.append(panel)
+    return panels
+
+
+def get_settings_options() -> dict[str, Any]:
+    """返回不触发外部网络请求的跨 Provider 选项。"""
+    ring: list[str] = []
+    model_bars: list[str] = []
+    balances: list[str] = []
+    for name, provider in sorted(get_providers().items(), key=lambda item: item[0].casefold()):
+        capabilities = getattr(provider, "CAPABILITIES", ())
+        if "token_plan" in capabilities and callable(getattr(provider, "get_plan_usage", None)):
+            ring.append(name)
+        if callable(getattr(provider, "get_model_breakdown", None)) or callable(
+            getattr(provider, "get_channel_breakdown", None)
+        ):
+            model_bars.append(name)
+        if "balance" in capabilities and callable(getattr(provider, "get_balance", None)):
+            balances.append(name)
+    return {
+        "ring_providers": ring,
+        "model_bar_providers": model_bars,
+        "balance_providers": balances,
+        "themes": [item["name"] for item in THEMES],
+    }
+
+
+def _public_global_config(config: Mapping[str, Any]) -> dict[str, Any]:
     active = _mapping(config)
     dashboard = _mapping(active.get("dashboard"))
     off_peak = _mapping(dashboard.get("off_peak_badge"))
     vibe = _mapping(dashboard.get("vibe_coding"))
     ring = _mapping(vibe.get("ring"))
     model_bars = _mapping(vibe.get("model_bars"))
-
-    balances: list[dict[str, Any]] = []
     raw_balances = vibe.get("balances", [])
-    if isinstance(raw_balances, list):
-        for item in raw_balances:
-            if not isinstance(item, Mapping):
-                continue
-            balances.append({
-                "provider": item.get("provider", ""),
-                "name": item.get("name", ""),
-                "color": item.get("color", "#888888"),
-                "enabled": item.get("enabled", True),
-            })
-
-    local = _mapping(active.get("local_platforms"))
-    urls: list[dict[str, Any]] = []
-    raw_urls = local.get("urls", [])
-    if isinstance(raw_urls, list):
-        for item in raw_urls:
-            url = _entry_url(item)
-            if not url:
-                continue
-            urls.append({
-                "url": url,
-                "original_url": url,
-                "password": _secret_view(_entry_password(item)),
-            })
-
+    balances = [
+        {
+            "provider": item.get("provider", ""),
+            "name": item.get("name", ""),
+            "color": item.get("color", "#888888"),
+            "enabled": item.get("enabled", True),
+        }
+        for item in raw_balances
+        if isinstance(item, Mapping)
+    ] if isinstance(raw_balances, list) else []
     hardware = _mapping(active.get("hardware_overrides"))
     logging_config = _mapping(active.get("logging"))
     return {
+        "config_version": active.get("config_version", CONFIG_VERSION),
         "dashboard": {
             "token": _secret_view(dashboard.get("token")),
             "off_peak_badge": {
@@ -369,27 +377,12 @@ def _public_config(config: Mapping[str, Any]) -> dict[str, Any]:
                 "ranges": copy.deepcopy(off_peak.get("ranges", [{"start": "00:00", "end": "08:00"}])),
             },
             "vibe_coding": {
-                "ring": {
-                    "provider": ring.get("provider") or "",
-                    "item": ring.get("item") or "",
-                },
+                "ring": {"provider": ring.get("provider") or "", "item": ring.get("item") or ""},
                 "model_bars": {"provider": model_bars.get("provider") or ""},
                 "balances": balances,
             },
         },
         "github_token": _secret_view(active.get("github_token")),
-        "local_platforms": {
-            "enabled": bool(local.get("enabled", False)),
-            "username": local.get("username", "") or "",
-            "password": _secret_view(local.get("password")),
-            "urls": urls,
-        },
-        "nug": {
-            "enabled": bool(_mapping(active.get("nug")).get("enabled", False)),
-            "url": _mapping(active.get("nug")).get("url", "") or "",
-            "username": _mapping(active.get("nug")).get("username", "") or "",
-            "password": _secret_view(_mapping(active.get("nug")).get("password")),
-        },
         "hardware_overrides": {
             "cpu_model": hardware.get("cpu_model"),
             "mem_installed_gb": hardware.get("mem_installed_gb"),
@@ -413,54 +406,247 @@ def _public_config(config: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def get_settings_options() -> dict[str, Any]:
-    """返回不触发外部网络请求的表单选项。"""
-    from providers import get_providers
-
-    ring: list[str] = []
-    model_bars: list[str] = []
-    balances: list[str] = []
-    for name, provider in sorted(get_providers().items(), key=lambda item: item[0].casefold()):
-        capabilities = getattr(provider, "CAPABILITIES", ())
-        if "token_plan" in capabilities and callable(getattr(provider, "get_plan_usage", None)):
-            ring.append(name)
-        if callable(getattr(provider, "get_model_breakdown", None)) or callable(
-            getattr(provider, "get_channel_breakdown", None)
-        ):
-            model_bars.append(name)
-        if "balance" in capabilities and callable(getattr(provider, "get_balance", None)):
-            balances.append(name)
+def get_settings_payload() -> dict[str, Any]:
+    config = load_config()
     return {
-        "ring_providers": ring,
-        "model_bar_providers": model_bars,
-        "balance_providers": balances,
-        "themes": [item["name"] for item in THEMES],
+        "config": _public_global_config(config),
+        "providers": _provider_panels(config),
+        "options": get_settings_options(),
     }
 
 
-def get_settings_payload() -> dict[str, Any]:
-    return {"config": _public_config(load_config()), "options": get_settings_options()}
+def _secret_action(value: Any, field: str) -> tuple[str, str | None]:
+    if value is None:
+        return "keep", None
+    if not isinstance(value, Mapping):
+        raise SettingsValidationError("敏感字段操作必须是对象", field)
+    action = value.get("action", "keep")
+    if action not in {"keep", "set", "clear"}:
+        raise SettingsValidationError("操作必须是 keep、set 或 clear", field)
+    if action == "set":
+        secret = value.get("value")
+        if not isinstance(secret, str) or not secret:
+            raise SettingsValidationError("设置敏感字段时不能为空", f"{field}.value")
+        return action, secret
+    return action, None
 
 
-def _update_secret(config: dict[str, Any], secrets: Mapping[str, Any], key: str, current: Any) -> Any:
-    if key not in _SECRET_KEYS:
-        raise SettingsValidationError("不允许修改该敏感字段", key)
-    action, value = _secret_action(secrets.get(key), f"secrets.{key}")
+def _apply_secret_update(update: Any, current: Any, field: str) -> str:
+    action, value = _secret_action(update, field)
     if action == "keep":
-        return current
-    return "" if action == "clear" else value
+        return current if isinstance(current, str) else ""
+    if action == "clear":
+        return ""
+    return value or ""
 
 
-def _find_section(config: dict[str, Any], name: str) -> dict[str, Any]:
-    section = config.get(name)
-    if not isinstance(section, dict):
-        section = {}
-        config[name] = section
-    return section
+def _select_values(spec: Mapping[str, Any]) -> set[str]:
+    options = spec.get("options", [])
+    values: set[str] = set()
+    if isinstance(options, list):
+        for option in options:
+            if isinstance(option, Mapping):
+                value = option.get("value")
+            else:
+                value = option
+            if isinstance(value, str):
+                values.add(value)
+    return values
+
+
+def _validate_field(value: Any, spec: Mapping[str, Any], field: str) -> Any:
+    field_type = spec.get("type")
+    if value is _MISSING:
+        return _schema_default(spec)
+    if field_type == "boolean":
+        return _boolean(value, field)
+    if field_type == "string":
+        if value is None or value == "":
+            if spec.get("required"):
+                raise SettingsValidationError("不能为空", field)
+            return ""
+        return _required_string(value, field)
+    if field_type == "url":
+        return _http_url(value, field, required=bool(spec.get("required")))
+    if field_type == "integer":
+        return _integer(value, field, minimum=int(spec.get("min", 0)))
+    if field_type == "number":
+        return _finite_number(value, field, minimum=spec.get("min"))
+    if field_type == "select":
+        result = _optional_string(value, field) or ""
+        allowed = _select_values(spec)
+        if allowed and result not in allowed:
+            raise SettingsValidationError("不是有效选项", field)
+        return result
+    if field_type == "color":
+        result = _required_string(value, field)
+        if not _COLOR_RE.fullmatch(result):
+            raise SettingsValidationError("颜色必须为 #RRGGBB", field)
+        return result
+    if field_type == "time":
+        result = _required_string(value, field)
+        if not _TIME_RE.fullmatch(result):
+            raise SettingsValidationError("时间必须为 HH:MM", field)
+        return result
+    if field_type == "string_list":
+        if not isinstance(value, list):
+            raise SettingsValidationError("必须是列表", field)
+        return [_required_string(item, f"{field}[{idx}]") for idx, item in enumerate(value)]
+    if field_type == "key_value_map":
+        if not isinstance(value, Mapping):
+            raise SettingsValidationError("必须是对象", field)
+        value_type = spec.get("value_type", "number")
+        item_spec = {"type": value_type, "min": spec.get("min", 0)}
+        return {
+            _required_string(key, f"{field}.key"): _validate_field(amount, item_spec, f"{field}.{key}")
+            for key, amount in value.items()
+        }
+    if field_type == "object_list":
+        if not isinstance(value, list):
+            raise SettingsValidationError("必须是列表", field)
+        return value
+    raise SettingsValidationError(f"不支持的字段类型: {field_type}", field)
+
+
+def _provider_schema_map() -> dict[str, tuple[str, Mapping[str, Any]]]:
+    result: dict[str, tuple[str, Mapping[str, Any]]] = {}
+    for schema in get_provider_config_schemas():
+        result[schema["config_key"]] = (schema["provider"], schema)
+    return result
+
+
+def _find_identity(row: Any, identity_key: str | None) -> str | None:
+    if isinstance(row, str) and identity_key == "url":
+        return row
+    if isinstance(row, Mapping) and isinstance(identity_key, str):
+        value = row.get(identity_key)
+        return value.strip() if isinstance(value, str) else value
+    return None
+
+
+def _build_object_list(
+    raw_value: Any,
+    current_value: Any,
+    spec: Mapping[str, Any],
+    field: str,
+    provider_secret_updates: Any,
+) -> list[dict[str, Any]]:
+    if not isinstance(raw_value, list):
+        raise SettingsValidationError("必须是列表", field)
+    identity_key = spec.get("identity_key")
+    if not isinstance(identity_key, str) or not identity_key:
+        raise SettingsValidationError("object_list 缺少 identity_key", field)
+    item_fields = spec.get("item_fields", [])
+    if not isinstance(item_fields, list):
+        raise SettingsValidationError("item_fields 必须是列表", field)
+
+    old_rows: list[Any] = current_value if isinstance(current_value, list) else []
+    old_by_identity = {
+        identity: (row if isinstance(row, Mapping) else {identity_key: identity})
+        for row in old_rows
+        if (identity := _find_identity(row, identity_key)) is not None
+    }
+    updates: dict[str, Mapping[str, Any]] = {}
+    if provider_secret_updates is not None:
+        if not isinstance(provider_secret_updates, list):
+            raise SettingsValidationError("对象列表敏感更新必须是列表", f"secrets.{field}")
+        for idx, update in enumerate(provider_secret_updates):
+            if not isinstance(update, Mapping):
+                raise SettingsValidationError("必须是对象", f"secrets.{field}[{idx}]")
+            original = update.get("original_identity") or update.get("identity")
+            if not isinstance(original, str) or not original.strip():
+                raise SettingsValidationError("缺少列表项 identity", f"secrets.{field}[{idx}]")
+            updates[original.strip()] = update
+
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for idx, raw_row in enumerate(raw_value):
+        if not isinstance(raw_row, Mapping):
+            raise SettingsValidationError("列表项必须是对象", f"{field}[{idx}]")
+        identity = raw_row.get(identity_key)
+        if isinstance(identity, str):
+            identity = identity.strip()
+        if not identity:
+            continue
+        if not isinstance(identity, str):
+            raise SettingsValidationError("identity 必须是字符串", f"{field}[{idx}].{identity_key}")
+        item_field = f"{field}[{idx}]"
+        identity = _validate_field(identity, _field_by_key(item_fields, identity_key) or {"type": "string"}, f"{item_field}.{identity_key}")
+        if identity.casefold() in seen:
+            raise SettingsValidationError("列表项不能重复", f"{item_field}.{identity_key}")
+        seen.add(identity.casefold())
+        original_identity = raw_row.get(f"__original_{identity_key}") or identity
+        old_row = old_by_identity.get(original_identity) or old_by_identity.get(identity) or {}
+        update = updates.get(original_identity) or updates.get(identity) or {}
+        update_fields = update.get("fields", {}) if isinstance(update, Mapping) else {}
+        if not isinstance(update_fields, Mapping):
+            raise SettingsValidationError("fields 必须是对象", f"secrets.{field}")
+
+        output: dict[str, Any] = {}
+        for item_spec in item_fields:
+            if not isinstance(item_spec, Mapping) or not isinstance(item_spec.get("key"), str):
+                raise SettingsValidationError("item_fields 定义无效", field)
+            key = item_spec["key"]
+            current_item = old_row.get(key) if isinstance(old_row, Mapping) else None
+            if item_spec.get("type") == "secret":
+                output[key] = _apply_secret_update(update_fields.get(key), current_item, f"secrets.{field}[{idx}].{key}")
+            elif key == identity_key:
+                output[key] = identity
+            else:
+                output[key] = _validate_field(raw_row.get(key, _MISSING), item_spec, f"{item_field}.{key}")
+        result.append(output)
+    return result
+
+
+def _build_provider_config(
+    provider_name: str,
+    schema: Mapping[str, Any],
+    incoming: Any,
+    current: Any,
+    secrets: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(incoming, Mapping):
+        raise SettingsValidationError("Provider 配置必须是对象", f"providers.{schema['config_key']}")
+    current_config = dict(current) if isinstance(current, Mapping) else {}
+    result = copy.deepcopy(current_config)
+    config_key = schema["config_key"]
+    for spec in schema.get("fields", []):
+        if not isinstance(spec, Mapping) or not isinstance(spec.get("key"), str):
+            raise SettingsValidationError("Provider Schema 字段定义无效", f"providers.{config_key}")
+        key = spec["key"]
+        path = f"providers.{config_key}.{key}"
+        field_type = spec.get("type")
+        current_value = current_config.get(key, _schema_default(spec))
+        if field_type == "secret":
+            result[key] = _apply_secret_update(secrets.get(path), current_value, f"secrets.{path}")
+        elif key in incoming:
+            if field_type == "object_list":
+                result[key] = _build_object_list(
+                    incoming[key], current_value, spec, path, secrets.get(path)
+                )
+            else:
+                result[key] = _validate_field(incoming[key], spec, path)
+        elif key not in result:
+            result[key] = _schema_default(spec)
+
+    provider = get_providers().get(provider_name)
+    validator = getattr(provider, "validate_config", None) if provider is not None else None
+    if callable(validator):
+        try:
+            validator(result)
+        except SettingsValidationError:
+            raise
+        except Exception as exc:
+            raise SettingsValidationError(str(exc), f"providers.{config_key}") from exc
+    return result
+
+
+def _global_secret_update(secrets: Mapping[str, Any], path: str, current: Any) -> str:
+    return _apply_secret_update(secrets.get(path), current, f"secrets.{path}")
 
 
 def save_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """校验并保存后台提交的配置，返回应用结果摘要。"""
+    """校验并保存全局配置与 Provider 配置。"""
     if not isinstance(payload, Mapping):
         raise SettingsValidationError("请求体必须是对象")
     incoming = payload.get("config", {})
@@ -470,71 +656,29 @@ def save_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(secrets, Mapping):
         raise SettingsValidationError("secrets 必须是对象")
 
-    current = copy.deepcopy(load_config())
+    current, _ = migrate_config(load_config())
     next_config = copy.deepcopy(current)
-
-    if "dashboard" in incoming:
-        raw_dashboard = incoming.get("dashboard")
-        if not isinstance(raw_dashboard, Mapping):
+    dashboard_input = incoming.get("dashboard")
+    if dashboard_input is not None:
+        if not isinstance(dashboard_input, Mapping):
             raise SettingsValidationError("必须是对象", "dashboard")
-        dashboard = _find_section(next_config, "dashboard")
-        if "off_peak_badge" in raw_dashboard:
-            dashboard["off_peak_badge"] = _validate_off_peak(raw_dashboard["off_peak_badge"])
-        if "vibe_coding" in raw_dashboard:
-            dashboard["vibe_coding"] = _validate_vibe(raw_dashboard["vibe_coding"])
-        dashboard["token"] = _update_secret(
-            next_config, secrets, "dashboard.token", _mapping(current.get("dashboard")).get("token", "")
+        dashboard = next_config.setdefault("dashboard", {})
+        if not isinstance(dashboard, dict):
+            dashboard = {}
+            next_config["dashboard"] = dashboard
+        if "off_peak_badge" in dashboard_input:
+            dashboard["off_peak_badge"] = _validate_off_peak(dashboard_input["off_peak_badge"])
+        if "vibe_coding" in dashboard_input:
+            dashboard["vibe_coding"] = _validate_vibe(dashboard_input["vibe_coding"])
+        dashboard["token"] = _global_secret_update(
+            secrets, "dashboard.token", _mapping(current.get("dashboard")).get("token", "")
         )
 
     if "github_token" in secrets:
-        next_config["github_token"] = _update_secret(
-            next_config, secrets, "github_token", current.get("github_token", "")
-        )
-
-    if "local_platforms" in incoming:
-        raw_local = incoming.get("local_platforms")
-        if not isinstance(raw_local, Mapping):
-            raise SettingsValidationError("必须是对象", "local_platforms")
-        local = _find_section(next_config, "local_platforms")
-        if "enabled" in raw_local:
-            local["enabled"] = _boolean(raw_local["enabled"], "local_platforms.enabled")
-        if "username" in raw_local:
-            local["username"] = raw_local["username"] if isinstance(raw_local["username"], str) else _required_string(
-                raw_local["username"], "local_platforms.username"
-            )
-        if "urls" in raw_local:
-            local["urls"] = _validate_local_urls(
-                raw_local["urls"],
-                _mapping(current.get("local_platforms")).get("urls", []),
-                secrets.get("local_platforms.url_passwords", []),
-            )
-        local["password"] = _update_secret(
-            next_config,
-            secrets,
-            "local_platforms.password",
-            _mapping(current.get("local_platforms")).get("password", ""),
-        )
-
-    if "nug" in incoming:
-        raw_nug = incoming.get("nug")
-        if not isinstance(raw_nug, Mapping):
-            raise SettingsValidationError("必须是对象", "nug")
-        nug = _find_section(next_config, "nug")
-        if "enabled" in raw_nug:
-            nug["enabled"] = _boolean(raw_nug["enabled"], "nug.enabled")
-        if "url" in raw_nug:
-            nug["url"] = _http_url(raw_nug["url"], "nug.url")
-        if "username" in raw_nug:
-            nug["username"] = raw_nug["username"] if isinstance(raw_nug["username"], str) else _required_string(
-                raw_nug["username"], "nug.username"
-            )
-        nug["password"] = _update_secret(
-            next_config, secrets, "nug.password", _mapping(current.get("nug")).get("password", "")
-        )
+        next_config["github_token"] = _global_secret_update(secrets, "github_token", current.get("github_token", ""))
 
     if "hardware_overrides" in incoming:
         next_config["hardware_overrides"] = _validate_hardware(incoming["hardware_overrides"])
-
     if "logging" in incoming:
         next_config["logging"] = _validate_logging(incoming["logging"])
 
@@ -551,60 +695,102 @@ def save_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         else:
             next_config[key] = _boolean(incoming[key], "vibe_active")
 
+    incoming_providers = incoming.get("providers", {})
+    if not isinstance(incoming_providers, Mapping):
+        raise SettingsValidationError("必须是对象", "providers")
+    schema_map = _provider_schema_map()
+    providers_config = next_config.get("providers")
+    if not isinstance(providers_config, dict):
+        providers_config = {}
+        next_config["providers"] = providers_config
+    for config_key, raw_provider in incoming_providers.items():
+        if config_key not in schema_map:
+            raise SettingsValidationError("未注册或未声明配置 Schema 的 Provider", f"providers.{config_key}")
+        provider_name, schema = schema_map[config_key]
+        providers_config[config_key] = _build_provider_config(
+            provider_name,
+            schema,
+            raw_provider,
+            providers_config.get(config_key, {}),
+            secrets,
+        )
+
+    next_config["config_version"] = CONFIG_VERSION
     save_config(next_config)
     applied, errors = apply_runtime_config()
     return {
         "ok": True,
         "applied": applied,
         "errors": errors,
-        "config": _public_config(load_config()),
-        "options": get_settings_options(),
+        **get_settings_payload(),
     }
 
 
-def reveal_secret(path: str) -> str:
-    """按白名单读取单个敏感值；调用方必须先完成回环和 POST 防护。"""
-    if not isinstance(path, str):
-        raise SettingsValidationError("字段路径无效")
+def _schema_for_config_key(config_key: str) -> tuple[str, Mapping[str, Any]] | None:
+    return _provider_schema_map().get(config_key)
+
+
+def reveal_secret(path: str, *, identity: str | None = None, field: str | None = None) -> str:
+    """按 Schema 白名单读取单个敏感字段。"""
     config = load_config()
     if path == "dashboard.token":
         return str(_mapping(config.get("dashboard")).get("token", "") or "")
     if path == "github_token":
         return str(config.get("github_token", "") or "")
-    if path == "local_platforms.password":
-        return str(_mapping(config.get("local_platforms")).get("password", "") or "")
-    if path == "nug.password":
-        return str(_mapping(config.get("nug")).get("password", "") or "")
-    match = re.fullmatch(r"local_platforms\.urls\[(\d+)\]\.password", path)
-    if match:
-        index = int(match.group(1))
-        urls = _mapping(config.get("local_platforms")).get("urls", [])
-        if isinstance(urls, list) and 0 <= index < len(urls):
-            return _entry_password(urls[index]) or ""
-    raise SettingsValidationError("不允许查看该敏感字段", path)
+    if not isinstance(path, str) or not path.startswith("providers."):
+        raise SettingsValidationError("不允许查看该敏感字段", path)
+
+    parts = path.split(".", 2)
+    if len(parts) != 3:
+        raise SettingsValidationError("字段路径无效", path)
+    _, config_key, field_key = parts
+    schema_info = _schema_for_config_key(config_key)
+    if schema_info is None:
+        raise SettingsValidationError("Provider 未声明配置 Schema", path)
+    _, schema = schema_info
+    provider_config = _mapping(_mapping(config).get("providers")).get(config_key, {})
+    field_spec = _field_by_key(schema.get("fields"), field_key)
+    if field_spec is None:
+        raise SettingsValidationError("字段不存在", path)
+    if field_spec.get("type") == "secret":
+        return str(_mapping(provider_config).get(field_key, "") or "")
+    if field_spec.get("type") != "object_list":
+        raise SettingsValidationError("该字段不是敏感字段", path)
+    if not identity or not field:
+        raise SettingsValidationError("缺少列表项 identity 或敏感字段名", path)
+    item_spec = _field_by_key(field_spec.get("item_fields"), field)
+    if item_spec is None or item_spec.get("type") != "secret":
+        raise SettingsValidationError("该列表字段不是敏感字段", f"{path}.{field}")
+    identity_key = field_spec.get("identity_key")
+    rows = provider_config.get(field_key, []) if isinstance(provider_config, Mapping) else []
+    for row in rows if isinstance(rows, list) else []:
+        if _find_identity(row, identity_key) == identity:
+            return str(_mapping(row).get(field, "") or "")
+    raise SettingsValidationError("找不到对应列表项", path)
 
 
 def apply_runtime_config() -> tuple[list[str], list[str]]:
-    """通知各模块清理配置相关缓存；单个模块失败不阻止其它模块刷新。"""
+    """清理聚合缓存并动态调用所有 Provider 的 reload_config。"""
     applied: list[str] = []
     errors: list[str] = []
-    hooks: list[tuple[str, Any]] = []
-
     try:
         from providers import invalidate_data_cache
-        hooks.append(("providers", invalidate_data_cache))
+        invalidate_data_cache()
+        applied.append("providers")
     except Exception as exc:
         errors.append(f"providers: {exc}")
-    try:
-        from providers.local_platform import reload_config as reload_local
-        hooks.append(("local_platform", reload_local))
-    except Exception as exc:
-        errors.append(f"local_platform: {exc}")
-    try:
-        from providers.nug import reload_config as reload_nug
-        hooks.append(("nug", reload_nug))
-    except Exception as exc:
-        errors.append(f"nug: {exc}")
+
+    for provider_name, provider in get_providers().items():
+        reload_fn = getattr(provider, "reload_config", None)
+        if not callable(reload_fn):
+            continue
+        try:
+            reload_fn()
+            applied.append(provider_name)
+        except Exception as exc:
+            errors.append(f"{provider_name}: {exc}")
+
+    hooks: list[tuple[str, Any]] = []
     try:
         from services.github_service import reload_config as reload_github
         hooks.append(("github", reload_github))

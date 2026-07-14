@@ -210,6 +210,28 @@ select option { color: #181326; background: #f5f1ff; }
 .primary-btn:hover { background: #e0d5f4; transform: translateY(-1px); }
 .primary-btn:disabled, .secondary-btn:disabled { cursor: wait; opacity: .6; transform: none; }
 
+.provider-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.provider-card { min-width: 0; padding: 14px; border: 1px solid rgba(255, 255, 255, .09); border-radius: 12px; background: rgba(255, 255, 255, .035); }
+.provider-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+.provider-card-head h3 { font-size: 15px; }
+.provider-description { margin-top: 5px; color: var(--muted-2); font-size: 11px; line-height: 1.45; }
+.provider-status { flex: 0 0 auto; padding: 3px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 10px; }
+.provider-status.ok { color: var(--green); border-color: rgba(112, 196, 173, .35); background: rgba(112, 196, 173, .1); }
+.provider-status.error { color: var(--red); border-color: rgba(224, 128, 140, .35); background: rgba(224, 128, 140, .1); }
+.provider-status.disabled { color: var(--muted-2); }
+.provider-auth-note { margin-bottom: 12px; padding: 9px 10px; border: 1px dashed var(--border); border-radius: 8px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.provider-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+.provider-field-grid > .provider-field { min-width: 0; }
+.provider-field-grid > .provider-field.provider-object-field,
+.provider-field-grid > .provider-field.provider-map-field { grid-column: 1 / -1; }
+.provider-check { margin-top: 23px; }
+.provider-map-rows, .provider-object-rows { margin-top: 7px; }
+.provider-map-row .row-fields, .provider-object-row .row-fields { min-width: 0; }
+.provider-object-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.provider-object-row .secret-control { min-width: 0; }
+.provider-object-row .secret-control input { min-width: 0; }
+.provider-object-row .row-field { min-width: 0; }
+
 [hidden] { display: none !important; }
 
 @media (max-width: 820px) {

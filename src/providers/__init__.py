@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib
 import logging
 import time
@@ -20,6 +21,32 @@ logger = logging.getLogger("cuckoo.providers")
 _PROVIDERS_DIR = Path(__file__).parent
 _registry: dict[str, ModuleType] = {}  # {插件名: 模块}
 _discovered = False
+_CONFIG_FIELD_TYPES = {
+    "boolean", "string", "secret", "url", "integer", "number", "select", "color", "time",
+    "string_list", "object_list", "key_value_map",
+}
+
+
+def _valid_schema_fields(fields: object, path: str) -> bool:
+    if not isinstance(fields, list):
+        return False
+    for index, field in enumerate(fields):
+        if not isinstance(field, dict):
+            logger.warning("[providers] %s[%s] 必须是对象", path, index)
+            return False
+        key = field.get("key")
+        field_type = field.get("type")
+        if not isinstance(key, str) or not key.strip() or field_type not in _CONFIG_FIELD_TYPES:
+            logger.warning("[providers] %s[%s] 字段定义无效", path, index)
+            return False
+        if field_type == "object_list":
+            identity_key = field.get("identity_key")
+            if not isinstance(identity_key, str) or not identity_key.strip():
+                logger.warning("[providers] %s[%s] object_list 缺少 identity_key", path, index)
+                return False
+            if not _valid_schema_fields(field.get("item_fields"), f"{path}[{index}].item_fields"):
+                return False
+    return True
 
 
 def _discover() -> None:
@@ -52,6 +79,38 @@ def get_providers() -> dict[str, ModuleType]:
     """返回所有已注册的插件 {名称: 模块}。"""
     _discover()
     return dict(_registry)
+
+
+def get_provider_config_schemas() -> list[dict]:
+    """返回所有 Provider 的配置 Schema，按 order/name 稳定排序。"""
+    schemas: list[dict] = []
+    for name, provider in sorted(get_providers().items(), key=lambda item: item[0].casefold()):
+        raw_schema = getattr(provider, "CONFIG_SCHEMA", None)
+        if raw_schema is None:
+            continue
+        if not isinstance(raw_schema, dict):
+            logger.warning("[providers] %s.CONFIG_SCHEMA 必须是对象，已跳过", name)
+            continue
+        schema = copy.deepcopy(raw_schema)
+        config_key = schema.get("config_key", name)
+        fields = schema.get("fields", [])
+        if not isinstance(config_key, str) or not config_key.strip():
+            logger.warning("[providers] %s.CONFIG_SCHEMA.config_key 无效，已跳过", name)
+            continue
+        if not isinstance(fields, list) or not _valid_schema_fields(fields, f"{name}.CONFIG_SCHEMA.fields"):
+            logger.warning("[providers] %s.CONFIG_SCHEMA.fields 定义无效，已跳过", name)
+            continue
+        schema["config_key"] = config_key
+        schema["provider"] = name
+        schema.setdefault("title", name)
+        schema.setdefault("description", "")
+        try:
+            schema["order"] = int(schema.get("order", 100))
+        except (TypeError, ValueError):
+            schema["order"] = 100
+        schema["fields"] = fields
+        schemas.append(schema)
+    return sorted(schemas, key=lambda item: (item.get("order", 100), str(item.get("title", "")).casefold(), item["provider"].casefold()))
 
 
 def get_providers_by_capability(capability: str) -> dict[str, ModuleType]:

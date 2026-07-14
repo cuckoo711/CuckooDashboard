@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import time
 
+from core.config import get_provider_config
+
 try:
     from mimo_usage import MiMoAPI, load_cookies, refresh_mimo_cookie, save_cookies
 except ImportError as exc:
@@ -26,6 +28,9 @@ def get_mimo_api() -> MiMoAPI | None:
     过期时尝试用 passToken 自动刷新，刷新失败返回 None。
     """
     global _mimo_cookie_valid, _mimo_cookie_last_check
+    mimo_config = get_provider_config("mimo", {})
+    if isinstance(mimo_config, dict) and not mimo_config.get("enabled", True):
+        return None
     cache_info = load_cookies()
     cookie_str = cache_info.get("cookie")
     if not cookie_str:
@@ -66,6 +71,13 @@ def get_mimo_api() -> MiMoAPI | None:
         _mimo_cookie_valid = False
 
     return api if _mimo_cookie_valid else None
+
+
+def reload_config() -> None:
+    """清理 MiMo Cookie 有效性检测缓存。"""
+    global _mimo_cookie_valid, _mimo_cookie_last_check
+    _mimo_cookie_valid = None
+    _mimo_cookie_last_check = 0
 
 
 def is_cookie_valid() -> bool | None:

@@ -10,11 +10,23 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 
-from providers.mimo.api import get_mimo_api, is_cookie_valid
+from core.config import get_provider_config
+from providers.mimo.api import get_mimo_api, is_cookie_valid, reload_config as reload_api_config
 
 logger = logging.getLogger("cuckoo.providers.mimo")
 
 CAPABILITIES = ["token_plan", "balance", "api_usage"]
+
+CONFIG_SCHEMA = {
+    "config_key": "mimo",
+    "title": "MiMo",
+    "description": "MiMo 官方平台。认证 Cookie 由 mimo_usage.py 和 config/cookies.json 管理。",
+    "order": 10,
+    "fields": [
+        {"key": "enabled", "label": "启用", "type": "boolean", "default": True},
+    ],
+    "status_only_auth": True,
+}
 
 _last_success_at: str | None = None
 _last_error: str | None = None
@@ -166,9 +178,27 @@ def get_channel_breakdown(days: int = 7) -> list | None:
 # ============================================================
 
 
+def reload_config() -> None:
+    """清理 MiMo Cookie 状态缓存，让启用状态立即生效。"""
+    global _last_success_at, _last_error
+    _last_success_at = None
+    _last_error = None
+    reload_api_config()
+
+
 def get_status() -> dict:
     """插件状态。"""
     global _last_success_at, _last_error
+    mimo_config = get_provider_config("mimo", {})
+    enabled = bool(mimo_config.get("enabled", True)) if isinstance(mimo_config, dict) else True
+    if not enabled:
+        return {
+            "status": "disabled",
+            "ok": False,
+            "enabled": False,
+            "error": None,
+            "last_success_at": _last_success_at,
+        }
     cookie_valid = is_cookie_valid()
     if cookie_valid is True:
         status = "ok"

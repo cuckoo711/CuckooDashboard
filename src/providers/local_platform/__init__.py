@@ -9,12 +9,35 @@ from __future__ import annotations
 import logging
 import time
 
-from core.config import load_config
+from core.config import get_provider_config
 from providers.local_platform.client import LocalMimoAPI
 
 logger = logging.getLogger("cuckoo.providers.local_platform")
 
 CAPABILITIES = ["token_plan"]
+
+CONFIG_SCHEMA = {
+    "config_key": "local_platform",
+    "title": "本地平台",
+    "description": "MiMo 兼容的本地部署实例，可配置多个服务地址。",
+    "order": 20,
+    "fields": [
+        {"key": "enabled", "label": "启用", "type": "boolean", "default": False},
+        {"key": "username", "label": "用户名", "type": "string", "default": ""},
+        {"key": "password", "label": "默认密码", "type": "secret", "default": ""},
+        {
+            "key": "urls",
+            "label": "实例列表",
+            "type": "object_list",
+            "identity_key": "url",
+            "item_fields": [
+                {"key": "url", "label": "服务 URL", "type": "url"},
+                {"key": "password", "label": "单实例密码覆盖", "type": "secret", "default": ""},
+            ],
+            "default": [],
+        },
+    ],
+}
 
 _local_apis: list[LocalMimoAPI] | None = None
 _last_success_at: str | None = None
@@ -28,8 +51,7 @@ def _get_apis() -> list[LocalMimoAPI]:
     if _local_apis is not None:
         return _local_apis
     _local_apis = []
-    config = load_config()
-    lp = config.get("local_platforms", {})
+    lp = get_provider_config("local_platform", {})
     if not lp.get("enabled"):
         return _local_apis
     username = lp.get("username", "")
@@ -140,7 +162,7 @@ def aggregate_today_usage() -> dict | None:
 
 def get_status() -> dict:
     """插件状态。"""
-    lp = load_config().get("local_platforms", {})
+    lp = get_provider_config("local_platform", {})
     enabled = bool(lp.get("enabled"))
     configured = len(lp.get("urls", []) or []) if enabled else 0
     if not enabled:

@@ -176,13 +176,40 @@ Copy `config/config.example.yaml` to `config/config.yaml` and fill only values y
 | `dashboard.token` | Optional token for POST endpoint protection |
 | `dashboard.off_peak_badge` | Off-peak time range and enable/disable |
 | `dashboard.vibe_coding` | Vibe ring, model-bar, and balance data-source selection |
+| `config_version` | Canonical configuration schema version (currently `2`) |
+| `providers.mimo` | MiMo Provider enable state; Cookie remains in `cookies.json` |
+| `providers.local_platform` | Local MiMo-compatible platform instances (JWT auth) |
+| `providers.nug` | NUG (NarraFork) Provider credentials |
 | `github_token` | GitHub Personal Access Token for precise contribution data |
-| `local_platforms` | Local MiMo-compatible platform instances (JWT auth) |
-| `nug` | NUG (NarraFork) platform credentials |
 | `hardware_overrides` | Manual corrections for CPU/GPU/memory detection |
 | `theme` | Active theme name (auto-saved) |
 | `lyric_offset` | Lyric timing offset in seconds (auto-saved) |
 | `vibe_active` | Vibe Coding mode state (auto-saved) |
+
+### Provider Configuration
+
+Provider-specific settings use the canonical `providers.<provider_name>` layout. Existing configurations using top-level `local_platforms` or `nug` are migrated automatically on first load to `providers.local_platform` and `providers.nug`; a local pre-migration backup is kept in `config/`.
+
+Each plugin may declare a `CONFIG_SCHEMA` in its `src/providers/<name>/__init__.py`. The local configuration page discovers these schemas and renders the corresponding form automatically. Supported schema field types include `boolean`, `string`, `secret`, `url`, `integer`, `number`, `select`, `color`, `time`, `string_list`, `object_list`, and `key_value_map`. New plugins should also expose `reload_config()` when their clients or caches depend on configuration.
+
+Example:
+
+```yaml
+config_version: 2
+providers:
+  mimo:
+    enabled: true
+  local_platform:
+    enabled: false
+    username: ""
+    password: ""
+    urls: []
+  nug:
+    enabled: false
+    url: ""
+    username: ""
+    password: ""
+```
 
 ### Vibe Coding Data Sources
 

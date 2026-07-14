@@ -66,7 +66,11 @@ def test_settings_post_returns_structured_validation_error(monkeypatch):
 
 
 def test_reveal_requires_loopback_and_post_protection(monkeypatch):
-    monkeypatch.setattr(dashboard, "reveal_secret", lambda path: "revealed" if path == "github_token" else "")
+    monkeypatch.setattr(
+        dashboard,
+        "reveal_secret",
+        lambda path, **kwargs: "revealed" if path == "github_token" else "",
+    )
     client = _client()
     blocked = client.post(
         "/api/settings/reveal",

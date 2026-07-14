@@ -420,7 +420,12 @@ def api_settings_reveal():
     payload = request.get_json(silent=True) or {}
     try:
         path = payload.get("path")
-        return jsonify({"path": path, "value": reveal_secret(path)})
+        value = reveal_secret(
+            path,
+            identity=payload.get("identity"),
+            field=payload.get("field"),
+        )
+        return jsonify({"path": path, "value": value})
     except SettingsValidationError as exc:
         return jsonify({"error": exc.as_dict()}), 400
 
