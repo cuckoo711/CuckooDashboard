@@ -644,6 +644,13 @@ var _mediaPlaying = false;
 var _lastLyricIdx = -2;
 var _lastPositionSource = 'none';
 var _mediaLyricIndex = -1;
+var _dashboardLyricLineIndex = -1;
+var _dashboardLyricLineText = '';
+var _dashboardLyricLineDuration = 0;
+var _dashboardLyricLineElapsedAtSync = 0;
+var _dashboardLyricLineSyncAt = 0;
+var _dashboardLyricLineActive = false;
+var _dashboardLyricMarqueeActive = false;
 var LYRIC_OFFSET = 1.5;  // 默认值，启动时从后端加载
 secureFetch('/api/media/offset').then(r=>r.json()).then(d=>{
     LYRIC_OFFSET = d.offset;
@@ -701,6 +708,90 @@ function requestDashboardMediaHydration() {
     refreshMedia();
 }
 
+function dashboardEffectiveLyricChars(text) {
+    return Array.from(String(text || '').replace(/\s/g, '')).length;
+}
+
+function dashboardLyricTextForIndex(idx) {
+    if (_mediaHasYrc) return '';
+    if (idx < 0 || idx >= _mediaLyrics.length) return '';
+    return String((_mediaLyrics[idx] && _mediaLyrics[idx][1]) || '');
+}
+
+function dashboardLyricDurationForIndex(idx, data) {
+    if (data && typeof data.lyric_duration === 'number' && data.lyric_duration > 0) {
+        return Math.max(0.18, Number(data.lyric_duration) || 0.18);
+    }
+    if (idx >= 0 && idx < _mediaLyrics.length) {
+        var start = Number((_mediaLyrics[idx] && _mediaLyrics[idx][0]) || 0);
+        var end = 0;
+        if (idx + 1 < _mediaLyrics.length) end = Number((_mediaLyrics[idx + 1] && _mediaLyrics[idx + 1][0]) || 0);
+        else end = Number(_mediaDuration || 0);
+        if (end > start) return Math.max(0.18, end - start);
+    }
+    return 3;
+}
+
+function resetDashboardLyricMarquee() {
+    _dashboardLyricLineIndex = -1;
+    _dashboardLyricLineText = '';
+    _dashboardLyricLineDuration = 0;
+    _dashboardLyricLineElapsedAtSync = 0;
+    _dashboardLyricLineSyncAt = 0;
+    _dashboardLyricLineActive = false;
+    _dashboardLyricMarqueeActive = false;
+}
+
+function setDashboardMediaPlaying(playing) {
+    var next = !!playing;
+    if (_mediaPlaying === next) return;
+    if (_dashboardLyricLineActive) {
+        if (_mediaPlaying && !next) _dashboardLyricLineElapsedAtSync = dashboardCurrentLineElapsed();
+        _dashboardLyricLineSyncAt = performance.now();
+    }
+    _mediaPlaying = next;
+}
+
+function bindDashboardLyricTiming(data, opts) {
+    if (_mediaHasYrc) { resetDashboardLyricMarquee(); return false; }
+    data = data || {};
+    opts = opts || {};
+    var idx = (typeof data.lyric_index === 'number') ? data.lyric_index : _mediaLyricIndex;
+    var text = (data.lyric != null && data.lyric !== '') ? String(data.lyric) : dashboardLyricTextForIndex(idx);
+    var sameLine = !opts.force && _dashboardLyricLineActive && idx === _dashboardLyricLineIndex && text === _dashboardLyricLineText;
+    if (sameLine) {
+        if (typeof data.lyric_duration === 'number' && data.lyric_duration > 0) {
+            _dashboardLyricLineDuration = Math.max(0.18, Number(data.lyric_duration) || _dashboardLyricLineDuration);
+        }
+        return false;
+    }
+    _dashboardLyricLineIndex = idx;
+    _dashboardLyricLineText = text;
+    _dashboardLyricLineDuration = dashboardLyricDurationForIndex(idx, data);
+    _dashboardLyricLineElapsedAtSync = 0;
+    _dashboardLyricLineSyncAt = performance.now();
+    _dashboardLyricLineActive = idx >= 0 && !!text;
+    _dashboardLyricMarqueeActive = false;
+    return true;
+}
+
+function dashboardCurrentLineElapsed() {
+    if (!_dashboardLyricLineActive) return 0;
+    var elapsed = _dashboardLyricLineElapsedAtSync;
+    if (_mediaPlaying) elapsed += Math.max(0, (performance.now() - _dashboardLyricLineSyncAt) / 1000);
+    return Math.max(0, elapsed);
+}
+
+function dashboardLyricScrollProgress(elapsed) {
+    var span = Math.max(0.18, _dashboardLyricLineDuration || 0.18);
+    var e = (elapsed == null ? dashboardCurrentLineElapsed() : elapsed);
+    var scrollDuration = Math.min(3, span);
+    var hold = scrollDuration / 3;
+    if (e <= hold) return 0;
+    var moveDuration = Math.max(0.12, scrollDuration - hold);
+    return Math.max(0, Math.min(1, (e - hold) / moveDuration));
+}
+
 function syncDashboardMediaClock(data) {
     var newPos = Number(data.position || 0);
     var serverTs = Number(data.server_ts || 0);
@@ -727,8 +818,8 @@ function applyDashboardLyricFrame(data) {
         var ov = document.getElementById('lyricOffsetVal');
         if (ov) ov.textContent = LYRIC_OFFSET.toFixed(1);
     }
-    if (typeof data.playing === 'boolean') _mediaPlaying = data.playing;
-    else if (data.status) _mediaPlaying = (data.status === 'playing');
+    if (typeof data.playing === 'boolean') setDashboardMediaPlaying(data.playing);
+    else if (data.status) setDashboardMediaPlaying(data.status === 'playing');
 
     var incomingTrackKey = dashboardTrackKey(data);
     var trackChanged = incomingTrackKey && _mediaTrackKey && incomingTrackKey !== _mediaTrackKey;
@@ -761,6 +852,7 @@ function applyDashboardLyricFrame(data) {
     syncDashboardMediaClock(data);
     if (prevPos - Number(data.position || 0) > 5) resetLyricState();
     _mediaLyricIndex = (typeof data.lyric_index === 'number') ? data.lyric_index : _mediaLyricIndex;
+    bindDashboardLyricTiming(data, {force: trackChanged});
     updateLyricLine(true);
 }
 
@@ -776,7 +868,7 @@ function drawLyric(data) {
         scrollEl.innerHTML = '';
         idleEl.textContent = '未在播放';
         idleEl.style.display = 'block';
-        _mediaPlaying = false;
+        setDashboardMediaPlaying(false);
         _mediaTitle = '';
         _mediaTrackKey = '';
         _mediaLyricsKey = '';
@@ -790,7 +882,7 @@ function drawLyric(data) {
 
     titleEl.textContent = data.title;
     artistEl.textContent = data.artist;
-    _mediaPlaying = (data.status === 'playing');
+    setDashboardMediaPlaying(data.status === 'playing');
     if (typeof data.lyric_offset === 'number') {
         LYRIC_OFFSET = Number(data.lyric_offset);
         var ov = document.getElementById('lyricOffsetVal');
@@ -842,6 +934,7 @@ function drawLyric(data) {
 
     // Prefer backend-authored index when available; YRC highlight still needs local clock.
     _mediaLyricIndex = (typeof data.lyric_index === 'number') ? data.lyric_index : _mediaLyricIndex;
+    bindDashboardLyricTiming(data, {force: isNewSong || didRenderLyrics});
     updateLyricLine(isNewSong || didRenderLyrics);
 }
 
@@ -849,6 +942,7 @@ function resetLyricState() {
     _lastLyricIdx = -2;
     _pendingIdx = -2;
     _pendingSince = 0;
+    resetDashboardLyricMarquee();
 }
 
 /* 渲染全部歌词行到滚动容器（仅在歌曲切换或歌词内容变化时调用）。
@@ -858,20 +952,117 @@ function renderLyricLines() {
     if (!scrollEl) return;
 
     if (_mediaHasYrc) {
-        var html = _mediaLyricsYrc.map(function(line){
+        var html = _mediaLyricsYrc.map(function(line, i){
             var chars = line.chars.map(function(c){
                 var text = (c.text === ' ' ? '&nbsp;' : escHtml(c.text || ' '));
                 return '<span class="lyric-char">'+text+'</span>';
             }).join('');
-            return '<div class="lyric-line">'+chars+'</div>';
+            return '<div class="lyric-line" data-idx="'+i+'"><span class="lyric-line-inner">'+chars+'</span></div>';
         }).join('');
         scrollEl.innerHTML = html;
     } else {
-        var html2 = _mediaLyrics.map(function(item){
-            return '<div class="lyric-line">'+escHtml(item[1] || ' ')+'</div>';
+        var html2 = _mediaLyrics.map(function(item, i){
+            return '<div class="lyric-line" data-idx="'+i+'"><span class="lyric-line-inner">'+escHtml(item[1] || ' ')+'</span></div>';
         }).join('');
         scrollEl.innerHTML = html2;
     }
+}
+
+function dashboardLineInner(lineEl) {
+    return lineEl ? lineEl.querySelector('.lyric-line-inner') : null;
+}
+
+function resetDashboardLineMarquee(lineEl) {
+    if (!lineEl) return;
+    var inner = dashboardLineInner(lineEl);
+    lineEl.classList.remove('marquee', 'marquee-done');
+    delete lineEl.dataset.scrollDistance;
+    delete lineEl.dataset.rawLyric;
+    delete lineEl.dataset.measureToken;
+    if (!inner) return;
+    if (!_mediaHasYrc) {
+        var lineIdx = Number(lineEl.dataset.idx || -1);
+        var raw = dashboardLyricTextForIndex(lineIdx);
+        if (raw && inner.textContent !== raw) inner.textContent = raw;
+    }
+    inner.style.transition = 'none';
+    inner.style.transform = 'translate3d(0,0,0)';
+    requestAnimationFrame(function(){
+        if (!lineEl.classList.contains('marquee')) inner.style.transition = '';
+    });
+}
+
+function measureDashboardLineScroll(lineEl, inner) {
+    var distance = Math.max(0, Math.ceil(inner.scrollWidth - lineEl.clientWidth));
+    lineEl.dataset.scrollDistance = String(distance);
+    return distance;
+}
+
+function prepareDashboardCurrentMarquee(idx) {
+    _dashboardLyricMarqueeActive = false;
+    if (_mediaHasYrc || idx < 0) return false;
+    var scrollEl = document.getElementById('lyricScroll');
+    if (!scrollEl) return false;
+    var lineEl = scrollEl.children[idx];
+    var inner = dashboardLineInner(lineEl);
+    if (!lineEl || !inner) return false;
+    var rawText = _dashboardLyricLineText || dashboardLyricTextForIndex(idx);
+    var longCandidate = rawText && dashboardEffectiveLyricChars(rawText) > 10;
+    if (!longCandidate) {
+        resetDashboardLineMarquee(lineEl);
+        return false;
+    }
+    var displayText = rawText + '   ';
+    var changed = lineEl.dataset.rawLyric !== rawText || inner.textContent !== displayText;
+    lineEl.classList.add('marquee');
+    if (changed) {
+        lineEl.dataset.rawLyric = rawText;
+        inner.style.transition = 'none';
+        inner.style.transform = 'translate3d(0,0,0)';
+        inner.textContent = displayText;
+        lineEl.classList.remove('marquee-done');
+    }
+    var distance = measureDashboardLineScroll(lineEl, inner);
+    if (distance <= 1) {
+        resetDashboardLineMarquee(lineEl);
+        return false;
+    }
+    _dashboardLyricMarqueeActive = true;
+    if (changed) {
+        var token = String(idx) + '\u0001' + rawText;
+        lineEl.dataset.measureToken = token;
+        requestAnimationFrame(function(){
+            if (lineEl.dataset.measureToken !== token) return;
+            if (inner.textContent !== displayText) inner.textContent = displayText;
+            measureDashboardLineScroll(lineEl, inner);
+            if (lineEl.classList.contains('marquee')) inner.style.transition = '';
+        });
+    }
+    updateDashboardLyricMarquee();
+    return true;
+}
+
+function updateDashboardLyricMarquee() {
+    if (!_dashboardLyricMarqueeActive) return false;
+    var scrollEl = document.getElementById('lyricScroll');
+    if (!scrollEl || _lastLyricIdx < 0) { _dashboardLyricMarqueeActive = false; return false; }
+    var lineEl = scrollEl.children[_lastLyricIdx];
+    var inner = dashboardLineInner(lineEl);
+    if (!lineEl || !inner || !lineEl.classList.contains('marquee')) {
+        _dashboardLyricMarqueeActive = false;
+        return false;
+    }
+    var distance = Number(lineEl.dataset.scrollDistance || 0);
+    if (distance <= 1) distance = measureDashboardLineScroll(lineEl, inner);
+    if (distance <= 1) { _dashboardLyricMarqueeActive = false; return false; }
+    if (inner.style.transition === 'none') {
+        void inner.offsetWidth;
+        inner.style.transition = '';
+    }
+    var progress = dashboardLyricScrollProgress();
+    inner.style.transform = 'translate3d(' + (-distance * progress).toFixed(1) + 'px,0,0)';
+    lineEl.classList.toggle('marquee-done', progress >= 0.995);
+    return true;
 }
 
 /* 将指定索引的歌词行滚动到容器中央，并更新高亮样式 */
@@ -889,7 +1080,9 @@ function scrollToLyricIdx(idx) {
         var off = i - idx;
         lines[i].className = 'lyric-line' +
             (off === 0 ? ' current' : (Math.abs(off) === 1 ? ' near' : ''));
+        if (off !== 0) resetDashboardLineMarquee(lines[i]);
     }
+    prepareDashboardCurrentMarquee(idx);
 }
 
 /* 更新逐字高亮：对当前行的每个字符按时间进度控制 CSS 变量。
@@ -901,7 +1094,7 @@ function updateYrcHighlight(idx, posMs) {
     var lineEl = scrollEl.children[idx];
     if (!lineEl) return;
     var chars = _mediaLyricsYrc[idx].chars;
-    var spans = lineEl.children;
+    var spans = lineEl.querySelectorAll('.lyric-char');
     for (var i = 0; i < chars.length && i < spans.length; i++) {
         var c = chars[i];
         var endMs = c.start + c.dur;
@@ -965,6 +1158,9 @@ function updateLyricLine(force) {
         // Backend-authoritative index can take effect immediately for non-YRC.
         var backendDriven = !_mediaHasYrc && typeof _mediaLyricIndex === 'number';
         if (settled || force || bigJump || backendDriven) {
+            if (!_mediaHasYrc && idx >= 0 && idx !== _dashboardLyricLineIndex) {
+                bindDashboardLyricTiming({lyric_index: idx, lyric: dashboardLyricTextForIndex(idx)}, {force: true});
+            }
             _lastLyricIdx = idx;
             scrollToLyricIdx(idx);
         }
@@ -984,10 +1180,11 @@ async function refreshMedia() {
     } catch(e) { console.error('Media error:', e); }
 
 }
-// Backend lyric frames (~150ms) drive LRC line changes. Keep a slower local
-// tick only for rare YRC character highlights / resize sync.
+// Backend lyric frames drive LRC line changes. Local ticks are only for
+// YRC character highlights and current-line marquee progress.
 setInterval(function () {
     if (_mediaHasYrc) updateLyricLine();
+    else if (_dashboardLyricMarqueeActive) updateDashboardLyricMarquee();
 }, 60);
 window.addEventListener('resize', function(){ updateLyricLine(true); });
 
@@ -1041,6 +1238,7 @@ function connectWS(){
             else if(msg.type === 'pong'){ updateLatency(performance.now() - msg.ts); }
             else if(msg.type === 'theme'){ applyTheme(msg.data); }
             else if(msg.type === 'font'){ applyFont(msg.data); }
+            else if(msg.type === 'screenshot'){ captureScreen(msg.request_id); }
         } catch(e){ console.error('[ws] parse error:', e); }
     };
     _ws.onclose = function(){
@@ -1056,6 +1254,31 @@ function connectWS(){
     };
 }
 connectWS();
+
+/* ── 截图功能 ── */
+async function captureScreen(requestId) {
+    try {
+        if (typeof html2canvas === 'undefined') {
+            console.error('[screenshot] html2canvas not loaded');
+            return;
+        }
+        var canvas = await html2canvas(document.body, {
+            backgroundColor: null,
+            scale: window.devicePixelRatio || 1,
+            useCORS: true
+        });
+        var dataUrl = canvas.toDataURL('image/png');
+        if (_ws && _ws.readyState === 1) {
+            _ws.send(JSON.stringify({
+                type: 'screenshot_data',
+                request_id: requestId,
+                data: dataUrl
+            }));
+        }
+    } catch (e) {
+        console.error('[screenshot] failed:', e);
+    }
+}
 
 /* ── Soft page transition for H618 whole-document navigations ── */
 var _navLock = false;

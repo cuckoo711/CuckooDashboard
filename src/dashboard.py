@@ -444,6 +444,16 @@ def ws_handler(ws):
                         _ws_send_all_data(ws)
                     elif msg.get("type") == "ping":
                         ws.send(json.dumps({"type": "pong", "ts": msg.get("ts")}, ensure_ascii=False))
+                    elif msg.get("type") == "screenshot_data":
+                        # 收到客户端截图数据，广播给所有 settings 客户端
+                        _ws_broadcast({
+                            "type": "screenshot_result",
+                            "request_id": msg.get("request_id"),
+                            "client_id": client_id,
+                            "data": msg.get("data"),
+                            "timestamp": time.time()
+                        })
+                        logger.info(f"[ws] screenshot received from {client_id}")
                 except (json.JSONDecodeError, KeyError):
                     pass
     except Exception:
@@ -784,6 +794,30 @@ def api_settings_navigate_client(client_id):
     if not sent:
         return jsonify({"error": {"message": "未找到该客户端"}}), 404
     return jsonify({"ok": True})
+
+
+@app.route("/api/settings/clients/<client_id>/screenshot", methods=["POST"])
+def api_settings_screenshot_client(client_id):
+    """向指定客户端发送截图指令（仅回环）。"""
+    require_loopback_access()
+    require_post_protection()
+    request_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
+    sent = False
+    with _ws_clients_lock:
+        for ws, state in _ws_client_states.items():
+            if state.get("id") == client_id:
+                try:
+                    ws.send(json.dumps({
+                        "type": "screenshot",
+                        "request_id": request_id
+                    }, ensure_ascii=False))
+                    sent = True
+                except Exception:
+                    return jsonify({"error": {"message": "发送失败，客户端可能已断开"}}), 500
+                break
+    if not sent:
+        return jsonify({"error": {"message": "未找到该客户端"}}), 404
+    return jsonify({"ok": True, "request_id": request_id})
 
 
 @app.route("/api/settings/reveal", methods=["POST"])

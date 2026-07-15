@@ -278,6 +278,7 @@ select option { color: #181326; background: #f5f1ff; }
 .client-id { font-family: monospace; color: var(--accent-strong); font-size: 11px; min-width: 60px; }
 .client-page { flex: 1; color: var(--muted); }
 .client-nav-btn { flex: 0 0 auto; }
+.client-screenshot-btn { flex: 0 0 auto; }
 
 [hidden] { display: none !important; }
 

@@ -1243,8 +1243,35 @@ function connectWs() {
             if (typeof msg.data.auto_calibrate === 'boolean') AUTO_CALIBRATE = msg.data.auto_calibrate;
             applyMusicRenderOptions(msg.data || {}); renderOffsets();
         }
+        else if (msg.type === 'screenshot') { captureScreen(msg.request_id); }
     };
 }
+
+/* ── 截图功能 ── */
+async function captureScreen(requestId) {
+    try {
+        if (typeof html2canvas === 'undefined') {
+            console.error('[screenshot] html2canvas not loaded');
+            return;
+        }
+        var canvas = await html2canvas(document.body, {
+            backgroundColor: null,
+            scale: window.devicePixelRatio || 1,
+            useCORS: true
+        });
+        var dataUrl = canvas.toDataURL('image/png');
+        if (_ws && _ws.readyState === 1) {
+            _ws.send(JSON.stringify({
+                type: 'screenshot_data',
+                request_id: requestId,
+                data: dataUrl
+            }));
+        }
+    } catch (e) {
+        console.error('[screenshot] failed:', e);
+    }
+}
+
 function handleStageVisibilityChange() {
     if (document.hidden) { stopFrameLoop(); return; }
     if (_heavyStageReady) startFrameLoop();

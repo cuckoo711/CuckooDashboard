@@ -1105,6 +1105,7 @@ $('#saveButton').addEventListener('click', saveSettings);
             return '<div class="client-row" data-client-id="' + escHtml(c.id) + '">' +
                 '<span class="client-id">' + escHtml(c.id) + '</span>' +
                 '<span class="client-page">' + icon + ' ' + escHtml(label) + '</span>' +
+                '<button type="button" class="small-btn client-screenshot-btn" data-client-id="' + escHtml(c.id) + '">截图</button>' +
                 '<button type="button" class="small-btn client-nav-btn" data-navigate-to="' + targetPage + '">切换到 ' + escHtml(targetLabel) + '</button>' +
                 '</div>';
         }).join('');
@@ -1153,6 +1154,79 @@ $('#saveButton').addEventListener('click', saveSettings);
     if ($('#refreshClientsBtn')) {
         $('#refreshClientsBtn').addEventListener('click', refreshClientsList);
     }
+
+    /* ── 截图功能 ── */
+    var _settingsWs = null;
+    var _settingsWsRetry = 1000;
+
+    function connectSettingsWS() {
+        var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        _settingsWs = new WebSocket(proto + '//' + location.host + '/ws');
+        _settingsWs.onopen = function() {
+            _settingsWsRetry = 1000;
+            try {
+                _settingsWs.send(JSON.stringify({type: 'report', page: 'settings'}));
+            } catch(e) {}
+            console.log('[settings-ws] connected');
+        };
+        _settingsWs.onmessage = function(ev) {
+            try {
+                var msg = JSON.parse(ev.data);
+                if (msg.type === 'screenshot_result') {
+                    downloadScreenshot(msg.data, msg.client_id, msg.timestamp);
+                }
+            } catch(e) {}
+        };
+        _settingsWs.onclose = function() {
+            console.log('[settings-ws] disconnected, retry in ' + (_settingsWsRetry/1000) + 's');
+            setTimeout(connectSettingsWS, _settingsWsRetry);
+            _settingsWsRetry = Math.min(_settingsWsRetry * 2, 30000);
+        };
+    }
+    connectSettingsWS();
+
+    function downloadScreenshot(dataUrl, clientId, timestamp) {
+        var link = document.createElement('a');
+        link.href = dataUrl;
+        var date = new Date(timestamp * 1000);
+        var dateStr = date.getFullYear() +
+            String(date.getMonth()+1).padStart(2,'0') +
+            String(date.getDate()).padStart(2,'0') + '_' +
+            String(date.getHours()).padStart(2,'0') +
+            String(date.getMinutes()).padStart(2,'0') +
+            String(date.getSeconds()).padStart(2,'0');
+        link.download = 'cuckoo_screenshot_' + clientId + '_' + dateStr + '.png';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        showMessage('截图已下载', 'success');
+        // 重置按钮状态
+        var btn = document.querySelector('.client-screenshot-btn[data-client-id="' + clientId + '"]');
+        if (btn) {
+            btn.textContent = '截图';
+            btn.disabled = false;
+        }
+    }
+
+    document.addEventListener('click', async function (event) {
+        var btn = event.target.closest ? event.target.closest('.client-screenshot-btn') : null;
+        if (!btn) return;
+        var clientId = btn.dataset.clientId;
+        if (!clientId) return;
+        btn.disabled = true;
+        btn.textContent = '截图中…';
+        try {
+            await requestJson('/api/settings/clients/' + encodeURIComponent(clientId) + '/screenshot', {
+                method: 'POST'
+            });
+            btn.textContent = '等待响应…';
+        } catch (error) {
+            btn.textContent = '失败';
+            showMessage('截图请求失败：' + error.message, 'error');
+            setTimeout(function(){ btn.textContent = '截图'; btn.disabled = false; }, 2000);
+        }
+    });
+
     window.addEventListener('beforeunload', function (event) {
         if (state.dirty) { event.preventDefault(); event.returnValue = ''; }
     });
