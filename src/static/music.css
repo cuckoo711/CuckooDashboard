@@ -299,11 +299,13 @@ body.has-cover {
     transform: translateZ(74px);
 }
 .layer-lyric {
-    padding-left: 75px;
+    padding-left: 60px;
     justify-content: flex-start;
     transform: translateZ(132px);
 }
-/* Screen-fixed spectrum: outside the 3D scene tree, never inherits orbit. */
+/* Screen-fixed spectrum: outside the 3D scene tree, never inherits orbit.
+   Height follows the viewport proportionally, with a floor but NO ceiling —
+   so big screens can grow beyond the old 230px cap without filling half the stage. */
 .layer-spectrum {
     position: fixed;
     right: 0;
@@ -312,7 +314,9 @@ body.has-cover {
     z-index: 5;
     display: flex;
     width: 100%;
-    height: clamp(140px, 22vh, 230px);
+    height: max(140px, 24vh);
+    min-height: 0;
+    max-height: none;
     padding: 0 clamp(12px, 2.4vw, 28px);
     align-items: flex-end;
     justify-content: center;
@@ -442,9 +446,11 @@ body.has-cover {
     position: relative;
     width: min(1200px, 91vw);
     min-height: clamp(176px, 24vh, 268px);
-    padding: 17px 60px 28px 0;
+    padding: 28px 72px 40px 0;
     text-align: left;
-    transform: translate3d(0, 40px, 24px);
+    /* Stage offset: down 20px, left 20px, slight 3D depth. */
+    transform: translate3d(-20px, 20px, 24px);
+    overflow: visible;
 }
 /* Dual-line track: a fixed horizontal midline anchors both rows so active
    scale-up never pushes the pair around. Upper row sits above the mid-axis;
@@ -455,6 +461,8 @@ body.has-cover {
     width: min(100%, 1200px);
     min-height: clamp(168px, 22.5vw, 248px);
     margin: 0;
+    /* Let soft lyric glow bleed past the track box. */
+    overflow: visible;
 }
 /* Remove the right-side cover core and let lyrics own the stage. */
 body.cinema .layer-visual {
@@ -465,6 +473,8 @@ body.cinema .cinema-center {
 }
 body.cinema .layer-lyric {
     grid-row: 1;
+    /* Avoid stage layer boxes hard-clipping lyric shadows at the edge. */
+    overflow: visible;
 }
 .lyric-kicker {
     display: inline-flex;
@@ -494,7 +504,9 @@ body.cinema .layer-lyric {
     max-height: calc(50% - (var(--lyric-mid-gap) / 2));
     margin: 0;
     align-items: flex-end;
-    overflow: hidden;
+    /* Default: do not clip soft text glow at the box edge. Marquee re-enables
+       horizontal clipping below with a softer edge fade. */
+    overflow: visible;
     color: var(--ink);
     line-height: 1.08;
     overflow-wrap: normal;
@@ -526,7 +538,8 @@ body.cinema .layer-lyric {
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
-    text-shadow: 0 15px 44px rgba(0, 0, 0, 0.54), 0 0 36px rgba(var(--cover-rgb), 0.12);
+    /* Soft ground shadow only — huge glow was hard-cut by overflow/mask edges. */
+    text-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
 }
 .lyric-slot.is-next {
     font-size: clamp(32px, 3.75vw, 52px);
@@ -534,51 +547,86 @@ body.cinema .layer-lyric {
     letter-spacing: 0.055em;
     color: rgba(232, 240, 252, 0.62);
     opacity: 0.78;
-    text-shadow: 0 10px 26px rgba(0, 0, 0, 0.48);
+    text-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
 }
 .lyric-slot.is-fading {
     opacity: 0;
-    filter: blur(2px);
+    /* Soft opacity-only settle; no blur (blur made lines look out-of-focus). */
+    filter: none;
 }
 .lyric-scroll-inner {
     display: inline-block;
     max-width: none;
-    white-space: nowrap;
+    white-space: pre; /* keep trailing marquee pads used to clear the fade mask */
     transform: translate3d(0, 0, 0);
-    transition: transform 0.12s linear;
+    /* Only animate marquee progress; never animate resets when a slot reuses. */
+    transition: none;
     will-change: transform;
+}
+.lyric-slot.marquee.is-active .lyric-scroll-inner {
+    transition: transform 0.12s linear;
+}
+/* Active long lines: put the residual glow on the moving span so the outer
+   mask only clips text overflow, not a large soft halo hard-cut. */
+.lyric-slot.is-active .lyric-scroll-inner {
+    filter: drop-shadow(0 0 10px rgba(var(--cover-rgb), 0.14));
 }
 .lyric-slot.marquee {
     width: min(100%, 10.8em);
-    padding-right: 0;
-    contain: paint;
+    padding: 10px 14px;
+    margin-left: -14px;
+    margin-right: -14px;
+    /* Extra pad keeps residual shadow soft inside the fade mask. */
+    contain: none;
     justify-content: flex-start;
     text-align: left;
-    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 7%, #000 93%, transparent 100%);
-    mask-image: linear-gradient(90deg, transparent 0, #000 7%, #000 93%, transparent 100%);
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 12%, #000 88%, transparent 100%);
+    mask-image: linear-gradient(90deg, transparent 0, #000 12%, #000 88%, transparent 100%);
 }
 /* Right-side row keeps its right-align even while marqueeing; only the inner
    span scrolls left, and the container itself still sits on the right half. */
 .lyric-slot-b.marquee {
     margin-left: auto;
-    margin-right: 0;
+    margin-right: -14px;
     left: auto;
     right: 0;
     width: min(100%, 10.8em);
 }
 .lyric-slot.pulse {
-    animation: lyric-settle 0.38s ease-out both;
+    animation: lyric-settle 0.38s cubic-bezier(0.22, 0.68, 0.28, 1) both;
 }
+/* Gentle rise + fade when a line becomes active. No horizontal travel, so a
+   reused marquee slot never looks like it is sliding in from the left. */
 @keyframes lyric-settle {
-    0% { opacity: 0.28; }
-    62% { opacity: 0.9; }
-    100% { opacity: 1; }
+    0% {
+        opacity: 0.18;
+        transform: translate3d(0, 10px, 0);
+    }
+    58% {
+        opacity: 0.92;
+        transform: translate3d(0, -1px, 0);
+    }
+    100% {
+        opacity: 1;
+        transform: translate3d(0, 0, 0);
+    }
+}
+/* Soft opacify for the secondary line when it swaps content mid-hold. */
+.lyric-slot.next-settle {
+    animation: lyric-next-settle 0.28s ease-out both;
+}
+@keyframes lyric-next-settle {
+    0% { opacity: 0.16; }
+    100% { opacity: 0.78; }
 }
 
 .spectrum-wrap {
     position: relative;
     width: min(1320px, 97vw);
     height: 100%;
+    min-height: 0;
+    max-height: none;
     overflow: hidden;
     transform: none;
     transform-style: flat;
@@ -632,7 +680,7 @@ body.cinema .layer-lyric {
 .track-stage {
     position: absolute;
     top: 50px;
-    left: 75px;
+    left: 60px;
     z-index: 2;
     width: min(520px, calc(100vw - 70px));
     pointer-events: none;
@@ -809,7 +857,10 @@ body.cinema .layer-lyric {
 .menu-link:hover { color: #fff; }
 
 body.beat .lyric-slot.is-active {
-    text-shadow: 0 15px 44px rgba(0, 0, 0, 0.52), 0 0 54px rgba(var(--cover-rgb), 0.26);
+    text-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+}
+body.beat .lyric-slot.is-active .lyric-scroll-inner {
+    filter: drop-shadow(0 0 14px rgba(var(--cover-rgb), 0.22));
 }
 
 /* Low-power render path: H618/Panfrost gets one small spectrum canvas only. */
@@ -845,7 +896,8 @@ body.performance-lite .scene {
 body.performance-lite .layer-spectrum {
     transform: none;
     bottom: 6px;
-    height: clamp(118px, 20vh, 168px);
+    height: max(120px, 22vh);
+    max-height: none;
 }
 body.performance-lite .spectrum-wrap {
     background: transparent;
@@ -865,11 +917,14 @@ body.performance-lite .lyric-slot.is-active {
     color: #f8fbff;
     background: none;
     -webkit-text-fill-color: #f8fbff;
-    text-shadow: 0 2px 3px rgba(0, 0, 0, 0.96), 0 9px 22px rgba(0, 0, 0, 0.72);
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.55);
+}
+body.performance-lite .lyric-slot.is-active .lyric-scroll-inner {
+    filter: none;
 }
 body.performance-lite .lyric-slot.is-next {
     color: rgba(244, 248, 255, 0.72);
-    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+    text-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
 }
 
 @media (max-width: 820px) {
@@ -883,7 +938,8 @@ body.performance-lite .lyric-slot.is-next {
         justify-content: center;
     }
     .layer-spectrum {
-        height: clamp(120px, 21vh, 170px);
+        height: max(120px, 23vh);
+        max-height: none;
         bottom: 6px;
         padding: 0 8px;
     }
@@ -923,7 +979,12 @@ body.performance-lite .lyric-slot.is-next {
         letter-spacing: 0.01em;
     }
     .lyric-slot.is-next { font-size: clamp(21px, 5vw, 30px); }
-    .layer-spectrum { height: clamp(100px, 19vh, 140px); bottom: 4px; }
+    .layer-spectrum {
+        height: max(100px, 22vh);
+        max-height: none;
+        bottom: 4px;
+        padding: 0 6px;
+    }
     .spectrum-wrap { height: 100%; }
     .track-stage .title { font-size: clamp(16px, 5vw, 22px); }
     .track-stage .artist { font-size: 11px; }

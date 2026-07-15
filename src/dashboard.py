@@ -158,7 +158,9 @@ _ws_spectrum_started = False
 _ws_spectrum_lock = _ws_threading.Lock()
 _ws_lyric_started = False
 _ws_lyric_lock = _ws_threading.Lock()
-_LYRIC_PUSH_INTERVAL_S = 0.15  # ~150ms frame-level lyric control
+# Poll for line changes quickly, but only emit when lyric_index (or track) changes.
+_LYRIC_POLL_INTERVAL_S = 0.12
+_lyric_last_push_key = None
 
 # ── Vibe Coding 状态持久化 ──
 
@@ -559,16 +561,27 @@ def _ws_spectrum_broadcaster():
 
 
 def _ws_lyric_broadcaster():
-    """Push lightweight lyric control frames at ~150ms for interested pages."""
+    """Watch lyrics and push only when the active line / track changes."""
+    global _lyric_last_push_key
     while True:
         t0 = time.monotonic()
         try:
             if _ws_lyric_interest_count() > 0:
-                _ws_broadcast_lyric({"type": "lyric", "data": get_lyric_frame()})
+                frame = get_lyric_frame()
+                # Identity of the "current sentence" — emit only when this flips.
+                key = (
+                    str(frame.get("track_key") or ""),
+                    int(frame.get("lyric_index", -1) if frame.get("lyric_index") is not None else -1),
+                    str(frame.get("status") or ""),
+                    str(frame.get("lyric") or ""),
+                )
+                if key != _lyric_last_push_key:
+                    _lyric_last_push_key = key
+                    _ws_broadcast_lyric({"type": "lyric", "data": frame})
         except Exception as e:
             logger.error(f"[ws] lyric broadcast error: {e}")
         elapsed = time.monotonic() - t0
-        time.sleep(max(0.0, _LYRIC_PUSH_INTERVAL_S - elapsed))
+        time.sleep(max(0.0, _LYRIC_POLL_INTERVAL_S - elapsed))
 
 
 def start_background_threads_once() -> bool:
@@ -926,8 +939,19 @@ def api_media_offset():
     # Push a fresh media frame immediately so lyric_index reflects the new offset
     # without waiting for the 1s broadcaster tick.
     try:
-        _ws_broadcast({"type": "media", "data": get_media_info()})
-        _ws_broadcast_lyric({"type": "lyric", "data": get_lyric_frame()})
+        frame = get_media_info()
+        _ws_broadcast({"type": "media", "data": frame})
+        # Offset changes must force a lyric-line re-sync even if the index key
+        # happens to match the previous emit for a brief moment.
+        lyric = get_lyric_frame()
+        global _lyric_last_push_key
+        _lyric_last_push_key = (
+            str(lyric.get("track_key") or ""),
+            int(lyric.get("lyric_index", -1) if lyric.get("lyric_index") is not None else -1),
+            str(lyric.get("status") or ""),
+            str(lyric.get("lyric") or ""),
+        )
+        _ws_broadcast_lyric({"type": "lyric", "data": lyric})
     except Exception as exc:
         logger.debug("[media] offset broadcast failed: %s", exc)
     return jsonify({"offset": val})

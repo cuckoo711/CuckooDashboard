@@ -19,7 +19,7 @@ from core.config import load_config, set_config_value
 
 logger = logging.getLogger("cuckoo.spectrum")
 
-_BINS_DEFAULT = 48
+_BINS_DEFAULT = 96
 _SAMPLE_RATE = 48000
 _BLOCKSIZE = 2048
 _CHANNELS = 2

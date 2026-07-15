@@ -831,6 +831,10 @@ def get_media_info() -> dict:
     next_lyric = ""
     lyric_scroll = 0.0
     lyric_line_progress = 0.0
+    lyric_start = 0.0
+    lyric_end = 0.0
+    lyric_duration = 0.0
+    lyric_elapsed = 0.0
     if lyrics:
         for i, (t, text) in enumerate(lyrics):
             if float(t) <= pos_eff:
@@ -842,6 +846,13 @@ def get_media_info() -> dict:
             # Before the first timed line: keep index -1 so clients can show title/artist fallback.
             next_lyric_index = 0
             next_lyric = lyrics[0][1]
+            try:
+                lyric_end = float(lyrics[0][0] or 0.0)
+            except (TypeError, ValueError, IndexError):
+                lyric_end = 0.0
+            lyric_start = max(0.0, lyric_end - 1.0)
+            lyric_duration = max(0.18, lyric_end - lyric_start)
+            lyric_elapsed = max(0.0, min(lyric_duration, pos_eff - lyric_start))
         elif lyric_index >= 0:
             if lyric_index + 1 < len(lyrics):
                 next_lyric_index = lyric_index + 1
@@ -849,7 +860,11 @@ def get_media_info() -> dict:
             else:
                 next_lyric_index = -1
                 next_lyric = ""
-            lyric_scroll, lyric_line_progress = _lyric_progress_pair(lyrics, lyric_index, pos_eff)
+            lyric_start, lyric_end, lyric_duration = _lyric_line_window(lyrics, lyric_index)
+            lyric_elapsed = max(0.0, min(lyric_duration, pos_eff - lyric_start))
+            lyric_scroll, lyric_line_progress = _lyric_progress_pair(
+                lyric_start, lyric_duration, pos_eff
+            )
 
     cover = get_cover_state()
     cover_key = _cover_key(info["title"], info.get("artist", ""), info.get("album", ""))
@@ -895,6 +910,10 @@ def get_media_info() -> dict:
         "lyric_offset": round(float(lyric_offset), 1),
         "lyric_index": lyric_index,
         "next_lyric_index": next_lyric_index,
+        "lyric_start": round(lyric_start, 3),
+        "lyric_end": round(lyric_end, 3),
+        "lyric_duration": round(lyric_duration, 3),
+        "lyric_elapsed": round(lyric_elapsed, 3),
         "lyric_scroll": round(lyric_scroll, 4),
         "lyric_line_progress": round(lyric_line_progress, 4),
         "server_ts": time.time(),
@@ -909,36 +928,44 @@ def get_media_info() -> dict:
     }
 
 
-def _lyric_progress_pair(lyrics: list, index: int, pos_eff: float) -> tuple[float, float]:
-    """Return (scroll_progress, line_progress) for the active lyric index."""
+def _lyric_line_window(lyrics: list, index: int) -> tuple[float, float, float]:
+    """Return (start, end, duration) for one LRC line in offset-effective seconds."""
     if index < 0 or index >= len(lyrics):
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
     try:
         start = float(lyrics[index][0] or 0.0)
     except (TypeError, ValueError, IndexError):
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
     if index + 1 < len(lyrics):
         try:
-            nxt = float(lyrics[index + 1][0] or (start + 3.0))
+            end = float(lyrics[index + 1][0] or (start + 3.0))
         except (TypeError, ValueError, IndexError):
-            nxt = start + 3.0
+            end = start + 3.0
     else:
-        nxt = start + 3.0
-    span = max(0.18, nxt - start)
+        end = start + 3.0
+    if end <= start:
+        end = start + 0.18
+    return start, end, max(0.18, end - start)
+
+
+def _lyric_progress_pair(start: float, duration: float, pos_eff: float) -> tuple[float, float]:
+    """Return (scroll_progress, line_progress) from line timing + effective position."""
+    span = max(0.18, float(duration or 0.0))
+    elapsed = max(0.0, float(pos_eff) - float(start or 0.0))
+    line_prog = max(0.0, min(1.0, elapsed / span))
+    # Hold for the first third of the line (capped at 3s total scroll window), then scroll.
     scroll_duration = min(3.0, span)
-    # Match the former front-end marquee: hold for the first third, then scroll.
     hold = scroll_duration / 3.0
     move_duration = max(0.12, scroll_duration - hold)
-    scroll = max(0.0, min(1.0, (pos_eff - start - hold) / move_duration))
-    line_prog = max(0.0, min(1.0, (pos_eff - start) / span))
+    scroll = max(0.0, min(1.0, (elapsed - hold) / move_duration))
     return scroll, line_prog
 
 
 def get_lyric_frame() -> dict:
-    """High-frequency, lightweight lyric snapshot for ~150ms WebSocket control.
+    """On-change lyric control frame: line text + how long that line lasts.
 
-    Omits the full lyrics list and cover palette blobs; clients keep full LRC from
-    the slower ``media`` messages and only paint backend-authored line progress here.
+    Clients should switch sentences only when this frame arrives, and use
+    ``lyric_duration`` / ``lyric_elapsed`` to locally animate long-line marquee.
     """
     full = get_media_info()
     return {
@@ -953,6 +980,10 @@ def get_lyric_frame() -> dict:
         "lyric_index": int(full.get("lyric_index", -1) if full.get("lyric_index") is not None else -1),
         "next_lyric_index": int(full.get("next_lyric_index", -1) if full.get("next_lyric_index") is not None else -1),
         "lyric_offset": full.get("lyric_offset", 0),
+        "lyric_start": full.get("lyric_start", 0.0),
+        "lyric_end": full.get("lyric_end", 0.0),
+        "lyric_duration": full.get("lyric_duration", 0.0),
+        "lyric_elapsed": full.get("lyric_elapsed", 0.0),
         "lyric_scroll": full.get("lyric_scroll", 0.0),
         "lyric_line_progress": full.get("lyric_line_progress", 0.0),
         "position": full.get("position", 0),
@@ -960,7 +991,6 @@ def get_lyric_frame() -> dict:
         "duration": full.get("duration", 0),
         "position_source": full.get("position_source") or "none",
         "server_ts": full.get("server_ts") or time.time(),
-        # Tiny identity hints so clients can detect song changes without lyrics[].
         "track_key": "\u001f".join([
             "" if full.get("song_id") is None else str(full.get("song_id")),
             str(full.get("title") or ""),
