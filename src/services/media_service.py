@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
 import re
@@ -41,6 +42,20 @@ _cover_state = {
     "updated_at": 0.0,    # only bumps when the cover identity/content changes
     "source_token": "",   # stable identity: remote url or file mtime/key
 }
+_DEFAULT_COVER_PALETTE = {
+    "cover_palette_rgb": [146, 162, 224],
+    "cover_palette_1": [146, 162, 224],
+    "cover_palette_2": [116, 132, 198],
+    "cover_palette_3": [184, 198, 235],
+}
+_cover_art_lock = threading.Lock()
+_cover_art_cache = {
+    "identity": "",
+    "ambient": b"",
+    "ambient_mime": "image/jpeg",
+    "palette": dict(_DEFAULT_COVER_PALETTE),
+}
+_pillow_missing_logged = False
 _COVER_FILE = PROJECT_ROOT / "data" / "media_cover.bin"
 _COVER_META = PROJECT_ROOT / "data" / "media_cover.json"
 _YPM_API = "http://127.0.0.1:27232/player"
@@ -84,6 +99,14 @@ def _set_cover_locked(
         _cover_state["source_token"] = source_token
     if changed:
         _cover_state["updated_at"] = time.time()
+        with _cover_art_lock:
+            if _cover_art_cache.get("identity") != (source_token or key):
+                _cover_art_cache.update({
+                    "identity": "",
+                    "ambient": b"",
+                    "ambient_mime": "image/jpeg",
+                    "palette": dict(_DEFAULT_COVER_PALETTE),
+                })
     elif not _cover_state.get("updated_at"):
         _cover_state["updated_at"] = time.time()
     return changed
@@ -103,6 +126,22 @@ def _load_cover_file_if_any(title: str, artist: str, album: str = "") -> None:
             k_title = (key.split("\n") + [""])[0]
             if k_title and k_title != title:
                 return
+        # If the same track already has a remote cover URL, keep that source
+        # stable. Importing the SMTC thumbnail as a second source would toggle
+        # source_token between url:/file: on later polls, bump cover_version, and
+        # make the browser reload the blurred background even though the album art
+        # did not actually change.
+        with _cover_lock:
+            current_key = str(_cover_state.get("key") or "")
+            current_title = str(_cover_state.get("title") or "")
+            current_url = str(_cover_state.get("url") or "")
+            same_current = (
+                (want and current_key == want)
+                or (title and current_title == title)
+            )
+            if current_url and same_current:
+                return
+
         raw = _COVER_FILE.read_bytes()
         if not raw:
             return
@@ -210,6 +249,149 @@ def get_cover_bytes() -> tuple[bytes | None, str]:
         except Exception:
             pass
     return None, mime
+
+
+def _current_cover_identity() -> str:
+    with _cover_lock:
+        token = str(_cover_state.get("source_token") or "")
+        url = str(_cover_state.get("url") or "")
+        key = str(_cover_state.get("key") or "")
+    if token:
+        return token
+    if url:
+        return f"url:{url}"
+    return key
+
+
+def _clone_cover_palette(palette: dict | None = None) -> dict:
+    base = palette or _DEFAULT_COVER_PALETTE
+    return {
+        "cover_palette_rgb": list(base.get("cover_palette_rgb") or _DEFAULT_COVER_PALETTE["cover_palette_rgb"]),
+        "cover_palette_1": list(base.get("cover_palette_1") or _DEFAULT_COVER_PALETTE["cover_palette_1"]),
+        "cover_palette_2": list(base.get("cover_palette_2") or _DEFAULT_COVER_PALETTE["cover_palette_2"]),
+        "cover_palette_3": list(base.get("cover_palette_3") or _DEFAULT_COVER_PALETTE["cover_palette_3"]),
+    }
+
+
+def _load_pillow_modules():
+    global _pillow_missing_logged
+    try:
+        from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+        return Image, ImageEnhance, ImageFilter, ImageOps
+    except Exception as exc:
+        if not _pillow_missing_logged:
+            logger.warning("[media] Pillow not available; cover ambient image falls back to original cover: %s", exc)
+            _pillow_missing_logged = True
+        return None, None, None, None
+
+
+def _bucket_channel(value: int) -> int:
+    return max(0, min(255, int(round(value / 24) * 24)))
+
+
+def _palette_payload(raw_colors: list[tuple[int, int, int]]) -> dict:
+    if not raw_colors:
+        return _clone_cover_palette()
+    c1 = raw_colors[0]
+    c2 = raw_colors[1] if len(raw_colors) > 1 else c1
+    c3 = raw_colors[2] if len(raw_colors) > 2 else c2
+    # Match the former front-end tone mapping: responsive to album art, but
+    # cooled/desaturated so one cover cannot flood the whole stage.
+    themed = [
+        round(c1[0] * 0.42 + 184 * 0.58),
+        round(c1[1] * 0.42 + 198 * 0.58),
+        round(c1[2] * 0.42 + 235 * 0.58),
+    ]
+    return {
+        "cover_palette_rgb": themed,
+        "cover_palette_1": list(c1),
+        "cover_palette_2": list(c2),
+        "cover_palette_3": list(c3),
+    }
+
+
+def _extract_palette_from_image(img) -> dict:
+    Image, _, _, _ = _load_pillow_modules()
+    if Image is None:
+        return _clone_cover_palette()
+    try:
+        resample = getattr(getattr(Image, "Resampling", Image), "BILINEAR", Image.BILINEAR)
+        sample = img.convert("RGBA")
+        sample.thumbnail((48, 48), resample)
+        buckets: dict[tuple[int, int, int], float] = {}
+        for r, g, b, a in sample.getdata():
+            if a < 200:
+                continue
+            hi = max(r, g, b)
+            lo = min(r, g, b)
+            lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+            if hi < 30 or lo > 235 or lum < 22 or lum > 244:
+                continue
+            key = (_bucket_channel(r), _bucket_channel(g), _bucket_channel(b))
+            saturation = (hi - lo) / max(hi, 1)
+            mid_luma_bonus = max(0.0, 1.0 - abs(lum - 142) / 142)
+            buckets[key] = buckets.get(key, 0.0) + 1.0 + saturation * 0.9 + mid_luma_bonus * 0.35
+        ranked = sorted(buckets.items(), key=lambda item: item[1], reverse=True)
+        return _palette_payload([color for color, _ in ranked[:3]])
+    except Exception as exc:
+        logger.debug("[media] cover palette extraction failed: %s", exc)
+        return _clone_cover_palette()
+
+
+def _build_ambient_cover(data: bytes, mime: str) -> tuple[bytes, str, dict]:
+    Image, ImageEnhance, ImageFilter, ImageOps = _load_pillow_modules()
+    if Image is None:
+        return data, mime or "image/jpeg", _clone_cover_palette()
+    try:
+        resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.LANCZOS)
+        with Image.open(io.BytesIO(data)) as src:
+            img = ImageOps.exif_transpose(src)
+            palette = _extract_palette_from_image(img)
+            ambient = img.convert("RGB")
+        ambient.thumbnail((480, 480), resample)
+        # Mild blur only — enough to soften album edges without washing out the art.
+        ambient = ambient.filter(ImageFilter.GaussianBlur(radius=3))
+        ambient = ImageEnhance.Color(ambient).enhance(1.15)
+        ambient = ImageEnhance.Contrast(ambient).enhance(1.05)
+        ambient = ImageEnhance.Brightness(ambient).enhance(1.05)
+        out = io.BytesIO()
+        ambient.save(out, format="JPEG", quality=82, progressive=False)
+        return out.getvalue(), "image/jpeg", palette
+    except Exception as exc:
+        logger.debug("[media] cover ambient generation failed: %s", exc)
+        return data, mime or "image/jpeg", _clone_cover_palette()
+
+
+def get_cover_palette(identity: str | None = None) -> dict:
+    """Return the cached backend palette; never fetch remote art from /api/media."""
+    target = identity or _current_cover_identity()
+    with _cover_art_lock:
+        if target and _cover_art_cache.get("identity") == target:
+            return _clone_cover_palette(_cover_art_cache.get("palette"))
+    return _clone_cover_palette()
+
+
+def get_cover_ambient_bytes() -> tuple[bytes | None, str]:
+    """Return cached backend-blurred cover art, generating it once per identity."""
+    identity = _current_cover_identity()
+    if not identity:
+        return None, "image/jpeg"
+    with _cover_art_lock:
+        if _cover_art_cache.get("identity") == identity and _cover_art_cache.get("ambient"):
+            return bytes(_cover_art_cache["ambient"]), str(_cover_art_cache.get("ambient_mime") or "image/jpeg")
+
+    data, mime = get_cover_bytes()
+    if not data:
+        return None, mime or "image/jpeg"
+    ambient, ambient_mime, palette = _build_ambient_cover(data, mime)
+    with _cover_art_lock:
+        _cover_art_cache.update({
+            "identity": identity,
+            "ambient": ambient,
+            "ambient_mime": ambient_mime or "image/jpeg",
+            "palette": palette,
+        })
+    return ambient, ambient_mime or "image/jpeg"
 
 
 def _fetch_ypm_direct() -> dict | None:
@@ -604,12 +786,20 @@ def get_media_info() -> dict:
                     )
 
     if info.get("status") not in ("playing", "paused") or not info.get("title"):
+        offset = _load_lyric_offset()
         return {
             "status": info.get("status") or "idle", "title": "", "artist": "", "album": "",
             "lyric": "", "next_lyric": "",
             "lyrics": [], "lyrics_yrc": [], "song_id": None,
             "position": 0, "duration": 0, "progress_ratio": None, "position_source": "none",
-            "has_cover": False, "cover_url": "", "cover_version": 0,
+            "position_effective": 0,
+            "lyric_offset": offset,
+            "lyric_index": -1,
+            "next_lyric_index": -1,
+            "lyric_scroll": 0.0,
+            "lyric_line_progress": 0.0,
+            "server_ts": time.time(),
+            "has_cover": False, "cover_url": "", "cover_version": 0, "cover_identity": "",
         }
 
     # refresh file cover if worker finished async extract
@@ -633,16 +823,33 @@ def get_media_info() -> dict:
         pos = ratio * duration
         position_source = "uia"
 
+    lyric_offset = _load_lyric_offset()
+    pos_eff = pos + lyric_offset
+    lyric_index = -1
+    next_lyric_index = -1
     current_lyric = ""
     next_lyric = ""
-    if lyrics and pos > 0:
+    lyric_scroll = 0.0
+    lyric_line_progress = 0.0
+    if lyrics:
         for i, (t, text) in enumerate(lyrics):
-            if t <= pos:
+            if float(t) <= pos_eff:
+                lyric_index = i
                 current_lyric = text
-                if i + 1 < len(lyrics):
-                    next_lyric = lyrics[i + 1][1]
             else:
                 break
+        if lyric_index < 0 and lyrics:
+            # Before the first timed line: keep index -1 so clients can show title/artist fallback.
+            next_lyric_index = 0
+            next_lyric = lyrics[0][1]
+        elif lyric_index >= 0:
+            if lyric_index + 1 < len(lyrics):
+                next_lyric_index = lyric_index + 1
+                next_lyric = lyrics[next_lyric_index][1]
+            else:
+                next_lyric_index = -1
+                next_lyric = ""
+            lyric_scroll, lyric_line_progress = _lyric_progress_pair(lyrics, lyric_index, pos_eff)
 
     cover = get_cover_state()
     cover_key = _cover_key(info["title"], info.get("artist", ""), info.get("album", ""))
@@ -660,6 +867,15 @@ def get_media_info() -> dict:
         cover_url = f"/api/media/cover?v={cover_version}"
     else:
         cover_url = ""
+    cover_identity = ""
+    if has_remote:
+        cover_identity = f"url:{cover.get('url') or ''}"
+    elif has_file:
+        cover_identity = str(cover.get("source_token") or cover_key)
+
+    # Prefer the cached backend palette. The ambient endpoint (or an earlier
+    # media request) fills the cache; until then the frontend keeps defaults.
+    palette = get_cover_palette(cover_identity)
 
     return {
         "status": info["status"],
@@ -672,12 +888,85 @@ def get_media_info() -> dict:
         "lyrics_yrc": [],  # YRC removed, keep field for frontend compat
         "song_id": song_id,
         "position": round(pos, 2),
+        "position_effective": round(pos_eff, 2),
         "duration": round(duration, 2),
         "progress_ratio": ratio,
         "position_source": position_source,
+        "lyric_offset": round(float(lyric_offset), 1),
+        "lyric_index": lyric_index,
+        "next_lyric_index": next_lyric_index,
+        "lyric_scroll": round(lyric_scroll, 4),
+        "lyric_line_progress": round(lyric_line_progress, 4),
+        "server_ts": time.time(),
         "has_cover": has_cover,
         "cover_url": cover_url,
         "cover_version": cover_version,
+        "cover_identity": cover_identity,
+        "cover_palette_rgb": palette.get("cover_palette_rgb"),
+        "cover_palette_1": palette.get("cover_palette_1"),
+        "cover_palette_2": palette.get("cover_palette_2"),
+        "cover_palette_3": palette.get("cover_palette_3"),
+    }
+
+
+def _lyric_progress_pair(lyrics: list, index: int, pos_eff: float) -> tuple[float, float]:
+    """Return (scroll_progress, line_progress) for the active lyric index."""
+    if index < 0 or index >= len(lyrics):
+        return 0.0, 0.0
+    try:
+        start = float(lyrics[index][0] or 0.0)
+    except (TypeError, ValueError, IndexError):
+        return 0.0, 0.0
+    if index + 1 < len(lyrics):
+        try:
+            nxt = float(lyrics[index + 1][0] or (start + 3.0))
+        except (TypeError, ValueError, IndexError):
+            nxt = start + 3.0
+    else:
+        nxt = start + 3.0
+    span = max(0.18, nxt - start)
+    scroll_duration = min(3.0, span)
+    # Match the former front-end marquee: hold for the first third, then scroll.
+    hold = scroll_duration / 3.0
+    move_duration = max(0.12, scroll_duration - hold)
+    scroll = max(0.0, min(1.0, (pos_eff - start - hold) / move_duration))
+    line_prog = max(0.0, min(1.0, (pos_eff - start) / span))
+    return scroll, line_prog
+
+
+def get_lyric_frame() -> dict:
+    """High-frequency, lightweight lyric snapshot for ~150ms WebSocket control.
+
+    Omits the full lyrics list and cover palette blobs; clients keep full LRC from
+    the slower ``media`` messages and only paint backend-authored line progress here.
+    """
+    full = get_media_info()
+    return {
+        "status": full.get("status") or "idle",
+        "title": full.get("title") or "",
+        "artist": full.get("artist") or "",
+        "album": full.get("album") or "",
+        "playing": (full.get("status") == "playing"),
+        "song_id": full.get("song_id"),
+        "lyric": full.get("lyric") or "",
+        "next_lyric": full.get("next_lyric") or "",
+        "lyric_index": int(full.get("lyric_index", -1) if full.get("lyric_index") is not None else -1),
+        "next_lyric_index": int(full.get("next_lyric_index", -1) if full.get("next_lyric_index") is not None else -1),
+        "lyric_offset": full.get("lyric_offset", 0),
+        "lyric_scroll": full.get("lyric_scroll", 0.0),
+        "lyric_line_progress": full.get("lyric_line_progress", 0.0),
+        "position": full.get("position", 0),
+        "position_effective": full.get("position_effective", 0),
+        "duration": full.get("duration", 0),
+        "position_source": full.get("position_source") or "none",
+        "server_ts": full.get("server_ts") or time.time(),
+        # Tiny identity hints so clients can detect song changes without lyrics[].
+        "track_key": "\u001f".join([
+            "" if full.get("song_id") is None else str(full.get("song_id")),
+            str(full.get("title") or ""),
+            str(full.get("artist") or ""),
+            str(full.get("album") or ""),
+        ]),
     }
 
 

@@ -198,6 +198,29 @@
         .net-banner.show { transform:translateY(0); animation:net-banner-pulse 2.4s ease-in-out infinite; }
         @keyframes net-banner-pulse { 0%,100%{filter:brightness(1);} 50%{filter:brightness(1.12);} }
 
+        /* Soft whole-page transition overlay (kiosk document navigation). */
+        .page-transit {
+            position:fixed; inset:0; z-index:2000;
+            display:flex; align-items:center; justify-content:center;
+            pointer-events:none; opacity:0;
+            background:rgba(8,6,14,0.66);
+            transition:opacity .12s ease;
+        }
+        .page-transit.show { opacity:1; pointer-events:auto; }
+        .page-transit-inner { display:flex; gap:8px; }
+        .page-transit-dot {
+            width:7px; height:7px; border-radius:50%;
+            background:rgba(240,236,255,0.78); opacity:.25;
+            animation:page-transit-pulse .9s ease-in-out infinite;
+        }
+        .page-transit-dot:nth-child(2){ animation-delay:.15s; }
+        .page-transit-dot:nth-child(3){ animation-delay:.3s; }
+        @keyframes page-transit-pulse {
+            0%,100%{ opacity:.2; transform:translateY(0); }
+            50%{ opacity:1; transform:translateY(-2px); }
+        }
+        body.page-leaving { pointer-events:none; }
+
         /* ── 数据降级：离线时实时数据区变暗+轻微去饱和，明确"数据已过期" ── */
         body.net-offline .card-body { opacity:.5; filter:grayscale(.35); transition:opacity .4s ease, filter .4s ease; }
         body:not(.net-offline) .card-body { transition:opacity .4s ease, filter .4s ease; }

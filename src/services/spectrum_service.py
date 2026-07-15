@@ -28,6 +28,9 @@ _OFFSET_MS_MIN = -200
 _OFFSET_MS_MAX = 200
 _SPECTRUM_OFFSET_DEFAULT = 40
 _BEAT_LEAD_DEFAULT = 20
+_ORBIT_YAW_MAX = 45.0
+_ORBIT_PITCH_MAX = 30.0
+_ORBIT_PITCH_DEFAULT = 14.0
 
 try:
     import numpy as np
@@ -142,6 +145,22 @@ def _clamp_render_bars(value: Any) -> int:
     return max(_RENDER_BARS_MIN, min(_RENDER_BARS_MAX, val))
 
 
+def _clamp_orbit_yaw(value) -> float:
+    try:
+        yaw = float(value)
+    except (TypeError, ValueError):
+        yaw = 0.0
+    return max(-_ORBIT_YAW_MAX, min(_ORBIT_YAW_MAX, round(yaw, 2)))
+
+
+def _clamp_orbit_pitch(value) -> float:
+    try:
+        pitch = float(value)
+    except (TypeError, ValueError):
+        pitch = _ORBIT_PITCH_DEFAULT
+    return max(-_ORBIT_PITCH_MAX, min(_ORBIT_PITCH_MAX, round(pitch, 2)))
+
+
 def load_music_offsets() -> dict:
     cfg = load_config().get("music") or {}
     if not isinstance(cfg, dict):
@@ -158,6 +177,8 @@ def load_music_offsets() -> dict:
         "render_bars": _clamp_render_bars(cfg.get("render_bars", 0)),
         "auto_calibrate": bool(cfg.get("auto_calibrate", True)),
         "capture_device": device,
+        "orbit_yaw": _clamp_orbit_yaw(cfg.get("orbit_yaw", 0)),
+        "orbit_pitch": _clamp_orbit_pitch(cfg.get("orbit_pitch", _ORBIT_PITCH_DEFAULT)),
     }
 
 
@@ -198,6 +219,10 @@ def save_music_offsets(payload: dict) -> dict:
         current["render_fps"] = _clamp_render_fps(payload.get("render_fps"))
     if "render_bars" in payload:
         current["render_bars"] = _clamp_render_bars(payload.get("render_bars"))
+    if "orbit_yaw" in payload:
+        current["orbit_yaw"] = _clamp_orbit_yaw(payload.get("orbit_yaw"))
+    if "orbit_pitch" in payload:
+        current["orbit_pitch"] = _clamp_orbit_pitch(payload.get("orbit_pitch"))
 
     music_cfg.update(current)
     set_config_value("music", music_cfg)

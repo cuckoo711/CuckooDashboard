@@ -52,6 +52,8 @@ from services.health_service import get_health_snapshot
 from services.off_peak_service import get_off_peak_badge_config
 from services.media_service import (
     get_cover_bytes,
+    get_cover_ambient_bytes,
+    get_lyric_frame,
     get_media_info,
     load_lyric_offset,
     normalize_lyric_offset,
@@ -154,6 +156,9 @@ _ws_broadcaster_started = False
 _ws_broadcaster_lock = _ws_threading.Lock()
 _ws_spectrum_started = False
 _ws_spectrum_lock = _ws_threading.Lock()
+_ws_lyric_started = False
+_ws_lyric_lock = _ws_threading.Lock()
+_LYRIC_PUSH_INTERVAL_S = 0.15  # ~150ms frame-level lyric control
 
 # ── Vibe Coding 状态持久化 ──
 
@@ -361,6 +366,7 @@ def ws_handler(ws):
             "spectrum": False,
             "spectrum_fps": _SPECTRUM_FPS_DEFAULT,
             "spectrum_last_sent_at": 0.0,
+            "lyric": False,
             "id": client_id,
             "page": "unknown",
         }
@@ -388,7 +394,11 @@ def ws_handler(ws):
                     elif msg.get("type") == "report":
                         page = str(msg.get("page") or "unknown")
                         with _ws_clients_lock:
-                            _ws_client_states.setdefault(ws, {})["page"] = page
+                            state = _ws_client_states.setdefault(ws, {})
+                            state["page"] = page
+                            # Music/dashboard opt into high-frequency lyric control.
+                            if page in {"music", "dashboard"}:
+                                state["lyric"] = True
                         logger.info(f"[ws] client {client_id} reports page: {page}")
                     elif msg.get("type") == "subscribe":
                         channel = str(msg.get("channel") or "")
@@ -414,6 +424,18 @@ def ws_handler(ws):
                                         state = _ws_client_states.get(ws)
                                         if state:
                                             state["spectrum_last_sent_at"] = time.monotonic()
+                                except Exception:
+                                    pass
+                        elif channel == "lyric":
+                            with _ws_clients_lock:
+                                state = _ws_client_states.setdefault(ws, {})
+                                state["lyric"] = bool(msg.get("active"))
+                            if msg.get("active"):
+                                try:
+                                    ws.send(json.dumps(
+                                        {"type": "lyric", "data": get_lyric_frame()},
+                                        ensure_ascii=False,
+                                    ))
                                 except Exception:
                                     pass
                     elif msg.get("type") == "init":
@@ -479,6 +501,42 @@ def _ws_broadcaster():
         time.sleep(max(0, 1.0 - elapsed))
 
 
+def _ws_lyric_interest_count() -> int:
+    """Clients that opt into high-frequency lyric control (music/dashboard pages)."""
+    with _ws_clients_lock:
+        return sum(
+            1
+            for state in _ws_client_states.values()
+            if state.get("lyric") or state.get("page") in {"music", "dashboard"}
+        )
+
+
+def _ws_broadcast_lyric(msg: dict) -> int:
+    """Send lyric frames to interested clients only (not every WS peer)."""
+    data = json.dumps(msg, ensure_ascii=False)
+    dead = []
+    sent = 0
+    for ws in _ws_clients_snapshot():
+        with _ws_clients_lock:
+            state = _ws_client_states.get(ws) or {}
+            interested = bool(state.get("lyric")) or state.get("page") in {"music", "dashboard"}
+        if not interested:
+            continue
+        try:
+            ws.send(data)
+            sent += 1
+        except Exception:
+            dead.append(ws)
+    if dead:
+        with _ws_clients_lock:
+            for ws in dead:
+                if ws in _ws_clients:
+                    _ws_clients.remove(ws)
+                _ws_client_states.pop(ws, None)
+            _ws_recalc_vibe_locked()
+    return sent
+
+
 def _ws_spectrum_broadcaster():
     """Push spectrum frames at each visible client's requested cadence."""
     while True:
@@ -500,9 +558,22 @@ def _ws_spectrum_broadcaster():
         time.sleep(max(0.0, interval - elapsed))
 
 
+def _ws_lyric_broadcaster():
+    """Push lightweight lyric control frames at ~150ms for interested pages."""
+    while True:
+        t0 = time.monotonic()
+        try:
+            if _ws_lyric_interest_count() > 0:
+                _ws_broadcast_lyric({"type": "lyric", "data": get_lyric_frame()})
+        except Exception as e:
+            logger.error(f"[ws] lyric broadcast error: {e}")
+        elapsed = time.monotonic() - t0
+        time.sleep(max(0.0, _LYRIC_PUSH_INTERVAL_S - elapsed))
+
+
 def start_background_threads_once() -> bool:
     """启动后台线程；多次调用只会真正启动一次。"""
-    global _ws_broadcaster_started, _ws_spectrum_started
+    global _ws_broadcaster_started, _ws_spectrum_started, _ws_lyric_started
     started = False
     with _ws_broadcaster_lock:
         if not _ws_broadcaster_started:
@@ -517,6 +588,14 @@ def start_background_threads_once() -> bool:
             )
             t2.start()
             _ws_spectrum_started = True
+            started = True
+    with _ws_lyric_lock:
+        if not _ws_lyric_started:
+            t3 = _ws_threading.Thread(
+                target=_ws_lyric_broadcaster, daemon=True, name="ws-lyric"
+            )
+            t3.start()
+            _ws_lyric_started = True
             started = True
     return started
 
@@ -817,6 +896,18 @@ def api_media_cover():
     return resp
 
 
+@app.route("/api/media/cover/ambient")
+def api_media_cover_ambient():
+    """返回后端预模糊/降亮的封面氛围图，供前端背景直接使用。无封面时 404。"""
+    data, mime = get_cover_ambient_bytes()
+    if not data:
+        abort(404)
+    from flask import Response
+    resp = Response(data, mimetype=mime or "image/jpeg")
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    return resp
+
+
 @app.route("/api/media/reload", methods=["POST"])
 def api_media_reload():
     """清除当前歌曲的歌词缓存并重新获取。"""
@@ -832,6 +923,13 @@ def api_media_offset():
     require_post_protection()
     val = normalize_lyric_offset(request.get_json(silent=True) or {})
     save_lyric_offset(val)
+    # Push a fresh media frame immediately so lyric_index reflects the new offset
+    # without waiting for the 1s broadcaster tick.
+    try:
+        _ws_broadcast({"type": "media", "data": get_media_info()})
+        _ws_broadcast_lyric({"type": "lyric", "data": get_lyric_frame()})
+    except Exception as exc:
+        logger.debug("[media] offset broadcast failed: %s", exc)
     return jsonify({"offset": val})
 
 

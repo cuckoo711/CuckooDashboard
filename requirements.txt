@@ -20,3 +20,5 @@ numpy>=1.26.0
 # Optional QR login helpers
 segno>=1.6.0
 qrcode>=7.4.0
+# Optional: backend cover ambient & palette
+Pillow>=10.0.0

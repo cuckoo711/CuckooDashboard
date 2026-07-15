@@ -50,19 +50,22 @@
                 <div class="layer layer-lyric">
                     <div class="lyric-stage cinema-lyric">
                         <div class="lyric-kicker" aria-hidden="true"><span>LYRIC / LIVE</span><i></i></div>
-                        <div class="lyric-prev" id="lyricPrev"></div>
-                        <div class="lyric-current" id="lyricCurrent">未在播放</div>
-                        <div class="lyric-next" id="lyricNext"></div>
-                    </div>
-                </div>
-
-                <div class="layer layer-spectrum">
-                    <div class="spectrum-wrap soft aurora">
-                        <div class="spectrum-caption" aria-hidden="true"><span>SOUND FIELD</span><i></i></div>
-                        <canvas id="specCanvas" height="220" aria-hidden="true"></canvas>
+                        <div class="lyric-prev" id="lyricPrev" hidden></div>
+                        <div class="lyric-track" id="lyricTrack">
+                            <div class="lyric-current lyric-slot lyric-slot-a" id="lyricCurrent">未在播放</div>
+                            <div class="lyric-next lyric-slot lyric-slot-b" id="lyricNext"></div>
+                        </div>
                     </div>
                 </div>
             </main>
+        </div>
+    </div>
+
+    <!-- Spectrum is intentionally outside #scene3d so 3D orbit never tilts it. -->
+    <div class="layer layer-spectrum" id="spectrumLayer" aria-hidden="true">
+        <div class="spectrum-wrap soft aurora">
+            <div class="spectrum-caption" aria-hidden="true"><span>SOUND FIELD</span><i></i></div>
+            <canvas id="specCanvas" height="220" aria-hidden="true"></canvas>
         </div>
     </div>
 

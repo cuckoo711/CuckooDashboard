@@ -640,6 +640,7 @@ var _mediaDuration = 0;
 var _mediaPlaying = false;
 var _lastLyricIdx = -2;
 var _lastPositionSource = 'none';
+var _mediaLyricIndex = -1;
 var LYRIC_OFFSET = 1.5;  // 默认值，启动时从后端加载
 secureFetch('/api/media/offset').then(r=>r.json()).then(d=>{
     LYRIC_OFFSET = d.offset;
@@ -663,6 +664,44 @@ var LYRIC_DEBOUNCE_MS = 300; // 候选索引需要稳定多少毫秒才真正切
                              // 阈值太小 → UIA 抖动会在句子边界反复切；
                              // 阈值太大 → 切换有肉眼可见的延迟。300ms 是折中。
 
+function syncDashboardMediaClock(data) {
+    var newPos = Number(data.position || 0);
+    var serverTs = Number(data.server_ts || 0);
+    var nowSec = Date.now() / 1000;
+    if (serverTs > 0) {
+        var skew = Math.max(-1.5, Math.min(1.5, nowSec - serverTs));
+        _mediaStartTime = nowSec - newPos - skew;
+    } else {
+        _mediaStartTime = nowSec - newPos;
+    }
+    _mediaPosition = newPos;
+    if (data.duration) _mediaDuration = Number(data.duration) || _mediaDuration;
+    _lastPositionSource = data.position_source || _lastPositionSource || 'none';
+}
+
+function applyDashboardLyricFrame(data) {
+    if (!data) return;
+    if (typeof data.lyric_offset === 'number') {
+        LYRIC_OFFSET = Number(data.lyric_offset);
+        var ov = document.getElementById('lyricOffsetVal');
+        if (ov) ov.textContent = LYRIC_OFFSET.toFixed(1);
+    }
+    if (typeof data.playing === 'boolean') _mediaPlaying = data.playing;
+    else if (data.status) _mediaPlaying = (data.status === 'playing');
+    if (data.title && data.title !== _mediaTitle) {
+        // Full lyrics list may arrive later via media; still update title early.
+        var titleEl = document.getElementById('lyricTitle');
+        var artistEl = document.getElementById('lyricArtist');
+        if (titleEl) titleEl.textContent = data.title;
+        if (artistEl) artistEl.textContent = data.artist || '';
+    }
+    var prevPos = _mediaPosition;
+    syncDashboardMediaClock(data);
+    if (prevPos - Number(data.position || 0) > 5) resetLyricState();
+    _mediaLyricIndex = (typeof data.lyric_index === 'number') ? data.lyric_index : _mediaLyricIndex;
+    updateLyricLine(true);
+}
+
 function drawLyric(data) {
     var titleEl = document.getElementById('lyricTitle');
     var artistEl = document.getElementById('lyricArtist');
@@ -677,12 +716,18 @@ function drawLyric(data) {
         idleEl.style.display = 'block';
         _mediaPlaying = false;
         _mediaTitle = '';
+        _mediaLyricIndex = -1;
         return;
     }
 
     titleEl.textContent = data.title;
     artistEl.textContent = data.artist;
     _mediaPlaying = (data.status === 'playing');
+    if (typeof data.lyric_offset === 'number') {
+        LYRIC_OFFSET = Number(data.lyric_offset);
+        var ov = document.getElementById('lyricOffsetVal');
+        if (ov) ov.textContent = LYRIC_OFFSET.toFixed(1);
+    }
 
     var isNewSong = (data.title !== _mediaTitle);
     if (isNewSong) {
@@ -691,60 +736,25 @@ function drawLyric(data) {
         _mediaLyricsYrc = data.lyrics_yrc || [];
         _mediaHasYrc = _mediaLyricsYrc.length > 0;
         _mediaDuration = data.duration || 0;
-        _mediaPosition = data.position || 0;
-        _mediaStartTime = Date.now() / 1000 - _mediaPosition;
         _lastLyricIdx = -2;
         _pendingIdx = -2;
         _pendingSince = 0;
-        _lastPositionSource = data.position_source || 'none';
         var hasAny = _mediaHasYrc || _mediaLyrics.length > 0;
         idleEl.style.display = hasAny ? 'none' : 'block';
         idleEl.textContent = '暂无歌词';
         renderLyricLines();
-        // 首次加载/切歌时强制同步到当前播放位置（暂停时也要定位）
-        updateLyricLine(true);
-    } else if (data.position_source === 'api') {
-        // YesPlayMusic API 直接返回精确 position，无抖动，每次都校准
-        var newPos = data.position || 0;
-        var looped = (_lastPositionSource === 'api' && newPos < _mediaPosition - 5);
-        _mediaPosition = newPos;
-        if (data.duration) _mediaDuration = data.duration;
-        _lastPositionSource = 'api';
-        if (looped) {
-            resetLyricState();
-        }
-        _mediaStartTime = Date.now() / 1000 - _mediaPosition;
-    } else if (data.position_source === 'uia') {
-        // UIA 读进度条有像素级抖动（1px ≈ 0.2 秒），漂移 > 0.3 秒就修正
-        var newPos = data.position || 0;
-        var looped = (_lastPositionSource === 'uia' && newPos < _mediaPosition - 5);
-        var estPos = _mediaPlaying ? (Date.now() / 1000 - _mediaStartTime) : _mediaPosition;
-        var drift = newPos - estPos;
-        _mediaPosition = newPos;
-        _lastPositionSource = 'uia';
-        if (looped) {
-            _mediaStartTime = Date.now() / 1000 - _mediaPosition;
-            resetLyricState();
-            updateLyricLine(true);
-            return;
-        }
-        if (_lastPositionSource !== 'uia' || Math.abs(drift) > 0.3) {
-            _mediaStartTime = Date.now() / 1000 - _mediaPosition;
-        }
-    } else if (_lastPositionSource !== 'uia') {
-        // UIA 不可用（网易云窗口最小化等），退化为本地估算计时。
-        // 若估算出的位置超过总时长，视为可能已循环重播，从0开始重新估算。
-        var estPos = _mediaPlaying ? (Date.now() / 1000 - _mediaStartTime) : _mediaPosition;
-        if (_mediaDuration > 0 && estPos >= _mediaDuration) {
-            _mediaStartTime = Date.now() / 1000;
-            _mediaPosition = 0;
-            resetLyricState();
-            updateLyricLine(true);
-            return;
-        }
+    } else if (data.lyrics && data.lyrics.length) {
+        _mediaLyrics = data.lyrics;
+        if (!_mediaHasYrc) renderLyricLines();
     }
 
-    updateLyricLine();
+    var prevPos = _mediaPosition;
+    syncDashboardMediaClock(data);
+    if (prevPos - Number(data.position || 0) > 5) resetLyricState();
+
+    // Prefer backend-authored index when available; YRC highlight still needs local clock.
+    _mediaLyricIndex = (typeof data.lyric_index === 'number') ? data.lyric_index : _mediaLyricIndex;
+    updateLyricLine(isNewSong);
 }
 
 function resetLyricState() {
@@ -831,18 +841,20 @@ function updateLyricLine(force) {
     // 暂停时冻结歌词：不更新位置、不滚动、不刷逐字高亮
     if (!_mediaPlaying && !force) return;
     var lyricsForLine = _mediaHasYrc ? _mediaLyricsYrc : _mediaLyrics;
-    if (!lyricsForLine.length) return;
+    if (!lyricsForLine.length && (typeof _mediaLyricIndex !== 'number' || _mediaLyricIndex < 0)) return;
 
     var posSec = (_mediaPlaying ? (Date.now() / 1000 - _mediaStartTime) : _mediaPosition) + LYRIC_OFFSET;
     var posMs = posSec * 1000;
 
-    // 找当前行索引
+    // Non-YRC lines are backend-authoritative. YRC (if re-enabled) still scans locally.
     var idx = -1;
     if (_mediaHasYrc) {
         for (var i = 0; i < _mediaLyricsYrc.length; i++) {
             if (_mediaLyricsYrc[i].start <= posMs) idx = i;
             else break;
         }
+    } else if (typeof _mediaLyricIndex === 'number') {
+        idx = _mediaLyricIndex;
     } else {
         for (var i2 = 0; i2 < _mediaLyrics.length; i2++) {
             if (_mediaLyrics[i2][0] <= posSec) idx = i2;
@@ -862,7 +874,9 @@ function updateLyricLine(force) {
         // 大跳（idx 差 > 1，比如切歌或 seek）立即生效，不做防抖；
         // 相邻行切换（正常推进）才走时间稳定检查
         var bigJump = Math.abs(idx - _lastLyricIdx) > 1;
-        if (settled || force || bigJump) {
+        // Backend-authoritative index can take effect immediately for non-YRC.
+        var backendDriven = !_mediaHasYrc && typeof _mediaLyricIndex === 'number';
+        if (settled || force || bigJump || backendDriven) {
             _lastLyricIdx = idx;
             scrollToLyricIdx(idx);
         }
@@ -882,8 +896,11 @@ async function refreshMedia() {
     } catch(e) { console.error('Media error:', e); }
 
 }
-// 逐字歌词需要平滑更新，60ms ≈ 16fps；lrc-only 时也没多花什么开销
-setInterval(updateLyricLine, 60);
+// Backend lyric frames (~150ms) drive LRC line changes. Keep a slower local
+// tick only for rare YRC character highlights / resize sync.
+setInterval(function () {
+    if (_mediaHasYrc) updateLyricLine();
+}, 60);
 window.addEventListener('resize', function(){ updateLyricLine(true); });
 
 tickClock(); setInterval(tickClock,1000);
@@ -903,7 +920,10 @@ function connectWS(){
         if(_wsFallbackTimer){clearInterval(_wsFallbackTimer); _wsFallbackTimer=null;}
         noteAlive(); // WS 连上即视为在线，自动清除离线降级
         // 上报页面类型
-        try { _ws.send(JSON.stringify({type:'report', page:'dashboard'})); } catch(e) {}
+        try {
+            _ws.send(JSON.stringify({type:'report', page:'dashboard'}));
+            _ws.send(JSON.stringify({type:'subscribe', channel:'lyric', active:true}));
+        } catch(e) {}
         console.log('[ws] connected');
     };
     _ws.onmessage = function(ev){
@@ -912,10 +932,11 @@ function connectWS(){
             var msg = JSON.parse(ev.data);
             if(msg.type === 'system') drawSystem(msg.data);
             else if(msg.type === 'media') drawLyric(msg.data);
+            else if(msg.type === 'lyric') applyDashboardLyricFrame(msg.data || {});
             else if(msg.type === 'github'){ drawGitHub(msg.data.contributions||{}, msg.data.user||''); }
             else if(msg.type === 'dashboard_data'){ handleDashboardData(msg.data); refreshHealth(); }
-            else if(msg.type === 'reload'){ location.reload(); }
-            else if(msg.type === 'navigate'){ location.href = msg.url || (msg.page === 'music' ? '/music' : '/'); }
+            else if(msg.type === 'reload'){ softReload(); }
+            else if(msg.type === 'navigate'){ navigatePage(msg.url || (msg.page === 'music' ? '/music' : '/')); }
             else if(msg.type === 'config_updated'){
                 refreshOffPeakBadgeConfig();
                 if (_ws && _ws.readyState === 1) {
@@ -947,6 +968,71 @@ function connectWS(){
     };
 }
 connectWS();
+
+/* ── Soft page transition for H618 whole-document navigations ── */
+var _navLock = false;
+function ensurePageTransit() {
+    var el = document.getElementById('pageTransit');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'pageTransit';
+    el.className = 'page-transit';
+    el.setAttribute('aria-hidden', 'true');
+    el.innerHTML = '<div class="page-transit-inner"><span class="page-transit-dot"></span><span class="page-transit-dot"></span><span class="page-transit-dot"></span></div>';
+    document.body.appendChild(el);
+    return el;
+}
+function navigatePage(url) {
+    if (!url || _navLock) return;
+    if (url === location.pathname || url === location.href) return;
+    _navLock = true;
+    document.body.classList.add('page-leaving');
+    ensurePageTransit().classList.add('show');
+    requestAnimationFrame(function () {
+        setTimeout(function () { location.href = url; }, 50);
+    });
+}
+function softReload() {
+    if (_navLock) return;
+    _navLock = true;
+    document.body.classList.add('page-leaving');
+    ensurePageTransit().classList.add('show');
+    requestAnimationFrame(function () {
+        setTimeout(function () { location.reload(); }, 50);
+    });
+}
+function prefetchSiblingPage() {
+    var urls = ['/music', '/static/music.css', '/static/music.js'];
+    urls.forEach(function (url) {
+        try {
+            var link = document.createElement('link');
+            link.rel = 'prefetch';
+            link.href = url;
+            link.as = url.indexOf('.css') > 0 ? 'style' : (url.indexOf('.js') > 0 ? 'script' : 'document');
+            document.head.appendChild(link);
+        } catch (e) {}
+        try {
+            fetch(url, { credentials: 'same-origin', cache: 'force-cache', mode: 'no-cors' }).catch(function () {});
+        } catch (e) {}
+    });
+}
+// Warm music stage assets after the dashboard is already interactive.
+(function () {
+    var idle = window.requestIdleCallback || function (cb) { setTimeout(cb, 1400); };
+    idle(function () { prefetchSiblingPage(); }, { timeout: 3000 });
+    document.addEventListener('click', function (e) {
+        var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+        if (!a) return;
+        var href = a.getAttribute('href') || '';
+        if (!href || href.charAt(0) === '#' || a.target === '_blank') return;
+        if (href.indexOf('://') >= 0 && href.indexOf(location.origin) !== 0) return;
+        // Keep same-page anchors/native forms alone; soft-navigate internal pages.
+        if (href === '/' || href.indexOf('/music') === 0 || href.indexOf('/static/') === 0) {
+            e.preventDefault();
+            navigatePage(href);
+        }
+    });
+})();
 
 /* ── 延迟心跳 ── */
 var _pingTs = 0, _latency = -1;
