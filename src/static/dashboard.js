@@ -634,6 +634,9 @@ var _mediaLyrics = [];       // 逐行 lrc: [[sec, text], ...]
 var _mediaLyricsYrc = [];    // 逐字 yrc: [{start:ms, chars:[{start,dur,text}]}, ...]
 var _mediaHasYrc = false;    // 当前是否走 yrc 渲染路径
 var _mediaTitle = '';
+var _mediaTrackKey = '';
+var _mediaLyricsKey = '';
+var _mediaHydrateRequestedAt = 0;
 var _mediaStartTime = 0;
 var _mediaPosition = 0;
 var _mediaDuration = 0;
@@ -664,6 +667,40 @@ var LYRIC_DEBOUNCE_MS = 300; // 候选索引需要稳定多少毫秒才真正切
                              // 阈值太小 → UIA 抖动会在句子边界反复切；
                              // 阈值太大 → 切换有肉眼可见的延迟。300ms 是折中。
 
+function dashboardTrackKey(data) {
+    if (!data) return '';
+    if (data.track_key) return String(data.track_key);
+    var parts = [
+        data.song_id == null ? '' : String(data.song_id),
+        data.title || '',
+        data.artist || '',
+        data.album || ''
+    ];
+    var key = parts.join('\u001f');
+    return key.replace(/\u001f/g, '') ? key : '';
+}
+
+function dashboardLyricsKey(lines) {
+    if (!Array.isArray(lines) || !lines.length) return '';
+    return lines.map(function(item){
+        if (Array.isArray(item)) return String(item[0]) + '\u0001' + String(item[1] || '');
+        if (item && typeof item === 'object') {
+            var chars = Array.isArray(item.chars) ? item.chars.map(function(c){
+                return String(c.start || 0) + ':' + String(c.dur || 0) + ':' + String(c.text || '');
+            }).join('') : '';
+            return String(item.start || 0) + '\u0001' + chars;
+        }
+        return String(item || '');
+    }).join('\u0002');
+}
+
+function requestDashboardMediaHydration() {
+    var now = Date.now();
+    if (now - _mediaHydrateRequestedAt < 500) return;
+    _mediaHydrateRequestedAt = now;
+    refreshMedia();
+}
+
 function syncDashboardMediaClock(data) {
     var newPos = Number(data.position || 0);
     var serverTs = Number(data.server_ts || 0);
@@ -681,6 +718,10 @@ function syncDashboardMediaClock(data) {
 
 function applyDashboardLyricFrame(data) {
     if (!data) return;
+    if (data.status === 'idle' || data.status === 'error' || (!data.title && !data.lyric)) {
+        drawLyric(data);
+        return;
+    }
     if (typeof data.lyric_offset === 'number') {
         LYRIC_OFFSET = Number(data.lyric_offset);
         var ov = document.getElementById('lyricOffsetVal');
@@ -688,8 +729,29 @@ function applyDashboardLyricFrame(data) {
     }
     if (typeof data.playing === 'boolean') _mediaPlaying = data.playing;
     else if (data.status) _mediaPlaying = (data.status === 'playing');
-    if (data.title && data.title !== _mediaTitle) {
-        // Full lyrics list may arrive later via media; still update title early.
+
+    var incomingTrackKey = dashboardTrackKey(data);
+    var trackChanged = incomingTrackKey && _mediaTrackKey && incomingTrackKey !== _mediaTrackKey;
+    if (trackChanged) {
+        _mediaTrackKey = incomingTrackKey;
+        _mediaTitle = data.title || '';
+        _mediaLyrics = [];
+        _mediaLyricsYrc = [];
+        _mediaHasYrc = false;
+        _mediaLyricsKey = '';
+        resetLyricState();
+        renderLyricLines();
+        var idleEl = document.getElementById('lyricIdle');
+        if (idleEl) {
+            idleEl.textContent = '歌词加载中…';
+            idleEl.style.display = 'block';
+        }
+        requestDashboardMediaHydration();
+    } else if (incomingTrackKey && !_mediaTrackKey) {
+        _mediaTrackKey = incomingTrackKey;
+    }
+
+    if (data.title) {
         var titleEl = document.getElementById('lyricTitle');
         var artistEl = document.getElementById('lyricArtist');
         if (titleEl) titleEl.textContent = data.title;
@@ -716,7 +778,13 @@ function drawLyric(data) {
         idleEl.style.display = 'block';
         _mediaPlaying = false;
         _mediaTitle = '';
+        _mediaTrackKey = '';
+        _mediaLyricsKey = '';
+        _mediaLyrics = [];
+        _mediaLyricsYrc = [];
+        _mediaHasYrc = false;
         _mediaLyricIndex = -1;
+        resetLyricState();
         return;
     }
 
@@ -729,23 +797,43 @@ function drawLyric(data) {
         if (ov) ov.textContent = LYRIC_OFFSET.toFixed(1);
     }
 
-    var isNewSong = (data.title !== _mediaTitle);
+    var trackKey = dashboardTrackKey(data) || String(data.title || '');
+    var isNewSong = !_mediaTrackKey || (trackKey && trackKey !== _mediaTrackKey);
+    if (!isNewSong) _mediaTitle = data.title;
+    var didRenderLyrics = false;
+    var incomingYrc = Array.isArray(data.lyrics_yrc) ? data.lyrics_yrc : [];
+    var incomingLyrics = Array.isArray(data.lyrics) ? data.lyrics : [];
+    var incomingHasYrc = incomingYrc.length > 0;
+    var incomingLyricsKey = dashboardLyricsKey(incomingHasYrc ? incomingYrc : incomingLyrics);
+
     if (isNewSong) {
         _mediaTitle = data.title;
-        _mediaLyrics = data.lyrics || [];
-        _mediaLyricsYrc = data.lyrics_yrc || [];
-        _mediaHasYrc = _mediaLyricsYrc.length > 0;
+        _mediaTrackKey = trackKey;
+        _mediaLyrics = incomingLyrics;
+        _mediaLyricsYrc = incomingYrc;
+        _mediaHasYrc = incomingHasYrc;
+        _mediaLyricsKey = incomingLyricsKey;
         _mediaDuration = data.duration || 0;
-        _lastLyricIdx = -2;
-        _pendingIdx = -2;
-        _pendingSince = 0;
+        resetLyricState();
+        didRenderLyrics = true;
         var hasAny = _mediaHasYrc || _mediaLyrics.length > 0;
         idleEl.style.display = hasAny ? 'none' : 'block';
         idleEl.textContent = '暂无歌词';
         renderLyricLines();
-    } else if (data.lyrics && data.lyrics.length) {
-        _mediaLyrics = data.lyrics;
-        if (!_mediaHasYrc) renderLyricLines();
+    } else if (incomingLyricsKey && incomingLyricsKey !== _mediaLyricsKey) {
+        _mediaLyrics = incomingLyrics;
+        _mediaLyricsYrc = incomingYrc;
+        _mediaHasYrc = incomingHasYrc;
+        _mediaLyricsKey = incomingLyricsKey;
+        didRenderLyrics = true;
+        idleEl.style.display = 'none';
+        idleEl.textContent = '暂无歌词';
+        renderLyricLines();
+    } else if (!incomingLyricsKey && !_mediaLyricsKey && !_mediaLyrics.length && !_mediaHasYrc) {
+        _mediaLyricsKey = '__empty__';
+        idleEl.style.display = 'block';
+        idleEl.textContent = '暂无歌词';
+        renderLyricLines();
     }
 
     var prevPos = _mediaPosition;
@@ -754,7 +842,7 @@ function drawLyric(data) {
 
     // Prefer backend-authored index when available; YRC highlight still needs local clock.
     _mediaLyricIndex = (typeof data.lyric_index === 'number') ? data.lyric_index : _mediaLyricIndex;
-    updateLyricLine(isNewSong);
+    updateLyricLine(isNewSong || didRenderLyrics);
 }
 
 function resetLyricState() {
@@ -763,7 +851,7 @@ function resetLyricState() {
     _pendingSince = 0;
 }
 
-/* 一次性渲染全部歌词行到滚动容器（只在歌曲切换时调用一次）。
+/* 渲染全部歌词行到滚动容器（仅在歌曲切换或歌词内容变化时调用）。
    有 yrc 时按字符渲染；否则按整行渲染（旧行为）。 */
 function renderLyricLines() {
     var scrollEl = document.getElementById('lyricScroll');
