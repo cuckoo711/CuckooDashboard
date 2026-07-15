@@ -267,6 +267,18 @@ select option { color: #181326; background: #f5f1ff; }
 .provider-object-row .secret-control input { min-width: 0; }
 .provider-object-row .row-field { min-width: 0; }
 
+/* ── 在线看板客户端面板 ── */
+.clients-panel { margin-top: 16px; }
+.clients-list { display: flex; flex-direction: column; gap: 6px; }
+.client-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 12px; border: 1px solid rgba(255,255,255,.07); border-radius: 8px;
+    background: rgba(255,255,255,.03); font-size: 12px;
+}
+.client-id { font-family: monospace; color: var(--accent-strong); font-size: 11px; min-width: 60px; }
+.client-page { flex: 1; color: var(--muted); }
+.client-nav-btn { flex: 0 0 auto; }
+
 [hidden] { display: none !important; }
 
 @media (max-width: 820px) {

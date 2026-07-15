@@ -12,6 +12,9 @@
             --accent2: #c2a8e0;
             --green: #5fa89e;
             --warn: #d1a15c;
+            --offline: #cf5b68;
+            --offline-banner-bg: linear-gradient(90deg, rgba(207,91,104,0.9) 0%, rgba(180,70,82,0.9) 100%);
+            --offline-banner-fg: #fff2f3;
             --mark-glow: rgba(181,52,42,0.4);
             --vibe-active-bg: rgba(95,168,158,0.18);
             --vibe-active-border: rgba(95,168,158,0.45);
@@ -71,6 +74,9 @@
             --accent2: #8a8aa0;
             --green: #4a7a5a;
             --warn: #c09040;
+            --offline: #c04040;
+            --offline-banner-bg: linear-gradient(90deg, rgba(192,64,64,0.95) 0%, rgba(168,54,54,0.95) 100%);
+            --offline-banner-fg: #fff5f5;
             --mark-glow: transparent;
             --vibe-active-bg: rgba(74,122,90,0.12);
             --vibe-active-border: rgba(74,122,90,0.4);
@@ -175,8 +181,26 @@
         .hdr-latency.warn .latency-val { color:#d1a15c; }
         .hdr-latency.bad .latency-dot { background:#cf5b68; box-shadow:0 0 4px rgba(207,91,104,.5); }
         .hdr-latency.bad .latency-val { color:#cf5b68; }
-        .hdr-latency.disconnected .latency-dot { background:var(--text-muted); opacity:.5; }
-        .hdr-latency.disconnected .latency-val { opacity:.5; }
+        .hdr-latency.disconnected .latency-dot { background:var(--offline); box-shadow:0 0 5px rgba(207,91,104,.6); animation:latency-blink 1.4s ease-in-out infinite; }
+        .hdr-latency.disconnected .latency-val { color:var(--offline); font-weight:600; }
+        @keyframes latency-blink { 0%,100%{opacity:1;} 50%{opacity:.35;} }
+
+        /* ── 断连条幅：kiosk 场景纯前端自动显隐 ── */
+        .net-banner {
+            position:fixed; top:0; left:0; right:0; z-index:1000;
+            padding:8px 16px; text-align:center;
+            font-size:calc(var(--fs-date) * 0.95); font-weight:600; letter-spacing:0.5px;
+            background:var(--offline-banner-bg); color:var(--offline-banner-fg);
+            box-shadow:0 2px 12px rgba(0,0,0,0.35);
+            transform:translateY(-100%); transition:transform .45s cubic-bezier(.2,.8,.2,1);
+            pointer-events:none;
+        }
+        .net-banner.show { transform:translateY(0); animation:net-banner-pulse 2.4s ease-in-out infinite; }
+        @keyframes net-banner-pulse { 0%,100%{filter:brightness(1);} 50%{filter:brightness(1.12);} }
+
+        /* ── 数据降级：离线时实时数据区变暗+轻微去饱和，明确"数据已过期" ── */
+        body.net-offline .card-body { opacity:.5; filter:grayscale(.35); transition:opacity .4s ease, filter .4s ease; }
+        body:not(.net-offline) .card-body { transition:opacity .4s ease, filter .4s ease; }
 
         /* ── Card ── */
         .card {
@@ -265,6 +289,17 @@
         }
         .player-btn:hover { background:var(--button-hover-bg); color:var(--text); border-color:var(--button-border); }
         .player-btn:active { background:var(--button-active-bg); transform:scale(0.95); }
+        a.music-stage-link {
+            text-decoration:none;
+            margin-right:2px;
+            border-color:rgba(232,201,143,0.35);
+            background:rgba(232,201,143,0.12);
+            color:var(--gold, #e8c98f);
+        }
+        a.music-stage-link:hover {
+            background:rgba(232,201,143,0.24);
+            color:var(--text);
+        }
 
         /* ── 骨架屏 ── */
         .skeleton {

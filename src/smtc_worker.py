@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
 独立的 SMTC + UI Automation 常驻监听脚本（避免主进程 COM 冲突）
-持续运行，每隔 0.5 秒向 stdout 输出一行 JSON，格式：
-{"status": "playing", "title": "...", "artist": "...", "progress_ratio": 0.52}
+持续运行，每隔 0.5 秒向 stdout 输出一行 JSON。
 
 数据来源优先级：
-1. YesPlayMusic 本地 API（http://127.0.0.1:27232/player）— 直接返回 position + duration
+1. YesPlayMusic 本地 API（http://127.0.0.1:27232/player）— position + duration + cover URL
 2. SMTC title/artist/status + UIA progress_ratio（fallback）
+
+封面策略：
+- 优先 YesPlayMusic / 网易云 picUrl（轻量 HTTP URL，不塞 base64）
+- SMTC thumbnail 异步写出到 data/media_cover.bin，只通知主进程刷新
 """
 import asyncio
 import json
 import sys
 import time
 import urllib.request
+from pathlib import Path
 
 try:
     import uiautomation as auto
@@ -25,13 +29,16 @@ except ImportError:
 # ============================================================
 
 _YPM_API = "http://127.0.0.1:27232/player"
-_ym_cache = {"ts": 0, "ok": False}  # 缓存 API 可用性，避免频繁探测不可用的端口
+_ym_cache = {"ts": 0, "ok": False}
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_COVER_FILE = _PROJECT_ROOT / "data" / "media_cover.bin"
+_COVER_META = _PROJECT_ROOT / "data" / "media_cover.json"
 
 
 def _get_ypm_progress() -> dict | None:
-    """查询 YesPlayMusic 本地 API，返回 {"position": float, "duration": float, "title": str, "artist": str} 或 None"""
+    """查询 YesPlayMusic 本地 API。"""
     now = time.time()
-    # 如果上次探测失败，每 5 秒重试一次（避免每 0.5s 都打一个不可用的端口）
     if not _ym_cache["ok"] and (now - _ym_cache["ts"]) < 5:
         return None
 
@@ -49,15 +56,22 @@ def _get_ypm_progress() -> dict | None:
         if progress is None or not duration_ms:
             return None
 
-        # 提取艺人名（ar 数组拼接）
         artists = " / ".join(a.get("name", "") for a in (track.get("ar") or []))
+        album = ""
+        cover_url = ""
+        al = track.get("al") or {}
+        if isinstance(al, dict):
+            album = al.get("name") or ""
+            cover_url = al.get("picUrl") or ""
 
         return {
             "position": float(progress),
             "duration": duration_ms / 1000.0,
             "title": track.get("name", ""),
             "artist": artists,
+            "album": album,
             "song_id": track.get("id"),
+            "cover_url": cover_url,
         }
     except Exception:
         _ym_cache["ok"] = False
@@ -73,7 +87,6 @@ _uia_cache = {"window": None, "ts": 0}
 
 
 def _find_netease_window():
-    """查找网易云音乐播放器窗口（缓存 3 秒，避免每次全量遍历顶层窗口）"""
     now = time.time()
     if _uia_cache["window"] is not None and (now - _uia_cache["ts"]) < 3:
         return _uia_cache["window"]
@@ -106,15 +119,12 @@ def _find_by_name(ctrl, name, depth=0, max_depth=15):
 
 
 def _get_uia_progress_ratio():
-    """通过 UI Automation 读取网易云播放进度条的已播放比例（0.0~1.0），失败返回 None"""
     if not HAS_UIA:
         return None
     try:
         win = _find_netease_window()
         if not win:
             return None
-
-        # 窗口最小化时 BoundingRectangle 不可靠，跳过
         try:
             wp = win.GetWindowPattern()
             if wp and wp.WindowVisualState == 2:  # Minimized
@@ -153,31 +163,88 @@ def _get_uia_progress_ratio():
 
 
 # ============================================================
-# SMTC（title / artist / status）
+# SMTC + async cover extract
 # ============================================================
+
+_cover_cache = {"key": "", "mime": "", "version": 0}
+_cover_task: asyncio.Task | None = None
+
+
+async def _save_thumbnail(thumbnail, key: str) -> None:
+    """Read SMTC thumbnail and dump to data/media_cover.bin (non-blocking)."""
+    if not thumbnail:
+        return
+    try:
+        from winrt.windows.storage.streams import Buffer, DataReader, InputStreamOptions
+
+        stream = await asyncio.wait_for(thumbnail.open_read_async(), timeout=1.5)
+        size = int(stream.size or 0)
+        if size <= 0 or size > 2_000_000:
+            return
+        buf = Buffer(size)
+        await asyncio.wait_for(stream.read_async(buf, size, InputStreamOptions.NONE), timeout=1.5)
+        reader = DataReader.from_buffer(buf)
+        data = bytearray(size)
+        reader.read_bytes(data)
+        raw = bytes(data)
+        mime = "image/jpeg"
+        if raw.startswith(b"\x89PNG"):
+            mime = "image/png"
+        elif raw.startswith(b"RIFF") and b"WEBP" in raw[:16]:
+            mime = "image/webp"
+        elif raw.startswith(b"GIF8"):
+            mime = "image/gif"
+
+        _COVER_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _COVER_FILE.write_bytes(raw)
+        meta = {
+            "key": key,
+            "mime": mime,
+            "updated_at": time.time(),
+            "size": len(raw),
+        }
+        _COVER_META.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        _cover_cache["key"] = key
+        _cover_cache["mime"] = mime
+        _cover_cache["version"] = int(time.time() * 1000)
+    except Exception:
+        return
 
 
 async def get_smtc_info(manager):
+    global _cover_task
     session = manager.get_current_session()
     if not session:
-        return {"status": "idle", "title": "", "artist": ""}
+        return {"status": "idle", "title": "", "artist": "", "album": ""}
 
     props = await session.try_get_media_properties_async()
     playback = session.get_playback_info()
 
     status_map = {0: "closed", 1: "opened", 2: "changing", 3: "stopped", 4: "playing", 5: "paused"}
     status = status_map.get(playback.playback_status, "unknown")
+    title = props.title or ""
+    artist = props.artist or ""
+    album = getattr(props, "album_title", None) or ""
 
-    return {
+    info = {
         "status": status,
-        "title": props.title or "",
-        "artist": props.artist or "",
+        "title": title,
+        "artist": artist,
+        "album": album or "",
     }
 
+    key = f"{title}\n{artist}\n{album}"
+    if title and key != _cover_cache["key"]:
+        info["cover_pending"] = True
+        if _cover_task is None or _cover_task.done():
+            thumb = props.thumbnail
+            _cover_task = asyncio.create_task(_save_thumbnail(thumb, key))
+    elif title and _cover_cache["version"]:
+        info["cover_file"] = True
+        info["cover_version"] = _cover_cache["version"]
+        info["cover_mime"] = _cover_cache["mime"]
 
-# ============================================================
-# 主循环
-# ============================================================
+    return info
 
 
 async def main_loop():
@@ -186,32 +253,52 @@ async def main_loop():
     )
 
     manager = await MediaManager.request_async()
+    last_cover_version = 0
     while True:
         try:
-            # 始终从 SMTC 获取真实播放状态（playing/paused/idle）
             smtc_info = await get_smtc_info(manager)
-
-            # 优先尝试 YesPlayMusic 本地 API（更精确的 position + duration）
             ypm = _get_ypm_progress()
 
             if ypm:
-                # API 成功：用 SMTC 的真实状态 + YPM 的精确位置
                 info = {
-                    "status": smtc_info["status"],
-                    "title": ypm["title"],
-                    "artist": ypm["artist"],
-                    "progress_ratio": ypm["position"] / ypm["duration"] if ypm["duration"] > 0 else None,
+                    "status": smtc_info.get("status") or "playing",
+                    "title": ypm["title"] or smtc_info.get("title", ""),
+                    "artist": ypm["artist"] or smtc_info.get("artist", ""),
+                    "album": ypm.get("album") or smtc_info.get("album") or "",
+                    "progress_ratio": (
+                        ypm["position"] / ypm["duration"] if ypm["duration"] > 0 else None
+                    ),
                     "position": ypm["position"],
                     "duration": ypm["duration"],
                     "song_id": ypm.get("song_id"),
                 }
+                if ypm.get("cover_url"):
+                    info["cover_url"] = ypm["cover_url"]
+                for k in ("cover_file", "cover_version", "cover_mime", "cover_pending"):
+                    if k in smtc_info and k not in info:
+                        info[k] = smtc_info[k]
             else:
-                # fallback: SMTC + UIA
                 info = smtc_info
                 ratio = _get_uia_progress_ratio()
                 info["progress_ratio"] = ratio
+
+            ver = int(_cover_cache.get("version") or 0)
+            if ver and ver != last_cover_version:
+                last_cover_version = ver
+                info["cover_file"] = True
+                info["cover_version"] = ver
+                info["cover_mime"] = _cover_cache.get("mime") or "image/jpeg"
+                info["cover_changed"] = True
+
         except Exception as e:
-            info = {"status": "error", "title": "", "artist": "", "progress_ratio": None, "error": str(e)}
+            info = {
+                "status": "error",
+                "title": "",
+                "artist": "",
+                "progress_ratio": None,
+                "error": str(e),
+            }
+
         line = json.dumps(info, ensure_ascii=False)
         sys.stdout.buffer.write((line + "\n").encode("utf-8"))
         sys.stdout.buffer.flush()

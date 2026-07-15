@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from core.config import CONFIG_VERSION, load_config, migrate_config, save_config
 from providers import get_provider_config_schemas, get_providers
 from services.font_service import font_exists, list_fonts
+from services.spectrum_service import list_capture_devices, load_music_offsets, request_capture_restart, save_music_offsets
 from services.theme import THEMES
 
 SECRET_MASK = "••••••"
@@ -393,6 +394,7 @@ def get_settings_options() -> dict[str, Any]:
         "balance_providers": balances,
         "themes": [item["name"] for item in THEMES],
         "fonts": list_fonts(),
+        "capture_devices": list_capture_devices(),
     }
 
 
@@ -467,6 +469,7 @@ def _public_global_config(config: Mapping[str, Any]) -> dict[str, Any]:
         "theme": active.get("theme", "dark"),
         "lyric_offset": active.get("lyric_offset", 0.0),
         "vibe_active": bool(active.get("vibe_active", False)),
+        "music": load_music_offsets(),
     }
 
 
@@ -709,6 +712,40 @@ def _global_secret_update(secrets: Mapping[str, Any], path: str, current: Any) -
     return _apply_secret_update(secrets.get(path), current, f"secrets.{path}")
 
 
+def _validate_music(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise SettingsValidationError("必须是对象", "music")
+    device = value.get("capture_device", "auto")
+    if device is None or device == "":
+        device = "auto"
+    if not isinstance(device, str):
+        raise SettingsValidationError("采集设备必须是字符串", "music.capture_device")
+    device = device.strip() or "auto"
+    allowed = {"auto"} | {str(item.get("id") or "") for item in list_capture_devices()}
+    # Allow stale ids to be saved only if they still look well-formed, but prefer known list.
+    if device not in allowed and not (device.startswith("sc:") or device.startswith("sd:")):
+        raise SettingsValidationError("未知采集设备", "music.capture_device")
+    bins = _integer(value.get("bins", 48), "music.bins", minimum=16)
+    if bins > 96:
+        raise SettingsValidationError("bins 不能超过 96", "music.bins")
+    render_fps = _integer(value.get("render_fps", 0), "music.render_fps", minimum=0)
+    if render_fps and not 12 <= render_fps <= 60:
+        raise SettingsValidationError("render_fps 必须为 0（自动）或 12-60", "music.render_fps")
+    render_bars = _integer(value.get("render_bars", 0), "music.render_bars", minimum=0)
+    if render_bars and not 12 <= render_bars <= 96:
+        raise SettingsValidationError("render_bars 必须为 0（自动）或 12-96", "music.render_bars")
+    return {
+        "spectrum_enabled": _boolean(value.get("spectrum_enabled", True), "music.spectrum_enabled"),
+        "auto_calibrate": _boolean(value.get("auto_calibrate", True), "music.auto_calibrate"),
+        "spectrum_offset_ms": int(_finite_number(value.get("spectrum_offset_ms", 40), "music.spectrum_offset_ms")),
+        "beat_lead_ms": int(_finite_number(value.get("beat_lead_ms", 20), "music.beat_lead_ms")),
+        "bins": bins,
+        "render_fps": render_fps,
+        "render_bars": render_bars,
+        "capture_device": device,
+    }
+
+
 def save_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     """校验并保存全局配置与 Provider 配置。"""
     if not isinstance(payload, Mapping):
@@ -762,6 +799,20 @@ def save_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             next_config[key] = _finite_number(incoming[key], "lyric_offset")
         else:
             next_config[key] = _boolean(incoming[key], "vibe_active")
+
+    music_changed = False
+    if "music" in incoming:
+        validated_music = _validate_music(incoming["music"])
+        old_music = load_music_offsets()
+        # Persist via spectrum helper so device switch restarts capture cleanly.
+        save_music_offsets(validated_music)
+        next_config["music"] = dict(load_config().get("music") or validated_music)
+        music_changed = (
+            old_music.get("capture_device") != validated_music.get("capture_device")
+            or old_music.get("spectrum_enabled") != validated_music.get("spectrum_enabled")
+        )
+        if music_changed:
+            request_capture_restart("settings save")
 
     incoming_providers = incoming.get("providers", {})
     if not isinstance(incoming_providers, Mapping):

@@ -41,6 +41,16 @@ A real-time system monitoring dashboard with MiMo Token Plan tracking, GitHub co
 - Lyrics reload button
 - System-level playback controls (play/pause/next/prev via SMTC)
 
+### Music Stage (`/music`)
+- Full-screen lyric stage that reuses the existing media WebSocket feed
+- Optional system-audio spectrum via true WASAPI loopback (`soundcard`) with Stereo Mix fallback
+- Capture device can be chosen manually in `/settings` → **Music / 频谱采集**
+- SMTC cover art + client-side palette extraction for ambient color grading
+- Visual offset knobs: `music.spectrum_offset_ms` and `music.beat_lead_ms`
+- One-tap beat calibration (`/api/music/calibrate`) that writes `beat_lead_ms`
+- Spectrum capture starts only while a client subscribes (dashboard stays light)
+- Dashboard player card has a direct stage entry button
+
 ### Dashboard Themes
 - Default dark theme (image background)
 - Clean mono theme (solid light background)
@@ -145,15 +155,21 @@ The desktop app reads `data/monitor.json` to determine which display to use, the
 | Endpoint | Method | Description |
 |---|---|---|
 | `/` | GET | Dashboard HTML page |
-| `/ws` | WebSocket | Bidirectional: server pushes data, client sends vibe/init commands |
+| `/music` | GET | Full-screen music stage (lyrics + optional loopback spectrum) |
+| `/ws` | WebSocket | Bidirectional: server pushes data, client sends vibe/init/spectrum subscribe |
 | `/api/data` | GET | Aggregated daily usage, configurable Vibe card payload, and GitHub contributions |
 | `/api/health` | GET | Lightweight cached service health; does not refresh external data |
 | `/api/system` | GET | System hardware info (CPU/GPU/Memory/Disk/Network) |
 | `/api/nug` | GET | NUG platform balance |
 | `/api/nug/channels` | GET | NUG per-channel usage breakdown (7 days) |
 | `/api/media` | GET | Current media info + lyrics |
+| `/api/media/cover` | GET | Current track cover art (SMTC thumbnail) |
 | `/api/media/reload` | POST | Clear lyrics cache and refetch |
 | `/api/media/offset` | GET/POST | Read or update lyric offset (supports delta or absolute) |
+| `/api/music/offset` | GET/POST | Spectrum / beat visual offsets (`spectrum_offset_ms`, `beat_lead_ms`) |
+| `/api/music/spectrum` | GET | Latest spectrum frame (REST fallback; WS is preferred) |
+| `/api/music/spectrum/status` | GET | Loopback stack status and subscriber count |
+| `/api/music/calibrate` | GET/POST | Beat tap calibration (`start` / `tap` / `apply` / `cancel`) |
 | `/api/player/<action>` | POST | Media controls: `play`, `pause`, `next`, `prev`, `toggle` |
 | `/api/vibe` | GET/POST | Read or set Vibe Coding mode |
 | `/api/theme` | GET/POST | Read or set the active theme by name |

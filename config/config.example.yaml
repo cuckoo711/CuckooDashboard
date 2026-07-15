@@ -104,5 +104,17 @@ theme: dark
 # 歌词偏移（秒）
 lyric_offset: 0.0
 
+# /music 舞台：频谱采集与视觉对齐偏移（可在页面上实时调节）
+music:
+  spectrum_enabled: true
+  spectrum_offset_ms: 40   # 频谱视觉总提前量（ms，可负）
+  beat_lead_ms: 20         # 鼓点额外提前量（ms，可负）
+  bins: 48                 # 后端采集/分析频段数量（16-96）
+  render_fps: 0            # 浏览器频谱帧率：0=自动；12-60=手动覆盖
+  render_bars: 0           # 浏览器实际绘制柱数：0=自动；12-96=手动覆盖
+  auto_calibrate: true     # 允许一键鼓点校准写入 beat_lead_ms
+  # 采集设备：auto 或 settings 页列出的 id（sc:... / sd:...）
+  capture_device: auto
+
 # Vibe Coding 模式
 vibe_active: false

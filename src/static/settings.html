@@ -231,6 +231,52 @@
                     </div>
                 </section>
 
+                <section class="panel panel-wide">
+                    <div class="panel-title">
+                        <div><span class="section-mark"></span><h2>Music / 频谱采集</h2></div>
+                        <span class="panel-hint">/music 舞台音频源；可手动选择 Loopback 设备</span>
+                    </div>
+                    <div class="subsection-head">
+                        <div><h3>启用频谱采集</h3><span>关闭后 /music 只显示歌词与封面</span></div>
+                        <label class="switch"><input id="musicSpectrumEnabled" type="checkbox"><span></span></label>
+                    </div>
+                    <div class="field-grid compact-grid">
+                        <div class="field field-wide">
+                            <label for="musicCaptureDevice">采集设备</label>
+                            <div class="secret-control">
+                                <select id="musicCaptureDevice" style="flex:1"></select>
+                                <button type="button" class="small-btn" id="musicRefreshDevices">刷新设备</button>
+                            </div>
+                            <div class="field-help" id="musicCaptureHelp">应出现多个 “Loopback - 扬声器/耳机”。若只有自动项，点“刷新设备”；仍没有则重启 Dashboard。</div>
+                        </div>
+                        <div class="field">
+                            <label for="musicSpectrumOffset">频谱偏移（ms）</label>
+                            <input id="musicSpectrumOffset" type="number" step="5">
+                        </div>
+                        <div class="field">
+                            <label for="musicBeatLead">鼓点提前（ms）</label>
+                            <input id="musicBeatLead" type="number" step="5">
+                        </div>
+                        <div class="field">
+                            <label for="musicBins">采集频段数量</label>
+                            <input id="musicBins" type="number" min="16" max="96" step="1">
+                            <div class="field-help">后端分析数量；弱设备建议 32</div>
+                        </div>
+                        <div class="field">
+                            <label for="musicRenderFps">频谱渲染帧率</label>
+                            <input id="musicRenderFps" type="number" min="0" max="60" step="1">
+                            <div class="field-help">0=自动；弱 ARM 自动为 24fps</div>
+                        </div>
+                        <div class="field">
+                            <label for="musicRenderBars">显示柱数量</label>
+                            <input id="musicRenderBars" type="number" min="0" max="96" step="1">
+                            <div class="field-help">0=自动；弱 ARM 自动为 24 根</div>
+                        </div>
+                    </div>
+                    <div class="check-line"><label class="switch"><input id="musicAutoCalibrate" type="checkbox"><span></span></label><span>允许一键鼓点校准写入 beat_lead</span></div>
+                    <div class="field-help" id="musicDeviceStatus"></div>
+                </section>
+
                 <section class="panel">
                     <div class="panel-title">
                         <div><span class="section-mark"></span><h2>UI 状态</h2></div>
@@ -250,6 +296,16 @@
                 </section>
             </div>
         </form>
+
+        <section class="panel panel-wide clients-panel">
+            <div class="panel-title">
+                <div><span class="section-mark"></span><h2>在线看板</h2></div>
+                <button type="button" class="small-btn" id="refreshClientsBtn" title="刷新列表">刷新</button>
+            </div>
+            <div id="clientsList" class="clients-list">
+                <div class="empty-row">点击刷新读取在线客户端</div>
+            </div>
+        </section>
     </main>
 
     <footer class="settings-footer" id="settingsFooter" hidden>

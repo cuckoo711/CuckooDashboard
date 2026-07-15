@@ -7,6 +7,12 @@
     var $ = function (selector, root) { return (root || document).querySelector(selector); };
     var $$ = function (selector, root) { return Array.prototype.slice.call((root || document).querySelectorAll(selector)); };
 
+    function escHtml(s) {
+        var d = document.createElement('div');
+        d.appendChild(document.createTextNode(s || ''));
+        return d.innerHTML;
+    }
+
     function el(tag, className, text) {
         var node = document.createElement(tag);
         if (className) node.className = className;
@@ -566,6 +572,101 @@
         input.disabled = false;
     }
 
+    function fillCaptureDeviceSelect(devices, current) {
+        var select = $('#musicCaptureDevice');
+        if (!select) return 0;
+        devices = devices || [];
+        var preferred = devices.filter(function (item) {
+            if (!item || item.disabled || item.id === '__none__') return false;
+            if (item.id === 'auto' || item.kind === 'auto') return true;
+            return item.kind === 'loopback' || item.backend === 'soundcard';
+        });
+        var advanced = devices.filter(function (item) {
+            return item && !item.disabled && item.id !== '__none__' && preferred.indexOf(item) < 0;
+        });
+        select.innerHTML = '';
+        function appendOption(item) {
+            var opt = document.createElement('option');
+            opt.value = item.id || 'auto';
+            opt.textContent = item.label || item.id || '';
+            select.appendChild(opt);
+        }
+        if (preferred.length) {
+            preferred.forEach(appendOption);
+        } else {
+            var empty = document.createElement('option');
+            empty.value = 'auto';
+            empty.textContent = '未检测到 Loopback（请点刷新设备 / 重启 Dashboard）';
+            select.appendChild(empty);
+        }
+        if (advanced.length) {
+            var og = document.createElement('optgroup');
+            og.label = '备选/可能无效（不推荐）';
+            advanced.forEach(function (item) {
+                var opt = document.createElement('option');
+                opt.value = item.id || 'auto';
+                opt.textContent = item.label || item.id || '';
+                og.appendChild(opt);
+            });
+            select.appendChild(og);
+        }
+        var cur = current || 'auto';
+        if (cur && !devices.some(function (d) { return d && d.id === cur; })) {
+            var stale = document.createElement('option');
+            stale.value = cur;
+            stale.textContent = cur + '（已保存，但当前列表找不到）';
+            select.appendChild(stale);
+        }
+        select.value = cur || 'auto';
+        return preferred.filter(function (d) { return d.kind === 'loopback'; }).length;
+    }
+
+    async function refreshCaptureDevices(showToast) {
+        var help = $('#musicDeviceStatus');
+        try {
+            if (help) help.textContent = '正在刷新设备列表…';
+            var data = await requestJson('/api/music/capture-devices');
+            var devices = (data && data.devices) || [];
+            var current = (data && data.current) || ($('#musicCaptureDevice') && $('#musicCaptureDevice').value) || 'auto';
+            var loopCount = fillCaptureDeviceSelect(devices, current);
+            if (state.payload && state.payload.options) {
+                state.payload.options.capture_devices = devices;
+            }
+            if (help) {
+                var live = (data && data.status && data.status.device) || '';
+                help.textContent = '检测到 Loopback ' + (data.loopback_count != null ? data.loopback_count : loopCount) +
+                    ' 个。当前配置：' + current + (live ? ('；当前采集：' + live) : '') +
+                    '。请选正在出声的 Loopback 设备后保存。';
+            }
+            if (showToast) showMessage(loopCount ? ('已刷新，Loopback ' + loopCount + ' 个') : '已刷新，但仍未发现 Loopback', loopCount ? 'ok' : 'warn');
+            return data;
+        } catch (err) {
+            if (help) help.textContent = '刷新设备失败：' + ((err && err.message) || err);
+            if (showToast) showMessage('刷新设备失败：' + ((err && err.message) || err), 'error');
+            throw err;
+        }
+    }
+
+    function renderMusicPanel(music, options) {
+        music = music || {};
+        var devices = (options && options.capture_devices) || [];
+        var loopCount = fillCaptureDeviceSelect(devices, music.capture_device || 'auto');
+        setChecked('musicSpectrumEnabled', music.spectrum_enabled !== false);
+        setChecked('musicAutoCalibrate', music.auto_calibrate !== false);
+        setValue('musicSpectrumOffset', music.spectrum_offset_ms === undefined ? 40 : music.spectrum_offset_ms);
+        setValue('musicBeatLead', music.beat_lead_ms === undefined ? 20 : music.beat_lead_ms);
+        setValue('musicBins', music.bins === undefined ? 48 : music.bins);
+        setValue('musicRenderFps', music.render_fps === undefined ? 0 : music.render_fps);
+        setValue('musicRenderBars', music.render_bars === undefined ? 0 : music.render_bars);
+        var help = $('#musicDeviceStatus');
+        if (help) {
+            help.textContent = '初步列表 Loopback ' + loopCount + ' 个；若只有“自动”，请点“刷新设备”。当前：' + (music.capture_device || 'auto');
+        }
+        // Always re-fetch live devices after first paint so long-lived servers
+        // that started before soundcard install still populate the dropdown.
+        refreshCaptureDevices(false).catch(function () {});
+    }
+
     function render(payload) {
         state.payload = payload;
         var cfg = payload.config || {};
@@ -605,6 +706,7 @@
         renderThemeOptions(payload.options || {}, cfg.theme || 'dark');
         setValue('lyricOffset', cfg.lyric_offset === undefined ? 0 : cfg.lyric_offset);
         setChecked('vibeActive', cfg.vibe_active);
+        renderMusicPanel(cfg.music || {}, payload.options || {});
         setDirty(false);
     }
 
@@ -688,7 +790,17 @@
             },
             theme: $('#theme').value,
             lyric_offset: numberValue('#lyricOffset', 0),
-            vibe_active: $('#vibeActive').checked
+            vibe_active: $('#vibeActive').checked,
+            music: {
+                spectrum_enabled: $('#musicSpectrumEnabled') ? $('#musicSpectrumEnabled').checked : true,
+                auto_calibrate: $('#musicAutoCalibrate') ? $('#musicAutoCalibrate').checked : true,
+                capture_device: $('#musicCaptureDevice') ? ($('#musicCaptureDevice').value || 'auto') : 'auto',
+                spectrum_offset_ms: numberValue('#musicSpectrumOffset', 40),
+                beat_lead_ms: numberValue('#musicBeatLead', 20),
+                bins: numberValue('#musicBins', 48),
+                render_fps: numberValue('#musicRenderFps', 0),
+                render_bars: numberValue('#musicRenderBars', 0)
+            }
         };
     }
 
@@ -950,10 +1062,15 @@
             handleFontDelete(btn.dataset.deleteFont);
         }
     });
-    $('#saveButton').addEventListener('click', saveSettings);
+$('#saveButton').addEventListener('click', saveSettings);
     $('#reloadButton').addEventListener('click', function () {
-        if (!state.dirty || window.confirm('当前有未保存修改，确定重新加载吗？')) loadSettings();
+        loadSettings();
     });
+    if ($('#musicRefreshDevices')) {
+        $('#musicRefreshDevices').addEventListener('click', function () {
+            refreshCaptureDevices(true).catch(function () {});
+        });
+    }
     $('#reloadClientsButton').addEventListener('click', async function () {
         var btn = this;
         btn.disabled = true;
@@ -968,6 +1085,74 @@
             setTimeout(function(){ btn.textContent = '刷新看板'; btn.disabled = false; }, 1500);
         }
     });
+
+    /* ── 在线看板客户端管理 ── */
+    var PAGE_LABELS = {dashboard: '看板', music: '音乐舞台', unknown: '未知'};
+    var PAGE_ICONS = {dashboard: '📊', music: '🎵', unknown: '❓'};
+
+    function renderClientsList(clients) {
+        var container = $('#clientsList');
+        if (!clients || !clients.length) {
+            container.innerHTML = '<div class="empty-row">暂无在线客户端</div>';
+            return;
+        }
+        container.innerHTML = clients.map(function(c) {
+            var page = c.page || 'unknown';
+            var label = PAGE_LABELS[page] || page;
+            var icon = PAGE_ICONS[page] || '❓';
+            var targetPage = page === 'music' ? 'dashboard' : 'music';
+            var targetLabel = PAGE_LABELS[targetPage];
+            return '<div class="client-row" data-client-id="' + escHtml(c.id) + '">' +
+                '<span class="client-id">' + escHtml(c.id) + '</span>' +
+                '<span class="client-page">' + icon + ' ' + escHtml(label) + '</span>' +
+                '<button type="button" class="small-btn client-nav-btn" data-navigate-to="' + targetPage + '">切换到 ' + escHtml(targetLabel) + '</button>' +
+                '</div>';
+        }).join('');
+    }
+
+    async function refreshClientsList() {
+        var btn = $('#refreshClientsBtn');
+        if (btn) btn.disabled = true;
+        try {
+            var data = await requestJson('/api/settings/clients');
+            renderClientsList(data.clients || []);
+        } catch (error) {
+            var container = $('#clientsList');
+            if (container) container.innerHTML = '<div class="empty-row state-error">获取失败：' + escHtml(error.message) + '</div>';
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    document.addEventListener('click', async function (event) {
+        var btn = event.target.closest ? event.target.closest('.client-nav-btn') : null;
+        if (!btn) return;
+        var row = btn.closest('.client-row');
+        if (!row) return;
+        var clientId = row.dataset.clientId;
+        var targetPage = btn.dataset.navigateTo;
+        if (!clientId || !targetPage) return;
+        btn.disabled = true;
+        var original = btn.textContent;
+        btn.textContent = '发送中…';
+        try {
+            await requestJson('/api/settings/clients/' + encodeURIComponent(clientId) + '/navigate', {
+                method: 'POST',
+                body: {page: targetPage}
+            });
+            btn.textContent = '已发送';
+            setTimeout(refreshClientsList, 1500);
+        } catch (error) {
+            btn.textContent = '失败';
+            showMessage('切换失败：' + error.message, 'error');
+        } finally {
+            setTimeout(function(){ btn.textContent = original; btn.disabled = false; }, 2000);
+        }
+    });
+
+    if ($('#refreshClientsBtn')) {
+        $('#refreshClientsBtn').addEventListener('click', refreshClientsList);
+    }
     window.addEventListener('beforeunload', function (event) {
         if (state.dirty) { event.preventDefault(); event.returnValue = ''; }
     });

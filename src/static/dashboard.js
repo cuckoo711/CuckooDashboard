@@ -53,6 +53,60 @@ async function refreshHealth() {
 refreshHealth();
 setInterval(refreshHealth, 15000);
 
+/* ── 统一连接状态管理器 ──
+   所有 fetch / WebSocket 的成败都汇入这里，驱动全局 online/offline 状态；
+   所有 UI 降级（断连条幅、延迟指示器、数据变暗）都订阅这一个状态，避免分散判断。
+   kiosk 场景无人交互：进入/退出离线态全部由此自动完成。 */
+var _online = true;               // 当前连接状态，页面加载时服务器可达，默认在线
+var _lastAliveTs = Date.now();    // 最后一次成功通信（fetch 响应 / WS 消息 / pong）时刻
+var _restFailStreak = 0;          // 连续 REST 网络错误次数
+var CONN_STALE_MS = 4000;         // 超过多久没有任何成功通信就判定离线（覆盖 WS 静默掉线）
+var CONN_FAIL_STREAK = 2;         // 连续 REST 网络错误达到此值即判定离线（约 4s，回退轮询 2s/次）
+
+/** 任何成功通信时调用：刷新存活时间、清零失败计数，必要时切回在线。 */
+function noteAlive() {
+    _lastAliveTs = Date.now();
+    _restFailStreak = 0;
+    if (!_online) goOnline();
+}
+
+/** fetch 发生网络错误（Promise reject）时调用：累加失败计数。 */
+function noteRestFail() {
+    _restFailStreak++;
+}
+
+function goOffline() {
+    if (!_online) return;
+    _online = false;
+    applyConnUI();
+    console.warn('[conn] offline');
+}
+
+function goOnline() {
+    if (_online) return;
+    _online = true;
+    applyConnUI();
+    console.log('[conn] online');
+}
+
+/** 把当前连接状态渲染到 UI：断连条幅、数据降级、延迟指示器。 */
+function applyConnUI() {
+    document.body.classList.toggle('net-offline', !_online);
+    var banner = document.getElementById('netBanner');
+    if (banner) banner.classList.toggle('show', !_online);
+    // 离线时立即把延迟指示器打到离线态（解决 WS 未 close 时数值静止的误导问题）
+    if (!_online) updateLatency(-1);
+    // 恢复在线后延迟数值由下一次 pong 自动复原，无需在此处理
+}
+
+/** 看门狗：每秒评估一次，陈旧超时或连续失败即判离线。 */
+function connWatchdog() {
+    if (_online && (Date.now() - _lastAliveTs > CONN_STALE_MS || _restFailStreak >= CONN_FAIL_STREAK)) {
+        goOffline();
+    }
+}
+setInterval(connWatchdog, 1000);
+
 var DASHBOARD_TOKEN = '';
 try { DASHBOARD_TOKEN = localStorage.getItem('dashboardToken') || ''; } catch(e) {}
 function secureFetch(url, options) {
@@ -60,7 +114,14 @@ function secureFetch(url, options) {
     options.headers = options.headers || {};
     options.headers['X-Requested-With'] = 'CuckooDashboard';
     if (DASHBOARD_TOKEN) options.headers['X-Dashboard-Token'] = DASHBOARD_TOKEN;
-    return fetch(url, options);
+    // 收到任何 HTTP 响应（含 4xx/5xx）都代表服务器可达 → 在线；网络错误（reject）→ 记一次失败。
+    return fetch(url, options).then(function(resp) {
+        noteAlive();
+        return resp;
+    }, function(err) {
+        noteRestFail();
+        throw err;
+    });
 }
 function playerCtl(action) {
     secureFetch('/api/player/' + action, {method:'POST'}).catch(function(e){ console.error('[player]', e); });
@@ -840,10 +901,13 @@ function connectWS(){
     _ws.onopen = function(){
         _wsRetry = 1000;
         if(_wsFallbackTimer){clearInterval(_wsFallbackTimer); _wsFallbackTimer=null;}
-        // vibe 状态由后端通过 WS vibe_state 消息主动推送，无需 REST 请求
+        noteAlive(); // WS 连上即视为在线，自动清除离线降级
+        // 上报页面类型
+        try { _ws.send(JSON.stringify({type:'report', page:'dashboard'})); } catch(e) {}
         console.log('[ws] connected');
     };
     _ws.onmessage = function(ev){
+        noteAlive(); // 收到任何推送/pong 都刷新存活时间（在线时的主要心跳来源）
         try {
             var msg = JSON.parse(ev.data);
             if(msg.type === 'system') drawSystem(msg.data);
@@ -851,6 +915,7 @@ function connectWS(){
             else if(msg.type === 'github'){ drawGitHub(msg.data.contributions||{}, msg.data.user||''); }
             else if(msg.type === 'dashboard_data'){ handleDashboardData(msg.data); refreshHealth(); }
             else if(msg.type === 'reload'){ location.reload(); }
+            else if(msg.type === 'navigate'){ location.href = msg.url || (msg.page === 'music' ? '/music' : '/'); }
             else if(msg.type === 'config_updated'){
                 refreshOffPeakBadgeConfig();
                 if (_ws && _ws.readyState === 1) {
@@ -896,7 +961,7 @@ function updateLatency(ms){
     var wrap = document.getElementById('hdrLatency');
     if (!wrap) return;
     var val = wrap.querySelector('.latency-val');
-    if (ms < 0){ wrap.className='hdr-latency disconnected'; if(val) val.textContent='--'; return; }
+    if (ms < 0){ wrap.className='hdr-latency disconnected'; if(val) val.textContent='离线'; return; }
     wrap.className = 'hdr-latency ' + (ms < 20 ? 'good' : ms < 60 ? 'ok' : ms < 150 ? 'warn' : 'bad');
     if(val) val.textContent = (ms < 1 ? ms.toFixed(2) : ms < 10 ? ms.toFixed(1) : Math.round(ms)) + 'ms';
 }

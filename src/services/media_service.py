@@ -29,6 +29,225 @@ _SMTC_WORKER = str(SRC_DIR / "smtc_worker.py")
 _SMTC_PYTHON = str(PROJECT_ROOT / "venv" / "Scripts" / "python.exe")
 _smtc_started = False
 
+# Cover art cache lives in the main process so /api/media JSON stays small.
+_cover_lock = threading.Lock()
+_cover_state = {
+    "key": "",
+    "title": "",
+    "artist": "",
+    "b64": "",
+    "mime": "image/jpeg",
+    "url": "",            # remote cover (YesPlayMusic picUrl)
+    "updated_at": 0.0,    # only bumps when the cover identity/content changes
+    "source_token": "",   # stable identity: remote url or file mtime/key
+}
+_COVER_FILE = PROJECT_ROOT / "data" / "media_cover.bin"
+_COVER_META = PROJECT_ROOT / "data" / "media_cover.json"
+_YPM_API = "http://127.0.0.1:27232/player"
+_ypm_cache = {"ts": 0.0, "ok": False, "data": None}
+
+
+def _cover_key(title: str, artist: str, album: str = "") -> str:
+    return f"{title or ''}\n{artist or ''}\n{album or ''}"
+
+
+def _set_cover_locked(
+    *,
+    key: str,
+    title: str,
+    artist: str,
+    source_token: str,
+    b64: str | None = None,
+    mime: str | None = None,
+    url: str | None = None,
+    clear_other: bool = False,
+) -> bool:
+    """Apply cover fields only when identity changes. Returns True if version bumped."""
+    prev_token = str(_cover_state.get("source_token") or "")
+    prev_key = str(_cover_state.get("key") or "")
+    changed = (source_token and source_token != prev_token) or (key and key != prev_key)
+
+    _cover_state["key"] = key or prev_key
+    _cover_state["title"] = title or _cover_state.get("title") or ""
+    _cover_state["artist"] = artist or _cover_state.get("artist") or ""
+    if url is not None:
+        _cover_state["url"] = url
+    if b64 is not None:
+        _cover_state["b64"] = b64
+        if mime:
+            _cover_state["mime"] = mime
+    if clear_other and url is not None and not b64:
+        # switching to a new remote identity: drop stale file bytes
+        if changed:
+            _cover_state["b64"] = ""
+    if source_token:
+        _cover_state["source_token"] = source_token
+    if changed:
+        _cover_state["updated_at"] = time.time()
+    elif not _cover_state.get("updated_at"):
+        _cover_state["updated_at"] = time.time()
+    return changed
+
+
+def _load_cover_file_if_any(title: str, artist: str, album: str = "") -> None:
+    """Import async-extracted SMTC cover dumped by smtc_worker."""
+    try:
+        if not _COVER_FILE.exists() or not _COVER_META.exists():
+            return
+        meta = json.loads(_COVER_META.read_text(encoding="utf-8"))
+        key = str(meta.get("key") or "")
+        want = _cover_key(title, artist, album)
+        # accept if same track, or worker key empty
+        if key and want and key != want:
+            # still accept title-only match (album may differ across sources)
+            k_title = (key.split("\n") + [""])[0]
+            if k_title and k_title != title:
+                return
+        raw = _COVER_FILE.read_bytes()
+        if not raw:
+            return
+        mime = str(meta.get("mime") or "image/jpeg")
+        b64 = base64.b64encode(raw).decode("ascii")
+        # Stable token: file mtime + size + key (not wall clock on every poll)
+        try:
+            st = _COVER_FILE.stat()
+            token = f"file:{key}:{int(st.st_mtime_ns)}:{st.st_size}"
+        except OSError:
+            token = f"file:{key}:{meta.get('updated_at')}:{meta.get('size')}"
+        with _cover_lock:
+            # If we already have the same remote URL cover for this track, keep it
+            # unless file token is new.
+            _set_cover_locked(
+                key=want or key,
+                title=title,
+                artist=artist,
+                source_token=token,
+                b64=b64,
+                mime=mime,
+            )
+    except Exception as exc:
+        logger.debug("[media] cover file load failed: %s", exc)
+
+
+def _update_cover_from_worker(info: dict) -> None:
+    """Update cover cache from worker payload (URL / file / legacy b64)."""
+    title = str(info.get("title") or "")
+    artist = str(info.get("artist") or "")
+    album = str(info.get("album") or "")
+    key = _cover_key(title, artist, album)
+
+    remote_url = str(info.get("cover_url") or "")
+    if remote_url:
+        with _cover_lock:
+            _set_cover_locked(
+                key=key,
+                title=title,
+                artist=artist,
+                source_token=f"url:{remote_url}",
+                url=remote_url,
+                # A new remote identity must not keep serving the previous
+                # SMTC thumbnail through the same proxy endpoint.
+                clear_other=True,
+            )
+
+    if info.get("cover_file") or info.get("cover_changed") or info.get("cover_pending"):
+        _load_cover_file_if_any(title, artist, album)
+
+    if info.get("cover_changed") or "cover_b64" in info:
+        b64 = str(info.get("cover_b64") or "")
+        mime = str(info.get("cover_mime") or "image/jpeg")
+        if b64:
+            # legacy path — content identity via short hash prefix
+            token = f"b64:{key}:{len(b64)}:{b64[:32]}"
+            with _cover_lock:
+                _set_cover_locked(
+                    key=key,
+                    title=title,
+                    artist=artist,
+                    source_token=token,
+                    b64=b64,
+                    mime=mime if b64 else "image/jpeg",
+                )
+        # keep media WS payload light
+        info.pop("cover_b64", None)
+        info.pop("cover_mime", None)
+
+
+def get_cover_state() -> dict:
+    with _cover_lock:
+        return dict(_cover_state)
+
+
+def get_cover_data_url() -> str:
+    with _cover_lock:
+        b64 = _cover_state.get("b64") or ""
+        mime = _cover_state.get("mime") or "image/jpeg"
+        title = _cover_state.get("title") or ""
+        url = _cover_state.get("url") or ""
+    if b64 and title:
+        return f"data:{mime};base64,{b64}"
+    return url
+
+
+def get_cover_bytes() -> tuple[bytes | None, str]:
+    with _cover_lock:
+        b64 = _cover_state.get("b64") or ""
+        mime = _cover_state.get("mime") or "image/jpeg"
+        title = _cover_state.get("title") or ""
+        url = _cover_state.get("url") or ""
+    if b64 and title:
+        try:
+            return base64.b64decode(b64), mime
+        except Exception:
+            return None, mime
+    # optional: fetch remote cover for /api/media/cover consumers
+    if url:
+        try:
+            r = _requests.get(url, timeout=3)
+            if r.ok and r.content:
+                ctype = r.headers.get("Content-Type") or "image/jpeg"
+                return r.content, ctype.split(";")[0].strip()
+        except Exception:
+            pass
+    return None, mime
+
+
+def _fetch_ypm_direct() -> dict | None:
+    """主进程直连 YesPlayMusic，作为 SMTC worker 挂掉时的硬兜底。"""
+    now = time.time()
+    if not _ypm_cache["ok"] and (now - float(_ypm_cache["ts"] or 0)) < 2:
+        return None
+    try:
+        r = _requests.get(_YPM_API, timeout=0.8)
+        data = r.json()
+        track = data.get("currentTrack") or {}
+        progress = data.get("progress")
+        duration_ms = track.get("dt")
+        if progress is None or not duration_ms or not track.get("name"):
+            _ypm_cache.update({"ok": False, "ts": now, "data": None})
+            return None
+        artists = " / ".join(a.get("name", "") for a in (track.get("ar") or []))
+        al = track.get("al") or {}
+        album = al.get("name") if isinstance(al, dict) else ""
+        cover_url = al.get("picUrl") if isinstance(al, dict) else ""
+        payload = {
+            "status": "playing",
+            "title": track.get("name") or "",
+            "artist": artists,
+            "album": album or "",
+            "position": float(progress),
+            "duration": float(duration_ms) / 1000.0,
+            "progress_ratio": float(progress) / (float(duration_ms) / 1000.0),
+            "song_id": track.get("id"),
+            "cover_url": cover_url or "",
+            "position_source": "api",
+        }
+        _ypm_cache.update({"ok": True, "ts": now, "data": payload})
+        return payload
+    except Exception:
+        _ypm_cache.update({"ok": False, "ts": now, "data": None})
+        return None
+
 
 def _smtc_reader_loop():
     global _smtc_result, _smtc_last_update
@@ -39,19 +258,29 @@ def _smtc_reader_loop():
             proc = popen_hidden(
                 [_SMTC_PYTHON, _SMTC_WORKER],
                 stdout=_media_sp.PIPE, stderr=_media_sp.DEVNULL,
-                bufsize=1,
+                bufsize=0,
             )
-            for raw_line in proc.stdout:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
-                try:
-                    info = json.loads(line)
-                    with _smtc_lock:
-                        _smtc_result = info
-                        _smtc_last_update = _time.time()
-                except json.JSONDecodeError:
-                    continue
+            assert proc.stdout is not None
+            # binary line reader (bufsize=0); join chunks until \n
+            buf = b""
+            while True:
+                chunk = proc.stdout.read(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                while b"\n" in buf:
+                    raw_line, buf = buf.split(b"\n", 1)
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    try:
+                        info = json.loads(line)
+                        _update_cover_from_worker(info)
+                        with _smtc_lock:
+                            _smtc_result = info
+                            _smtc_last_update = _time.time()
+                    except json.JSONDecodeError:
+                        continue
             proc.wait(timeout=1)
         except Exception as e:
             logger.error(f"[media] worker error: {e}")
@@ -348,20 +577,46 @@ def _get_lyrics_for(title: str, artist: str, song_id: int = 0) -> dict:
 
 
 def get_media_info() -> dict:
-    """获取完整媒体信息 + 当前歌词"""
+    """获取完整媒体信息 + 当前歌词。
+
+    优先读 SMTC worker 结果；若 worker 卡住/空闲，则直连 YesPlayMusic 兜底。
+    """
     _ensure_smtc_thread()
     with _smtc_lock:
         info = dict(_smtc_result)
+        last = _smtc_last_update
 
-    if info["status"] not in ("playing", "paused") or not info["title"]:
+    stale = (not last) or (time.time() - last > 3.0)
+    ypm = None
+    if info.get("status") not in ("playing", "paused") or not info.get("title") or stale:
+        ypm = _fetch_ypm_direct()
+        if ypm:
+            info = dict(ypm)
+            if ypm.get("cover_url"):
+                with _cover_lock:
+                    _set_cover_locked(
+                        key=_cover_key(ypm["title"], ypm.get("artist", ""), ypm.get("album", "")),
+                        title=ypm["title"],
+                        artist=ypm.get("artist", ""),
+                        source_token=f"url:{ypm['cover_url']}",
+                        url=ypm["cover_url"],
+                        clear_other=True,
+                    )
+
+    if info.get("status") not in ("playing", "paused") or not info.get("title"):
         return {
-            "status": info["status"], "title": "", "artist": "", "lyric": "", "next_lyric": "",
+            "status": info.get("status") or "idle", "title": "", "artist": "", "album": "",
+            "lyric": "", "next_lyric": "",
             "lyrics": [], "lyrics_yrc": [], "song_id": None,
             "position": 0, "duration": 0, "progress_ratio": None, "position_source": "none",
+            "has_cover": False, "cover_url": "", "cover_version": 0,
         }
 
+    # refresh file cover if worker finished async extract
+    _load_cover_file_if_any(info.get("title", ""), info.get("artist", ""), info.get("album", ""))
+
     lyric_data = _get_lyrics_for(info["title"], info["artist"],
-                                  song_id=info.get("song_id"))
+                                  song_id=info.get("song_id") or 0)
     lyrics = lyric_data["lyrics"]
     duration = lyric_data["duration"]
     song_id = lyric_data.get("song_id")
@@ -370,10 +625,10 @@ def get_media_info() -> dict:
     position_source = "none"
     pos = 0.0
 
-    if info.get("position") and info.get("duration"):
+    if info.get("position") is not None and info.get("duration"):
         pos = float(info["position"])
         duration = float(info["duration"])
-        position_source = "api"
+        position_source = info.get("position_source") or "api"
     elif ratio is not None and duration > 0:
         pos = ratio * duration
         position_source = "uia"
@@ -389,10 +644,28 @@ def get_media_info() -> dict:
             else:
                 break
 
+    cover = get_cover_state()
+    cover_key = _cover_key(info["title"], info.get("artist", ""), info.get("album", ""))
+    same_track = (not cover.get("key")) or cover.get("key") == cover_key or cover.get("title") == info["title"]
+    has_file = bool(cover.get("b64")) and same_track
+    has_remote = bool(cover.get("url")) and same_track
+    has_cover = has_file or has_remote
+    # Millisecond precision makes the proxy URL unique even during quick skips.
+    # It remains below JavaScript's safe integer limit.
+    cover_version = int(float(cover.get("updated_at") or 0) * 1000)
+    if has_file:
+        cover_url = f"/api/media/cover?v={cover_version}"
+    elif has_remote:
+        # Use proxy endpoint so music page always same-origin (palette extraction works)
+        cover_url = f"/api/media/cover?v={cover_version}"
+    else:
+        cover_url = ""
+
     return {
         "status": info["status"],
         "title": info["title"],
-        "artist": info["artist"],
+        "artist": info.get("artist") or "",
+        "album": info.get("album") or "",
         "lyric": current_lyric,
         "next_lyric": next_lyric,
         "lyrics": [[t, text] for t, text in lyrics],
@@ -402,6 +675,9 @@ def get_media_info() -> dict:
         "duration": round(duration, 2),
         "progress_ratio": ratio,
         "position_source": position_source,
+        "has_cover": has_cover,
+        "cover_url": cover_url,
+        "cover_version": cover_version,
     }
 
 

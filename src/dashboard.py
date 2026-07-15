@@ -10,6 +10,7 @@ Web 看板服务器，用于副屏显示 MiMo 使用情况。
 """
 
 import argparse
+import hashlib
 import ipaddress
 import json
 import logging
@@ -50,11 +51,27 @@ from services.github_service import get_github_data
 from services.health_service import get_health_snapshot
 from services.off_peak_service import get_off_peak_badge_config
 from services.media_service import (
+    get_cover_bytes,
     get_media_info,
     load_lyric_offset,
     normalize_lyric_offset,
     reload_current_media,
     save_lyric_offset,
+)
+from services.spectrum_service import (
+    acquire_spectrum,
+    apply_calibration_suggestion,
+    cancel_beat_calibration,
+    get_calibration_status,
+    get_spectrum_frame,
+    get_spectrum_status,
+    list_capture_devices,
+    load_music_offsets,
+    record_calibration_tap,
+    release_spectrum,
+    request_capture_restart,
+    save_music_offsets,
+    start_beat_calibration,
 )
 from providers import fetch_all_data, get_nug_payload, get_nug_channel_breakdown
 from services.player_service import ALLOWED_PLAYER_ACTIONS, control_player
@@ -135,6 +152,8 @@ _ws_clients_lock = _ws_threading.Lock()
 _ws_vibe_coding = False  # 前端 Vibe Coding 状态（任一客户端开启即生效）
 _ws_broadcaster_started = False
 _ws_broadcaster_lock = _ws_threading.Lock()
+_ws_spectrum_started = False
+_ws_spectrum_lock = _ws_threading.Lock()
 
 # ── Vibe Coding 状态持久化 ──
 
@@ -240,16 +259,118 @@ def _ws_broadcast(msg: dict):
             _ws_recalc_vibe_locked()
 
 
+_SPECTRUM_FPS_MIN = 12
+_SPECTRUM_FPS_MAX = 60
+_SPECTRUM_FPS_DEFAULT = 24
+
+
+def _ws_clamp_spectrum_fps(value) -> int:
+    try:
+        fps = int(round(float(value)))
+    except (TypeError, ValueError):
+        fps = _SPECTRUM_FPS_DEFAULT
+    return max(_SPECTRUM_FPS_MIN, min(_SPECTRUM_FPS_MAX, fps))
+
+
+def _ws_spectrum_interest_count() -> int:
+    """当前订阅 spectrum 通道的客户端数量。"""
+    with _ws_clients_lock:
+        return sum(1 for s in _ws_client_states.values() if s.get("spectrum"))
+
+
+def _ws_spectrum_target_fps() -> int:
+    """Return the highest requested rate among visible spectrum clients."""
+    with _ws_clients_lock:
+        requested = [
+            _ws_clamp_spectrum_fps(state.get("spectrum_fps", _SPECTRUM_FPS_DEFAULT))
+            for state in _ws_client_states.values()
+            if state.get("spectrum")
+        ]
+    return max(requested, default=0)
+
+
+def _ws_set_spectrum_interest(ws, active: bool, fps=None) -> None:
+    """Open/close one subscription while keeping a per-client frame budget."""
+    with _ws_clients_lock:
+        state = _ws_client_states.setdefault(ws, {})
+        was = bool(state.get("spectrum"))
+        now = bool(active)
+        if now:
+            state["spectrum_fps"] = _ws_clamp_spectrum_fps(
+                fps if fps is not None else state.get("spectrum_fps", _SPECTRUM_FPS_DEFAULT)
+            )
+            # The initial frame is sent synchronously below; reset this marker
+            # whenever the requested FPS changes so the broadcaster re-aligns.
+            state["spectrum_last_sent_at"] = 0.0
+        state["spectrum"] = now
+    if was == now:
+        return
+    if now:
+        acquire_spectrum()
+        logger.info("[ws] spectrum subscribe ON (%sfps)", state.get("spectrum_fps"))
+    else:
+        release_spectrum()
+        logger.info("[ws] spectrum subscribe OFF")
+
+
+def _ws_broadcast_spectrum(msg: dict, now: float | None = None) -> int:
+    """Send a frame only to clients whose requested cadence is due."""
+    now = time.monotonic() if now is None else now
+    dead = []
+    targets = []
+    with _ws_clients_lock:
+        for ws, state in _ws_client_states.items():
+            if not state.get("spectrum"):
+                continue
+            fps = _ws_clamp_spectrum_fps(state.get("spectrum_fps", _SPECTRUM_FPS_DEFAULT))
+            last_sent = float(state.get("spectrum_last_sent_at") or 0.0)
+            if now - last_sent + 1e-6 < 1.0 / fps:
+                continue
+            state["spectrum_last_sent_at"] = now
+            targets.append(ws)
+    if not targets:
+        return 0
+
+    data = json.dumps(msg, ensure_ascii=False)
+    for ws in targets:
+        try:
+            ws.send(data)
+        except Exception:
+            dead.append(ws)
+    if dead:
+        with _ws_clients_lock:
+            for ws in dead:
+                if ws in _ws_clients:
+                    _ws_clients.remove(ws)
+                st = _ws_client_states.pop(ws, None)
+                if st and st.get("spectrum"):
+                    release_spectrum()
+            _ws_recalc_vibe_locked()
+    return len(targets)
+
+
 @sock.route("/ws")
 def ws_handler(ws):
     """WebSocket 端点：前端建立连接后接收后端推送 + 前端指令。"""
     saved_vibe = _load_vibe_state()
+    client_id = hashlib.md5(str(id(ws)).encode()).hexdigest()[:8]
     with _ws_clients_lock:
         _ws_clients.append(ws)
-        _ws_client_states[ws] = {"vibe": saved_vibe}
+        _ws_client_states[ws] = {
+            "vibe": saved_vibe,
+            "spectrum": False,
+            "spectrum_fps": _SPECTRUM_FPS_DEFAULT,
+            "spectrum_last_sent_at": 0.0,
+            "id": client_id,
+            "page": "unknown",
+        }
         _ws_recalc_vibe_locked()
         total = len(_ws_clients)
-    logger.info(f"[ws] client connected (total: {total})")
+    logger.info(f"[ws] client connected (total: {total}, id: {client_id})")
+    try:
+        ws.send(json.dumps({"type": "connected", "id": client_id}, ensure_ascii=False))
+    except Exception:
+        pass
     # 异步推送全部数据（不阻塞 handler，避免多客户端排队等 system info）
     _ws_threading.Thread(target=_ws_send_all_data, args=(ws,), daemon=True).start()
     try:
@@ -264,6 +385,37 @@ def ws_handler(ws):
                             vibe = _ws_recalc_vibe_locked()
                         _save_vibe_state(vibe)
                         logger.info(f"[ws] vibe coding: {'ON' if vibe else 'OFF'}")
+                    elif msg.get("type") == "report":
+                        page = str(msg.get("page") or "unknown")
+                        with _ws_clients_lock:
+                            _ws_client_states.setdefault(ws, {})["page"] = page
+                        logger.info(f"[ws] client {client_id} reports page: {page}")
+                    elif msg.get("type") == "subscribe":
+                        channel = str(msg.get("channel") or "")
+                        if channel == "spectrum":
+                            _ws_set_spectrum_interest(
+                                ws,
+                                bool(msg.get("active")),
+                                fps=msg.get("fps"),
+                            )
+                            # Send one immediate frame, then let the per-client
+                            # cadence control all subsequent transport work.
+                            if msg.get("active"):
+                                try:
+                                    ws.send(json.dumps(
+                                        {"type": "spectrum", "data": get_spectrum_frame()},
+                                        ensure_ascii=False,
+                                    ))
+                                    ws.send(json.dumps(
+                                        {"type": "music_offset", "data": load_music_offsets()},
+                                        ensure_ascii=False,
+                                    ))
+                                    with _ws_clients_lock:
+                                        state = _ws_client_states.get(ws)
+                                        if state:
+                                            state["spectrum_last_sent_at"] = time.monotonic()
+                                except Exception:
+                                    pass
                     elif msg.get("type") == "init":
                         _ws_send_all_data(ws)
                     elif msg.get("type") == "ping":
@@ -273,11 +425,17 @@ def ws_handler(ws):
     except Exception:
         pass
     finally:
+        # 断开时释放 spectrum 订阅
         with _ws_clients_lock:
+            st = _ws_client_states.get(ws) or {}
+            had_spectrum = bool(st.get("spectrum"))
             if ws in _ws_clients:
                 _ws_clients.remove(ws)
             _ws_client_states.pop(ws, None)
             total = len(_ws_clients)
+            _ws_recalc_vibe_locked()
+        if had_spectrum:
+            release_spectrum()
         logger.info(f"[ws] client disconnected (total: {total})")
 
 
@@ -285,7 +443,7 @@ def _ws_broadcaster():
     """后台线程：并行获取 system + media，定时广播。"""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     _executor = ThreadPoolExecutor(max_workers=4)
-    _nug_counter = 0
+    _vibe_counter = 0
     while True:
         t0 = time.time()
         try:
@@ -321,16 +479,46 @@ def _ws_broadcaster():
         time.sleep(max(0, 1.0 - elapsed))
 
 
+def _ws_spectrum_broadcaster():
+    """Push spectrum frames at each visible client's requested cadence."""
+    while True:
+        t0 = time.monotonic()
+        try:
+            target_fps = _ws_spectrum_target_fps()
+            if target_fps:
+                _ws_broadcast_spectrum(
+                    {"type": "spectrum", "data": get_spectrum_frame()},
+                    now=t0,
+                )
+        except Exception as e:
+            logger.error(f"[ws] spectrum broadcast error: {e}")
+            target_fps = 0
+        # With only a 24fps ARM kiosk connected, neither JSON serialization nor
+        # WebSocket sends run at 60fps. Mixed clients still receive their own caps.
+        elapsed = time.monotonic() - t0
+        interval = 1.0 / target_fps if target_fps else 0.25
+        time.sleep(max(0.0, interval - elapsed))
+
+
 def start_background_threads_once() -> bool:
     """启动后台线程；多次调用只会真正启动一次。"""
-    global _ws_broadcaster_started
+    global _ws_broadcaster_started, _ws_spectrum_started
+    started = False
     with _ws_broadcaster_lock:
-        if _ws_broadcaster_started:
-            return False
-        t = _ws_threading.Thread(target=_ws_broadcaster, daemon=True, name="ws-broadcaster")
-        t.start()
-        _ws_broadcaster_started = True
-        return True
+        if not _ws_broadcaster_started:
+            t = _ws_threading.Thread(target=_ws_broadcaster, daemon=True, name="ws-broadcaster")
+            t.start()
+            _ws_broadcaster_started = True
+            started = True
+    with _ws_spectrum_lock:
+        if not _ws_spectrum_started:
+            t2 = _ws_threading.Thread(
+                target=_ws_spectrum_broadcaster, daemon=True, name="ws-spectrum"
+            )
+            t2.start()
+            _ws_spectrum_started = True
+            started = True
+    return started
 
 _DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN") or secrets.token_urlsafe(24)
 
@@ -466,6 +654,46 @@ def api_settings_reload_clients():
     return jsonify({"ok": True})
 
 
+@app.route("/api/settings/clients")
+def api_settings_clients():
+    """返回当前所有 WebSocket 客户端列表（仅回环）。"""
+    require_loopback_access()
+    clients = []
+    with _ws_clients_lock:
+        for ws, state in _ws_client_states.items():
+            clients.append({
+                "id": state.get("id", "?"),
+                "page": state.get("page", "unknown"),
+                "connected": ws.connected,
+            })
+    return jsonify({"clients": clients})
+
+
+@app.route("/api/settings/clients/<client_id>/navigate", methods=["POST"])
+def api_settings_navigate_client(client_id):
+    """向指定客户端发送页面切换指令（仅回环）。"""
+    require_loopback_access()
+    require_post_protection()
+    payload = request.get_json(silent=True) or {}
+    target_page = payload.get("page")
+    if target_page not in ("dashboard", "music"):
+        return jsonify({"error": {"message": "page 必须是 dashboard 或 music"}}), 400
+    target_url = "/" if target_page == "dashboard" else "/music"
+    sent = False
+    with _ws_clients_lock:
+        for ws, state in _ws_client_states.items():
+            if state.get("id") == client_id:
+                try:
+                    ws.send(json.dumps({"type": "navigate", "page": target_page, "url": target_url}, ensure_ascii=False))
+                    sent = True
+                except Exception:
+                    return jsonify({"error": {"message": "发送失败，客户端可能已断开"}}), 500
+                break
+    if not sent:
+        return jsonify({"error": {"message": "未找到该客户端"}}), 404
+    return jsonify({"ok": True})
+
+
 @app.route("/api/settings/reveal", methods=["POST"])
 def api_settings_reveal():
     """按用户明确操作读取一个敏感字段。"""
@@ -537,6 +765,11 @@ def index():
     return send_from_directory("static", "dashboard.html")
 
 
+@app.route("/music")
+def music_stage():
+    """全屏音乐舞台：歌词 + 可选 loopback 频谱。"""
+    return send_from_directory("static", "music.html")
+
 
 @app.route("/api/data")
 def api_data():
@@ -569,6 +802,21 @@ def api_media():
     return jsonify(get_media_info())
 
 
+@app.route("/api/media/cover")
+def api_media_cover():
+    """返回当前曲目封面图（SMTC thumbnail）。无封面时 404。"""
+    data, mime = get_cover_bytes()
+    if not data:
+        abort(404)
+    from flask import Response
+    resp = Response(data, mimetype=mime or "image/jpeg")
+    # The URL already carries a cover version, but proxies/browser caches can
+    # still retain an old thumbnail while a new track arrives. Fetch each
+    # identity directly so the stage never paints the previous album again.
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    return resp
+
+
 @app.route("/api/media/reload", methods=["POST"])
 def api_media_reload():
     """清除当前歌曲的歌词缓存并重新获取。"""
@@ -585,6 +833,126 @@ def api_media_offset():
     val = normalize_lyric_offset(request.get_json(silent=True) or {})
     save_lyric_offset(val)
     return jsonify({"offset": val})
+
+
+@app.route("/api/music/offset", methods=["GET", "POST"])
+def api_music_offset():
+    """音乐舞台频谱/鼓点偏移：GET 读取，POST 设置（支持绝对值或 delta_*）。"""
+    if request.method == "GET":
+        return jsonify(load_music_offsets())
+    require_post_protection()
+    offsets = save_music_offsets(request.get_json(silent=True) or {})
+    _ws_broadcast({"type": "music_offset", "data": offsets})
+    return jsonify(offsets)
+
+
+@app.route("/api/music/capture-devices")
+def api_music_capture_devices():
+    """返回可选频谱采集设备（Loopback 优先）。settings 页专用刷新接口。"""
+    require_loopback_access()
+    advanced = str(request.args.get("advanced") or "").lower() in {"1", "true", "yes"}
+    devices = list_capture_devices(include_advanced=advanced)
+    # Always return JSON with explicit utf-8; include current selection + live status snippet.
+    status = get_spectrum_status()
+    payload = {
+        "devices": devices,
+        "current": load_music_offsets().get("capture_device") or "auto",
+        "status": {
+            "available": status.get("available"),
+            "device": status.get("device"),
+            "error": status.get("error"),
+            "has_audio_stack": status.get("has_audio_stack"),
+            "has_soundcard": bool(status.get("has_audio_stack")),
+        },
+        "loopback_count": sum(1 for d in devices if d.get("kind") == "loopback"),
+    }
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.route("/api/music/capture-devices/refresh", methods=["POST"])
+def api_music_capture_devices_refresh():
+    """强制重枚举并可选重开采集。"""
+    require_loopback_access()
+    require_post_protection()
+    payload = request.get_json(silent=True) or {}
+    if "capture_device" in payload:
+        save_music_offsets({"capture_device": payload.get("capture_device")})
+    else:
+        request_capture_restart("manual refresh")
+    devices = list_capture_devices(include_advanced=bool(payload.get("advanced")))
+    return jsonify({
+        "ok": True,
+        "devices": devices,
+        "current": load_music_offsets().get("capture_device") or "auto",
+        "loopback_count": sum(1 for d in devices if d.get("kind") == "loopback"),
+        "status": get_spectrum_status(),
+    })
+
+
+@app.route("/api/music/spectrum")
+def api_music_spectrum():
+    """最新频谱帧（REST 兜底；真正高频推送走 WebSocket spectrum 订阅）。"""
+    return jsonify(get_spectrum_frame())
+
+
+@app.route("/api/music/spectrum/status")
+def api_music_spectrum_status():
+    """频谱采集栈与订阅状态。"""
+    return jsonify(get_spectrum_status())
+
+
+@app.route("/api/music/spectrum/acquire", methods=["POST"])
+def api_music_spectrum_acquire():
+    """手动增加频谱兴趣计数（一般由 /music 的 WS subscribe 自动处理）。"""
+    require_post_protection()
+    acquire_spectrum()
+    return jsonify(get_spectrum_status())
+
+
+@app.route("/api/music/spectrum/release", methods=["POST"])
+def api_music_spectrum_release():
+    """手动减少频谱兴趣计数；页面关闭时也可用 sendBeacon 调用。
+
+    释放是幂等/安全操作，允许无 token 的 sendBeacon，避免页面卸载时泄漏订阅计数。
+    """
+    release_spectrum()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/music/calibrate", methods=["GET", "POST"])
+def api_music_calibrate():
+    """鼓点一键校准。
+
+    GET  → 状态
+    POST body:
+      action: start | tap | apply | cancel
+      client_ts: optional unix seconds from browser for tap
+    """
+    if request.method == "GET":
+        return jsonify(get_calibration_status())
+
+    require_post_protection()
+    payload = request.get_json(silent=True) or {}
+    action = str(payload.get("action") or "start").lower()
+    if action == "start":
+        result = start_beat_calibration(float(payload.get("duration_s") or 6))
+        _ws_broadcast({"type": "music_offset", "data": load_music_offsets()})
+        return jsonify(result)
+    if action == "tap":
+        result = record_calibration_tap(payload.get("client_ts"))
+        if result.get("applied"):
+            _ws_broadcast({"type": "music_offset", "data": load_music_offsets()})
+        return jsonify(result)
+    if action == "apply":
+        result = apply_calibration_suggestion()
+        if result.get("ok"):
+            _ws_broadcast({"type": "music_offset", "data": load_music_offsets()})
+        return jsonify(result)
+    if action == "cancel":
+        return jsonify(cancel_beat_calibration())
+    return jsonify({"ok": False, "error": "unknown action"}), 400
 
 
 @app.route("/api/vibe", methods=["GET", "POST"])
@@ -723,6 +1091,9 @@ def main():
             str(Path(__file__).parent / "static" / "dashboard.html"),
             str(Path(__file__).parent / "static" / "dashboard.css"),
             str(Path(__file__).parent / "static" / "dashboard.js"),
+            str(Path(__file__).parent / "static" / "music.html"),
+            str(Path(__file__).parent / "static" / "music.css"),
+            str(Path(__file__).parent / "static" / "music.js"),
             str(Path(__file__).parent / "static" / "settings.html"),
             str(Path(__file__).parent / "static" / "settings.css"),
             str(Path(__file__).parent / "static" / "settings.js"),
