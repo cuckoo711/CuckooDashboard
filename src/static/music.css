@@ -188,11 +188,12 @@ body.has-cover {
 }
 
 .topbar {
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: space-between;
     min-height: 26px;
-    opacity: 0.34;
+    opacity: 1;
 }
 .back {
     color: rgba(232, 238, 248, 0.68);
@@ -201,12 +202,27 @@ body.has-cover {
     font-weight: 600;
     letter-spacing: 0.14em;
     text-transform: uppercase;
+    opacity: 0.34;
+}
+.stage-clock {
+    position: absolute;
+    left: 50%;
+    transform: translate(-50%, 5px);
+    color: rgba(246, 250, 255, 0.72);
+    font-size: clamp(16px, 1.75vw, 24px);
+    font-weight: 650;
+    letter-spacing: 0.12em;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    text-shadow: 0 0 18px rgba(var(--cover-rgb), 0.18), 0 3px 12px rgba(0, 0, 0, 0.25);
+    pointer-events: none;
 }
 .top-meta {
     display: flex;
     align-items: center;
     gap: 14px;
     justify-content: flex-end;
+    opacity: 0.34;
 }
 .badge {
     padding: 0;
@@ -309,7 +325,7 @@ body.has-cover {
 .layer-spectrum {
     position: fixed;
     right: 0;
-    bottom: clamp(8px, 2.2vh, 22px);
+    bottom: 0;
     left: 0;
     z-index: 5;
     display: flex;
@@ -317,7 +333,7 @@ body.has-cover {
     height: max(140px, 24vh);
     min-height: 0;
     max-height: none;
-    padding: 0 clamp(12px, 2.4vw, 28px);
+    padding: 0;
     align-items: flex-end;
     justify-content: center;
     pointer-events: none;
@@ -446,10 +462,10 @@ body.has-cover {
     position: relative;
     width: min(1200px, 91vw);
     min-height: clamp(176px, 24vh, 268px);
-    padding: 28px 72px 40px 0;
+    padding: 28px 72px 40px 20px;
     text-align: left;
-    /* Stage offset: down 20px, left 20px, slight 3D depth. */
-    transform: translate3d(-20px, 20px, 24px);
+    /* Stage offset: down 20px, left 5px, slight 3D depth. */
+    transform: translate3d(-5px, 20px, 24px);
     overflow: visible;
 }
 /* Dual-line track: a fixed horizontal midline anchors both rows so active
@@ -477,14 +493,7 @@ body.cinema .layer-lyric {
     overflow: visible;
 }
 .lyric-kicker {
-    display: inline-flex;
-    align-items: center;
-    gap: 9px;
-    margin-bottom: clamp(12px, 1.6vh, 19px);
-    color: rgba(224, 232, 246, 0.37);
-    font-size: 9px;
-    font-weight: 650;
-    letter-spacing: 0.19em;
+    display: none;
 }
 .lyric-kicker i {
     display: block;
@@ -623,7 +632,7 @@ body.cinema .layer-lyric {
 
 .spectrum-wrap {
     position: relative;
-    width: min(1320px, 97vw);
+    width: 100%;
     height: 100%;
     min-height: 0;
     max-height: none;
@@ -697,12 +706,16 @@ body.cinema .layer-lyric {
 }
 .track-stage .artist {
     overflow: hidden;
-    margin-top: 5px;
-    color: rgba(220, 228, 240, 0.5);
-    font-size: clamp(12px, 1.15vw, 16px);
-    letter-spacing: 0.08em;
+    display: inline-block;
+    margin-top: 7px;
+    padding: 2px 8px 3px 0;
+    color: rgba(242, 247, 255, 0.78);
+    font-size: clamp(14px, 1.35vw, 20px);
+    font-weight: 620;
+    letter-spacing: 0.105em;
     text-overflow: ellipsis;
     white-space: nowrap;
+    text-shadow: 0 0 16px rgba(var(--cover-rgb), 0.28), 0 3px 12px rgba(0, 0, 0, 0.32);
 }
 .bottom.minimal {
     display: grid;
@@ -758,33 +771,38 @@ body.cinema .layer-lyric {
 
 .corner-menu {
     position: fixed;
+    top: 33px;
     right: 18px;
-    bottom: 20px;
+    bottom: auto;
     z-index: 22;
 }
 .menu-dots {
     width: 38px;
     height: 38px;
-    border: 1px solid rgba(235, 241, 250, 0.16);
+    border: 1px solid rgba(235, 241, 250, 0.08);
     border-radius: 50%;
-    color: rgba(247, 250, 255, 0.78);
-    background: rgba(9, 12, 17, 0.38);
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    color: rgba(247, 250, 255, 0.42);
+    background: rgba(9, 12, 17, 0.14);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.025);
     cursor: pointer;
     font-size: 21px;
     line-height: 1;
+    opacity: 0.46;
     backdrop-filter: blur(15px) saturate(0.8);
-    transition: border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+    transition: opacity 0.2s ease, border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
 }
-.menu-dots:hover {
-    border-color: rgba(235, 241, 250, 0.38);
-    color: #fff;
-    background: rgba(240, 246, 255, 0.08);
+.menu-dots:hover,
+.menu-dots:focus-visible {
+    opacity: 0.82;
+    border-color: rgba(235, 241, 250, 0.26);
+    color: rgba(255, 255, 255, 0.78);
+    background: rgba(240, 246, 255, 0.055);
 }
 .menu-panel {
     position: absolute;
+    top: 48px;
     right: 0;
-    bottom: 48px;
+    bottom: auto;
     width: 236px;
     padding: 14px;
     border: 1px solid rgba(235, 241, 251, 0.12);
@@ -895,7 +913,7 @@ body.performance-lite .scene {
 }
 body.performance-lite .layer-spectrum {
     transform: none;
-    bottom: 6px;
+    bottom: 0;
     height: max(120px, 22vh);
     max-height: none;
 }
@@ -940,8 +958,8 @@ body.performance-lite .lyric-slot.is-next {
     .layer-spectrum {
         height: max(120px, 23vh);
         max-height: none;
-        bottom: 6px;
-        padding: 0 8px;
+        bottom: 0;
+        padding: 0;
     }
     .cinema-center { grid-template-rows: minmax(106px, 0.56fr) minmax(242px, 1.5fr); }
     .visual-core { width: clamp(145px, 39vw, 208px); height: clamp(145px, 39vw, 208px); }
@@ -959,12 +977,13 @@ body.performance-lite .lyric-slot.is-next {
     .spectrum-wrap { width: 100%; height: 100%; }
     .track-stage { top: 40px; left: 20px; width: calc(100vw - 40px); }
     .bottom.minimal { width: min(570px, 76vw); margin: 0 auto; text-align: center; }
-    .corner-menu { right: 12px; bottom: 20px; }
+    .corner-menu { top: 27px; right: 12px; bottom: auto; }
 }
 
 @media (max-width: 520px) {
-    .topbar { opacity: 0.24; }
+    .topbar { opacity: 1; }
     .top-meta .badge { display: none; }
+    .stage-clock { font-size: clamp(15px, 5vw, 20px); }
     .scene { width: 100vw; }
     .cinema-center { grid-template-rows: minmax(94px, 0.5fr) minmax(214px, 1.55fr); }
     .visual-core { width: min(42vw, 174px); height: min(42vw, 174px); }
@@ -982,12 +1001,12 @@ body.performance-lite .lyric-slot.is-next {
     .layer-spectrum {
         height: max(100px, 22vh);
         max-height: none;
-        bottom: 4px;
-        padding: 0 6px;
+        bottom: 0;
+        padding: 0;
     }
     .spectrum-wrap { height: 100%; }
     .track-stage .title { font-size: clamp(16px, 5vw, 22px); }
-    .track-stage .artist { font-size: 11px; }
+    .track-stage .artist { font-size: clamp(12px, 3.8vw, 16px); }
     .spectrum-caption { right: 6%; }
     .bottom.minimal { width: 72vw; }
     .title { font-size: 10px; }

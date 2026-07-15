@@ -44,6 +44,16 @@ function fmtTime(sec) {
     var s = sec % 60;
     return m + ':' + String(s).padStart(2, '0');
 }
+function updateStageClock() {
+    var el = document.getElementById('stageClock');
+    if (!el) return;
+    var now = new Date();
+    var text = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    if (el.textContent !== text) {
+        el.textContent = text;
+        el.setAttribute('datetime', text);
+    }
+}
 function fmtMs(ms) {
     var n = Math.round(ms || 0);
     return (n >= 0 ? '+' : '') + n + 'ms';
@@ -113,6 +123,8 @@ var _smoothDisplayPeaks = [];
 var _ringAngle = 0;
 var _pulse = 0;
 var _coverTone = { r: 146, g: 162, b: 224 };
+var _spectrumTone = { r: 89, g: 98, b: 130 };
+var _blockTone = { r: 109, g: 93, b: 59 };
 var _visualProfile = null;
 var _lastVisualRenderAt = 0;
 var _lastSpectrumRenderAt = 0;
@@ -224,24 +236,87 @@ function loadOffsets() {
 }
 function applyCoverPaletteFromData(data, token) {
     if (!data) return;
-    var rgb = data.cover_palette_rgb;
-    if (!Array.isArray(rgb) || rgb.length < 3) return;
-    var r = Math.max(0, Math.min(255, Math.round(Number(rgb[0]) || 0)));
-    var g = Math.max(0, Math.min(255, Math.round(Number(rgb[1]) || 0)));
-    var b = Math.max(0, Math.min(255, Math.round(Number(rgb[2]) || 0)));
-    var paintToken = (token || '') + '|' + r + ',' + g + ',' + b;
+    function rgbArray(src, fallback) {
+        fallback = fallback || [146, 162, 224];
+        if (!Array.isArray(src) || src.length < 3) src = fallback;
+        return [
+            Math.max(0, Math.min(255, Math.round(Number(src[0]) || 0))),
+            Math.max(0, Math.min(255, Math.round(Number(src[1]) || 0))),
+            Math.max(0, Math.min(255, Math.round(Number(src[2]) || 0)))
+        ];
+    }
+    function clamp01(v) { return Math.max(0, Math.min(1, Number(v) || 0)); }
+    function rgbToHsl(rgb) {
+        var r = rgb[0] / 255, g = rgb[1] / 255, b = rgb[2] / 255;
+        var max = Math.max(r, g, b), min = Math.min(r, g, b);
+        var h = 0, s = 0, l = (max + min) / 2;
+        if (max !== min) {
+            var d = max - min;
+            s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+            if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+            else if (max === g) h = (b - r) / d + 2;
+            else h = (r - g) / d + 4;
+            h /= 6;
+        }
+        return { h: h, s: s, l: l };
+    }
+    function hslToRgb(h, s, l) {
+        h = ((h % 1) + 1) % 1; s = clamp01(s); l = clamp01(l);
+        function hue2rgb(p, q, t) {
+            if (t < 0) t += 1; if (t > 1) t -= 1;
+            if (t < 1 / 6) return p + (q - p) * 6 * t;
+            if (t < 1 / 2) return q;
+            if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+            return p;
+        }
+        var r, g, b;
+        if (s === 0) r = g = b = l;
+        else {
+            var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+            var p = 2 * l - q;
+            r = hue2rgb(p, q, h + 1 / 3); g = hue2rgb(p, q, h); b = hue2rgb(p, q, h - 1 / 3);
+        }
+        return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+    }
+    function deriveSpectrum(theme) {
+        var hsl = rgbToHsl(theme);
+        if (hsl.s < 0.08) {
+            var fallback = rgbToHsl([146, 162, 224]);
+            hsl.h = fallback.h; hsl.s = Math.max(hsl.s, fallback.s * 0.6);
+        }
+        return hslToRgb(
+            hsl.h + 0.5,
+            Math.max(0.18, Math.min(0.42, hsl.s * 0.62 + 0.08)),
+            Math.max(0.32, Math.min(0.52, 0.42 + (hsl.l - 0.5) * 0.32))
+        );
+    }
+    function deriveContrast(spectrum) {
+        var hsl = rgbToHsl(spectrum);
+        return hslToRgb(
+            hsl.h + 0.5,
+            Math.max(0.34, Math.min(0.68, hsl.s * 1.18 + 0.08)),
+            hsl.l < 0.48 ? 0.72 : 0.30
+        );
+    }
+    var themeRgb = rgbArray(data.cover_theme_rgb || data.cover_palette_rgb, [146, 162, 224]);
+    var spectrumRgb = rgbArray(data.spectrum_rgb, deriveSpectrum(themeRgb));
+    var blockRgb = rgbArray(data.spectrum_block_rgb || data.cover_inverse_rgb, deriveContrast(spectrumRgb));
+    var r = themeRgb[0], g = themeRgb[1], b = themeRgb[2];
+    var paintToken = (token || '') + '|theme=' + themeRgb.join(',') + '|spectrum=' + spectrumRgb.join(',') + '|block=' + blockRgb.join(',');
     if (paintToken === _lastPaletteToken) return;
     function toRgba(src, alpha) {
-        if (!Array.isArray(src) || src.length < 3) return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
-        return 'rgba(' + Math.max(0, Math.min(255, Math.round(Number(src[0]) || r))) + ',' +
-            Math.max(0, Math.min(255, Math.round(Number(src[1]) || g))) + ',' +
-            Math.max(0, Math.min(255, Math.round(Number(src[2]) || b))) + ',' + alpha + ')';
+        var c = rgbArray(src, themeRgb);
+        return 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + alpha + ')';
     }
     _coverTone = { r: r, g: g, b: b };
+    _spectrumTone = { r: spectrumRgb[0], g: spectrumRgb[1], b: spectrumRgb[2] };
+    _blockTone = { r: blockRgb[0], g: blockRgb[1], b: blockRgb[2] };
     document.documentElement.style.setProperty('--cover-rgb', r + ', ' + g + ', ' + b);
-    document.documentElement.style.setProperty('--cover-1', toRgba(data.cover_palette_1 || rgb, 0.13));
-    document.documentElement.style.setProperty('--cover-2', toRgba(data.cover_palette_2 || rgb, 0.09));
-    document.documentElement.style.setProperty('--cover-3', toRgba(data.cover_palette_3 || rgb, 0.1));
+    document.documentElement.style.setProperty('--spectrum-rgb', spectrumRgb.join(', '));
+    document.documentElement.style.setProperty('--spectrum-block-rgb', blockRgb.join(', '));
+    document.documentElement.style.setProperty('--cover-1', toRgba(data.cover_palette_1 || themeRgb, 0.13));
+    document.documentElement.style.setProperty('--cover-2', toRgba(data.cover_palette_2 || themeRgb, 0.09));
+    document.documentElement.style.setProperty('--cover-3', toRgba(data.cover_palette_3 || themeRgb, 0.1));
     _lastPaletteToken = paintToken;
     invalidateSpectrumPaintCache();
 }
@@ -844,38 +919,29 @@ function easeBins(src, dest, attack, release) {
     return dest;
 }
 function ensureSpectrumPaintCache(w, h) {
-    var key = [w, h, _visualProfile.lite ? 1 : 0, _coverTone.r, _coverTone.g, _coverTone.b].join(':');
+    var key = [
+        w, h, _visualProfile.lite ? 1 : 0,
+        _coverTone.r, _coverTone.g, _coverTone.b,
+        _spectrumTone.r, _spectrumTone.g, _spectrumTone.b,
+        _blockTone.r, _blockTone.g, _blockTone.b
+    ].join(':');
     if (_spectrumPaintCache && _spectrumPaintCache.key === key) return _spectrumPaintCache;
-    var ink = { r: Math.round(26 + _coverTone.r * 0.43), g: Math.round(28 + _coverTone.g * 0.43), b: Math.round(34 + _coverTone.b * 0.43) };
+    var ink = { r: Math.round(_spectrumTone.r), g: Math.round(_spectrumTone.g), b: Math.round(_spectrumTone.b) };
     function color(alpha, lift) {
-        return 'rgba(' + Math.round(ink.r + (240 - ink.r) * (lift || 0)) + ',' +
-            Math.round(ink.g + (246 - ink.g) * (lift || 0)) + ',' +
-            Math.round(ink.b + (255 - ink.b) * (lift || 0)) + ',' + alpha + ')';
+        lift = lift || 0;
+        // Preserve the backend hue. The previous lift-to-white made different
+        // cover colors converge into nearly the same pale spectrum.
+        return 'rgba(' + Math.round(ink.r + (236 - ink.r) * lift * 0.38) + ',' +
+            Math.round(ink.g + (242 - ink.g) * lift * 0.38) + ',' +
+            Math.round(ink.b + (255 - ink.b) * lift * 0.38) + ',' + alpha + ')';
     }
-    // Peak caps use the inverse of the bar/cover tone so falling blocks pop
+    // Peak caps use backend-provided inverse/complement so falling blocks pop
     // against the spectrum columns instead of blending into them.
     var inv = {
-        r: 255 - Math.round(_coverTone.r),
-        g: 255 - Math.round(_coverTone.g),
-        b: 255 - Math.round(_coverTone.b)
+        r: Math.round(_blockTone.r),
+        g: Math.round(_blockTone.g),
+        b: Math.round(_blockTone.b)
     };
-    // Lift very dark inverses slightly, crush near-white ones a bit so the cap
-    // stays a saturated "opposite" color rather than pure black/white chalk.
-    function invertTone(c) {
-        if (c < 48) return Math.round(48 + c * 0.35);
-        if (c > 220) return Math.round(190 + (c - 220) * 0.4);
-        return c;
-    }
-    inv.r = invertTone(inv.r); inv.g = invertTone(inv.g); inv.b = invertTone(inv.b);
-    // Prefer a livelier complement if inversion collapses toward grey.
-    var invSat = Math.max(inv.r, inv.g, inv.b) - Math.min(inv.r, inv.g, inv.b);
-    if (invSat < 28) {
-        inv = {
-            r: Math.round(255 - ink.r * 0.55),
-            g: Math.round(255 - ink.g * 0.55),
-            b: Math.round(255 - ink.b * 0.55)
-        };
-    }
     function invColor(alpha, lift) {
         lift = lift || 0;
         var r = Math.round(inv.r + (255 - inv.r) * lift * 0.35);
@@ -1188,6 +1254,14 @@ document.addEventListener('visibilitychange', handleStageVisibilityChange);
 window.addEventListener('pagehide', stopFrameLoop);
 window.addEventListener('beforeunload', stopFrameLoop);
 document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' || e.code === 'Escape') {
+        var panel = document.getElementById('menuPanel');
+        if (panel && !panel.hidden) panel.hidden = true;
+        var active = document.activeElement;
+        if (active && active !== document.body && active !== document.documentElement && typeof active.blur === 'function') active.blur();
+        e.preventDefault();
+        return;
+    }
     if (e.target && /input|textarea/i.test(e.target.tagName)) return;
     if (!e.shiftKey && (e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'ArrowUp' || e.code === 'ArrowDown')) {
         e.preventDefault();
@@ -1218,6 +1292,8 @@ function finishStageBoot() {
     if (_ws && _ws.readyState === 1) updateSpectrumSubscription(true); else connectWs();
     document.body.classList.remove('stage-booting'); document.body.classList.add('stage-ready');
 }
+updateStageClock();
+setInterval(updateStageClock, 1000);
 connectWs();
 requestAnimationFrame(function () { requestAnimationFrame(function () { setTimeout(finishStageBoot, 40); }); });
 setInterval(function () {

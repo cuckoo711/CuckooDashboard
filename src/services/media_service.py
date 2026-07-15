@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import colorsys
 import io
 import json
 import logging
@@ -47,6 +48,11 @@ _DEFAULT_COVER_PALETTE = {
     "cover_palette_1": [146, 162, 224],
     "cover_palette_2": [116, 132, 198],
     "cover_palette_3": [184, 198, 235],
+    # Backend-owned visual colors consumed directly by /music.
+    "cover_theme_rgb": [146, 162, 224],
+    "cover_inverse_rgb": [109, 93, 59],
+    "spectrum_rgb": [89, 98, 130],
+    "spectrum_block_rgb": [109, 93, 59],
 }
 _cover_art_lock = threading.Lock()
 _cover_art_cache = {
@@ -263,14 +269,93 @@ def _current_cover_identity() -> str:
     return key
 
 
-def _clone_cover_palette(palette: dict | None = None) -> dict:
-    base = palette or _DEFAULT_COVER_PALETTE
+def _clamp_rgb_channel(value) -> int:
+    try:
+        number = int(round(float(value)))
+    except (TypeError, ValueError):
+        number = 0
+    return max(0, min(255, number))
+
+
+def _normalize_rgb(value, fallback: list[int] | tuple[int, int, int]) -> list[int]:
+    if not isinstance(value, (list, tuple)) or len(value) < 3:
+        value = fallback
+    return [_clamp_rgb_channel(value[0]), _clamp_rgb_channel(value[1]), _clamp_rgb_channel(value[2])]
+
+
+def _rgb_to_hls(rgb) -> tuple[float, float, float]:
+    r, g, b = _normalize_rgb(rgb, _DEFAULT_COVER_PALETTE["cover_theme_rgb"])
+    return colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
+
+
+def _hls_to_rgb(hue: float, lightness: float, saturation: float) -> list[int]:
+    r, g, b = colorsys.hls_to_rgb(hue % 1.0, max(0.0, min(1.0, lightness)), max(0.0, min(1.0, saturation)))
+    return [_clamp_rgb_channel(r * 255), _clamp_rgb_channel(g * 255), _clamp_rgb_channel(b * 255)]
+
+
+def _spectrum_rgb_from_theme(theme_rgb) -> list[int]:
+    """Muted midpoint toward the theme complement for spectrum bars.
+
+    Pure complement is too loud, while using the theme directly is too similar.
+    Keep the complementary hue but pull saturation/lightness toward the middle.
+    """
+    hue, lightness, saturation = _rgb_to_hls(theme_rgb)
+    if saturation < 0.08:
+        fallback_hue, _, fallback_saturation = _rgb_to_hls(_DEFAULT_COVER_PALETTE["cover_theme_rgb"])
+        hue = fallback_hue
+        saturation = max(saturation, fallback_saturation * 0.6)
+    spectrum_hue = (hue + 0.5) % 1.0
+    spectrum_saturation = max(0.18, min(0.42, saturation * 0.62 + 0.08))
+    spectrum_lightness = max(0.32, min(0.52, 0.42 + (lightness - 0.5) * 0.32))
+    return _hls_to_rgb(spectrum_hue, spectrum_lightness, spectrum_saturation)
+
+
+def _contrast_rgb_from_spectrum(spectrum_rgb) -> list[int]:
+    """High-contrast slider/peak color based on the chosen spectrum color."""
+    hue, lightness, saturation = _rgb_to_hls(spectrum_rgb)
+    contrast_hue = (hue + 0.5) % 1.0
+    contrast_saturation = max(0.34, min(0.68, saturation * 1.18 + 0.08))
+    contrast_lightness = 0.72 if lightness < 0.48 else 0.30
+    return _hls_to_rgb(contrast_hue, contrast_lightness, contrast_saturation)
+
+
+def _inverse_rgb_from_theme(theme_rgb, spectrum_rgb=None) -> list[int]:
+    spectrum = _normalize_rgb(spectrum_rgb, _spectrum_rgb_from_theme(theme_rgb))
+    return _contrast_rgb_from_spectrum(spectrum)
+
+
+def _augment_cover_palette(palette: dict | None = None) -> dict:
+    provided = palette if isinstance(palette, dict) else {}
+    base = dict(_DEFAULT_COVER_PALETTE)
+    base.update(provided)
+    theme = _normalize_rgb(
+        provided.get("cover_theme_rgb") or provided.get("cover_palette_rgb") or base.get("cover_theme_rgb"),
+        _DEFAULT_COVER_PALETTE["cover_theme_rgb"],
+    )
+    spectrum_source = provided.get("spectrum_rgb") if "spectrum_rgb" in provided else None
+    spectrum = _normalize_rgb(spectrum_source, _spectrum_rgb_from_theme(theme))
+    inverse_source = None
+    if "cover_inverse_rgb" in provided:
+        inverse_source = provided.get("cover_inverse_rgb")
+    elif "spectrum_block_rgb" in provided:
+        inverse_source = provided.get("spectrum_block_rgb")
+    inverse = _normalize_rgb(inverse_source, _inverse_rgb_from_theme(theme, spectrum))
+    block_source = provided.get("spectrum_block_rgb") if "spectrum_block_rgb" in provided else None
+    block = _normalize_rgb(block_source, inverse)
     return {
-        "cover_palette_rgb": list(base.get("cover_palette_rgb") or _DEFAULT_COVER_PALETTE["cover_palette_rgb"]),
-        "cover_palette_1": list(base.get("cover_palette_1") or _DEFAULT_COVER_PALETTE["cover_palette_1"]),
-        "cover_palette_2": list(base.get("cover_palette_2") or _DEFAULT_COVER_PALETTE["cover_palette_2"]),
-        "cover_palette_3": list(base.get("cover_palette_3") or _DEFAULT_COVER_PALETTE["cover_palette_3"]),
+        "cover_palette_rgb": _normalize_rgb(base.get("cover_palette_rgb"), theme),
+        "cover_palette_1": _normalize_rgb(base.get("cover_palette_1"), theme),
+        "cover_palette_2": _normalize_rgb(base.get("cover_palette_2"), theme),
+        "cover_palette_3": _normalize_rgb(base.get("cover_palette_3"), theme),
+        "cover_theme_rgb": theme,
+        "cover_inverse_rgb": inverse,
+        "spectrum_rgb": spectrum,
+        "spectrum_block_rgb": block,
     }
+
+
+def _clone_cover_palette(palette: dict | None = None) -> dict:
+    return _augment_cover_palette(palette)
 
 
 def _load_pillow_modules():
@@ -302,12 +387,15 @@ def _palette_payload(raw_colors: list[tuple[int, int, int]]) -> dict:
         round(c1[1] * 0.42 + 198 * 0.58),
         round(c1[2] * 0.42 + 235 * 0.58),
     ]
-    return {
+    spectrum = _spectrum_rgb_from_theme(themed)
+    return _augment_cover_palette({
         "cover_palette_rgb": themed,
         "cover_palette_1": list(c1),
         "cover_palette_2": list(c2),
         "cover_palette_3": list(c3),
-    }
+        "spectrum_rgb": spectrum,
+        "spectrum_block_rgb": _contrast_rgb_from_spectrum(spectrum),
+    })
 
 
 def _extract_palette_from_image(img) -> dict:
@@ -319,6 +407,7 @@ def _extract_palette_from_image(img) -> dict:
         sample = img.convert("RGBA")
         sample.thumbnail((48, 48), resample)
         buckets: dict[tuple[int, int, int], float] = {}
+        chroma_buckets: dict[tuple[int, int, int], float] = {}
         for r, g, b, a in sample.getdata():
             if a < 200:
                 continue
@@ -330,8 +419,18 @@ def _extract_palette_from_image(img) -> dict:
             key = (_bucket_channel(r), _bucket_channel(g), _bucket_channel(b))
             saturation = (hi - lo) / max(hi, 1)
             mid_luma_bonus = max(0.0, 1.0 - abs(lum - 142) / 142)
-            buckets[key] = buckets.get(key, 0.0) + 1.0 + saturation * 0.9 + mid_luma_bonus * 0.35
-        ranked = sorted(buckets.items(), key=lambda item: item[1], reverse=True)
+            # Count still matters, but do not let large black/white/grey areas
+            # drown the small saturated cover accent that users notice as a theme.
+            neutral_weight = 0.22 + saturation * 1.35 + mid_luma_bonus * 0.18
+            buckets[key] = buckets.get(key, 0.0) + neutral_weight
+            if saturation >= 0.16 and 34 <= lum <= 232:
+                chroma_weight = 0.2 + saturation * saturation * 7.0 + mid_luma_bonus * 0.45
+                chroma_buckets[key] = chroma_buckets.get(key, 0.0) + chroma_weight
+        primary = chroma_buckets if chroma_buckets else buckets
+        ranked = sorted(primary.items(), key=lambda item: item[1], reverse=True)
+        if len(ranked) < 3 and primary is not buckets:
+            seen = {color for color, _ in ranked}
+            ranked.extend(item for item in sorted(buckets.items(), key=lambda item: item[1], reverse=True) if item[0] not in seen)
         return _palette_payload([color for color, _ in ranked[:3]])
     except Exception as exc:
         logger.debug("[media] cover palette extraction failed: %s", exc)
@@ -362,9 +461,57 @@ def _build_ambient_cover(data: bytes, mime: str) -> tuple[bytes, str, dict]:
         return data, mime or "image/jpeg", _clone_cover_palette()
 
 
-def get_cover_palette(identity: str | None = None) -> dict:
-    """Return the cached backend palette; never fetch remote art from /api/media."""
+def _ensure_cover_art_cache(identity: str | None = None) -> dict:
+    """Generate ambient art + palette once per cover identity and return cache snapshot."""
     target = identity or _current_cover_identity()
+    if not target:
+        return {
+            "identity": "",
+            "ambient": b"",
+            "ambient_mime": "image/jpeg",
+            "palette": _clone_cover_palette(),
+        }
+    with _cover_art_lock:
+        if _cover_art_cache.get("identity") == target:
+            return {
+                "identity": str(_cover_art_cache.get("identity") or ""),
+                "ambient": bytes(_cover_art_cache.get("ambient") or b""),
+                "ambient_mime": str(_cover_art_cache.get("ambient_mime") or "image/jpeg"),
+                "palette": _clone_cover_palette(_cover_art_cache.get("palette")),
+            }
+
+    data, mime = get_cover_bytes()
+    if not data:
+        return {
+            "identity": "",
+            "ambient": b"",
+            "ambient_mime": mime or "image/jpeg",
+            "palette": _clone_cover_palette(),
+        }
+    ambient, ambient_mime, palette = _build_ambient_cover(data, mime)
+    palette = _clone_cover_palette(palette)
+    with _cover_art_lock:
+        _cover_art_cache.update({
+            "identity": target,
+            "ambient": ambient,
+            "ambient_mime": ambient_mime or "image/jpeg",
+            "palette": palette,
+        })
+    return {
+        "identity": target,
+        "ambient": ambient,
+        "ambient_mime": ambient_mime or "image/jpeg",
+        "palette": _clone_cover_palette(palette),
+    }
+
+
+def get_cover_palette(identity: str | None = None, ensure: bool = False) -> dict:
+    """Return backend cover colors; optionally generate them before replying."""
+    target = identity or _current_cover_identity()
+    if ensure:
+        cached = _ensure_cover_art_cache(target)
+        if cached.get("identity") == target:
+            return _clone_cover_palette(cached.get("palette"))
     with _cover_art_lock:
         if target and _cover_art_cache.get("identity") == target:
             return _clone_cover_palette(_cover_art_cache.get("palette"))
@@ -376,22 +523,10 @@ def get_cover_ambient_bytes() -> tuple[bytes | None, str]:
     identity = _current_cover_identity()
     if not identity:
         return None, "image/jpeg"
-    with _cover_art_lock:
-        if _cover_art_cache.get("identity") == identity and _cover_art_cache.get("ambient"):
-            return bytes(_cover_art_cache["ambient"]), str(_cover_art_cache.get("ambient_mime") or "image/jpeg")
-
-    data, mime = get_cover_bytes()
-    if not data:
-        return None, mime or "image/jpeg"
-    ambient, ambient_mime, palette = _build_ambient_cover(data, mime)
-    with _cover_art_lock:
-        _cover_art_cache.update({
-            "identity": identity,
-            "ambient": ambient,
-            "ambient_mime": ambient_mime or "image/jpeg",
-            "palette": palette,
-        })
-    return ambient, ambient_mime or "image/jpeg"
+    cached = _ensure_cover_art_cache(identity)
+    if cached.get("identity") == identity and cached.get("ambient"):
+        return bytes(cached["ambient"]), str(cached.get("ambient_mime") or "image/jpeg")
+    return None, str(cached.get("ambient_mime") or "image/jpeg")
 
 
 def _fetch_ypm_direct() -> dict | None:
@@ -787,6 +922,7 @@ def get_media_info() -> dict:
 
     if info.get("status") not in ("playing", "paused") or not info.get("title"):
         offset = _load_lyric_offset()
+        palette = _clone_cover_palette()
         return {
             "status": info.get("status") or "idle", "title": "", "artist": "", "album": "",
             "lyric": "", "next_lyric": "",
@@ -800,6 +936,7 @@ def get_media_info() -> dict:
             "lyric_line_progress": 0.0,
             "server_ts": time.time(),
             "has_cover": False, "cover_url": "", "cover_version": 0, "cover_identity": "",
+            **palette,
         }
 
     # refresh file cover if worker finished async extract
@@ -888,9 +1025,9 @@ def get_media_info() -> dict:
     elif has_file:
         cover_identity = str(cover.get("source_token") or cover_key)
 
-    # Prefer the cached backend palette. The ambient endpoint (or an earlier
-    # media request) fills the cache; until then the frontend keeps defaults.
-    palette = get_cover_palette(cover_identity)
+    # Generate palette in the media payload itself so /music can paint spectrum
+    # colors immediately; the ambient endpoint reuses the same cached result.
+    palette = get_cover_palette(cover_identity, ensure=has_cover)
 
     return {
         "status": info["status"],
@@ -925,6 +1062,10 @@ def get_media_info() -> dict:
         "cover_palette_1": palette.get("cover_palette_1"),
         "cover_palette_2": palette.get("cover_palette_2"),
         "cover_palette_3": palette.get("cover_palette_3"),
+        "cover_theme_rgb": palette.get("cover_theme_rgb"),
+        "cover_inverse_rgb": palette.get("cover_inverse_rgb"),
+        "spectrum_rgb": palette.get("spectrum_rgb"),
+        "spectrum_block_rgb": palette.get("spectrum_block_rgb"),
     }
 
 

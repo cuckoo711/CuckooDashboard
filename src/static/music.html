@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cuckoo Music Stage</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/music.css">
+    <link rel="stylesheet" href="/static/music.css?v=music-ui-7">
 </head>
 <body class="cinema">
 <canvas id="fxCanvas" aria-hidden="true"></canvas>
@@ -19,6 +19,7 @@
 <div class="stage">
     <header class="topbar">
         <a class="back" href="/" title="返回看板">← Dashboard</a>
+        <time class="stage-clock" id="stageClock" aria-label="当前时间">--:--</time>
         <div class="top-meta">
             <span class="badge" id="connBadge">连接中</span>
             <span class="badge soft" id="specBadge">频谱待机</span>
@@ -115,6 +116,6 @@
     </div>
 </div>
 
-<script src="/static/music.js"></script>
+<script src="/static/music.js?v=music-ui-6"></script>
 </body>
 </html>
