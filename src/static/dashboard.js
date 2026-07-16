@@ -476,55 +476,40 @@ function drawSystem(sys) {
     }
 }
 
-/* ── 磁盘（独立卡片，两列布局）── */
+/* ── 磁盘（按逻辑盘展示，两列布局）── */
 function drawDisks(disksRaw) {
     var el = document.getElementById('sysDisks');
     if (!el) return;
-    var disks = disksRaw.slice().sort(function(a,b){
-        var order = {'SSD':0, 'NVMe':0, 'HDD':1};
-        return (order[a.type]||2) - (order[b.type]||2);
+    var logical = [];
+    (disksRaw || []).forEach(function(dk){
+        (dk.partitions || []).forEach(function(pt){
+            var letter = String(pt.letter || '').replace(':', '').toUpperCase();
+            if (!letter) return;
+            logical.push({
+                letter: letter,
+                total: Number(pt.total || 0),
+                used: Number(pt.used || 0),
+                percent: Number(pt.percent || 0)
+            });
+        });
     });
-    var dh = '';
-    for (var j = 0; j < disks.length; j++) {
-            var dk = disks[j];
-            var raw = (dk.model||'').replace(/\s*\([A-Z]+\)\s*$/,'').trim();
-            var dn = raw
-                .replace(/KINGSTON\s+SNV2S/gi,'K SNV2')
-                .replace(/KINGSTON\s+SNVS/gi,'K SNVS')
-                .replace(/KINGSTON\s+/gi,'K ')
-                .replace(/Samsung\s+/gi,'S ')
-                .replace(/Western\s*Digital\s+/gi,'W ')
-                .replace(/WDC\s+/gi,'W ')
-                .replace(/Phison\s+/gi,'P ')
-                .replace(/ESR512GDLCG-E3C-4/gi,'512G NVMe')
-                .replace(/WD30EZRX-00D8PB0/gi,'3T HDD');
-            if (dn.length > 12) dn = dn.substring(0,10)+'..';
-            var typeTag = (dk.type === 'SSD' || dk.type === 'HDD') ? ' ['+dk.type+']' : '';
-
-            if (dk.total <= 0) {
-                dh += '<div class="dk-disk-group"><div class="dk-disk-hd"><span class="dk-disk-name">'+dn+'</span><span class="dk-disk-info" style="color:var(--text2)">未分配</span></div></div>';
-                continue;
-            }
-            var usedGB = (dk.used/1073741824).toFixed(0);
-            var totalGB = (dk.total/1073741824).toFixed(0);
-            var group = '<div class="dk-disk-group"><div class="dk-disk-hd"><span class="dk-disk-name" title="'+(dk.model||'')+typeTag+'">'+dn+'</span><span class="dk-disk-info">'+usedGB+'/'+totalGB+'G '+dk.percent+'%</span></div>';
-            var parts = dk.partitions || [];
-            if (parts.length > 0) {
-                for (var p = 0; p < parts.length; p++) {
-                    var pt = parts[p];
-                    var fc = pt.percent>=90?'danger':pt.percent>=70?'warn':'ok';
-                    group += '<div class="dk-part-row"><span class="dk-part-letter">'+pt.letter+'</span>' +
-                        '<div class="dk-part-track"><div class="dk-part-fill '+fc+'" style="width:'+pt.percent+'%"></div></div></div>';
-                }
-            } else {
-                var fc = dk.percent>=90?'danger':dk.percent>=70?'warn':'ok';
-                group += '<div class="dk-part-row"><span class="dk-part-letter"></span>' +
-                    '<div class="dk-part-track"><div class="dk-part-fill '+fc+'" style="width:'+dk.percent+'%"></div></div></div>';
-            }
-            group += '</div>';
-            dh += group;
+    logical.sort(function(a,b){
+        return a.letter.localeCompare(b.letter, 'en', {numeric:true, sensitivity:'base'});
+    });
+    if (!logical.length) {
+        el.innerHTML = '<div class="dk-empty">暂无逻辑盘数据</div>';
+        return;
     }
-    el.innerHTML = dh;
+    el.innerHTML = logical.map(function(dk){
+        var pct = Math.max(0, Math.min(100, Number(dk.percent || 0)));
+        var fc = pct >= 90 ? 'danger' : (pct >= 70 ? 'warn' : 'ok');
+        var usedGB = (dk.used / 1073741824).toFixed(0);
+        var totalGB = (dk.total / 1073741824).toFixed(0);
+        return '<div class="dk-drive-row" title="'+escHtml(dk.letter+': '+usedGB+'/'+totalGB+'G '+pct.toFixed(1)+'%')+'">' +
+            '<span class="dk-drive-letter">'+escHtml(dk.letter)+':</span>' +
+            '<div class="dk-part-track"><div class="dk-part-fill '+fc+'" style="width:'+pct+'%"></div></div>' +
+            '</div>';
+    }).join('');
 }
 
 /* ── 网络状态（仅上下行速度）── */
@@ -1007,7 +992,7 @@ function prepareDashboardCurrentMarquee(idx) {
     var inner = dashboardLineInner(lineEl);
     if (!lineEl || !inner) return false;
     var rawText = _dashboardLyricLineText || dashboardLyricTextForIndex(idx);
-    var longCandidate = rawText && dashboardEffectiveLyricChars(rawText) > 10;
+    var longCandidate = !!rawText;
     if (!longCandidate) {
         resetDashboardLineMarquee(lineEl);
         return false;
@@ -1023,21 +1008,24 @@ function prepareDashboardCurrentMarquee(idx) {
         lineEl.classList.remove('marquee-done');
     }
     var distance = measureDashboardLineScroll(lineEl, inner);
-    if (distance <= 1) {
-        resetDashboardLineMarquee(lineEl);
-        return false;
-    }
-    _dashboardLyricMarqueeActive = true;
-    if (changed) {
-        var token = String(idx) + '\u0001' + rawText;
-        lineEl.dataset.measureToken = token;
+    var token = String(idx) + '\u0001' + rawText;
+    lineEl.dataset.measureToken = token;
+    if (changed || distance <= 1) {
         requestAnimationFrame(function(){
             if (lineEl.dataset.measureToken !== token) return;
             if (inner.textContent !== displayText) inner.textContent = displayText;
-            measureDashboardLineScroll(lineEl, inner);
+            var nextDistance = measureDashboardLineScroll(lineEl, inner);
+            if (nextDistance <= 1) {
+                resetDashboardLineMarquee(lineEl);
+                return;
+            }
+            _dashboardLyricMarqueeActive = true;
             if (lineEl.classList.contains('marquee')) inner.style.transition = '';
+            updateDashboardLyricMarquee();
         });
     }
+    if (distance <= 1) return false;
+    _dashboardLyricMarqueeActive = true;
     updateDashboardLyricMarquee();
     return true;
 }

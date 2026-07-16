@@ -412,22 +412,17 @@
         .hw-main-sub { font-size:calc(var(--fs-body) * 0.9); color:var(--text2); text-shadow:var(--ts2); display:block; line-height:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:2px; }
         .hw-main-name { font-size:var(--fs-body); font-weight:600; color:var(--text); text-shadow:var(--ts2); display:block; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
-        /* ── 磁盘（左栏，行6-10，两列布局）── */
+        /* ── 磁盘（左栏，行6-10；仅逻辑盘，按盘符排序）── */
         .diskCard { grid-row:7/11; grid-column:1/9; }
-        .dk-section { display:grid; grid-template-columns:1fr 1fr; gap:2px 16px; align-content:center; }
-        .dk-disk-group { min-width:0; }
-        .dk-disk-hd { display:flex; align-items:baseline; gap:4px; margin-bottom:1px; margin-top:6px; }
-        .dk-disk-group:nth-child(-n+2) .dk-disk-hd { margin-top:0; }
-        .dk-disk-name { font-size:calc(var(--fs-body) * 0.9); color:var(--text2); text-shadow:var(--ts2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex-shrink:0; max-width:100px; }
-        .dk-disk-info { font-size:calc(var(--fs-body) * 0.8); color:var(--text2); text-shadow:var(--ts2); margin-left:auto; font-variant-numeric:tabular-nums; white-space:nowrap; flex-shrink:0; }
-        .dk-part-row { display:flex; align-items:center; gap:4px; margin-bottom:0; padding-left:8px; }
-        .dk-part-letter { width:14px; font-size:calc(var(--fs-body) * 0.9); color:var(--text2); text-shadow:var(--ts2); text-align:center; flex-shrink:0; font-weight:600; }
-        .dk-part-track { flex:1; height:4px; background:var(--track-bg); border-radius:3px; overflow:hidden; }
-        .dk-part-fill { height:100%; border-radius:3px; transition:width 2s ease; }
+        .dk-section { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px 16px; align-content:center; }
+        .dk-drive-row { min-width:0; display:flex; align-items:center; gap:7px; }
+        .dk-drive-letter { width:24px; font-size:calc(var(--fs-body) * 1.05); font-weight:800; color:var(--text); text-shadow:var(--ts2); flex-shrink:0; letter-spacing:0.03em; text-align:right; }
+        .dk-part-track { flex:1; min-width:0; height:6px; background:var(--track-bg); border-radius:999px; overflow:hidden; box-shadow:inset 0 0 0 1px rgba(255,255,255,0.04); }
+        .dk-part-fill { height:100%; border-radius:999px; transition:width 2s ease; }
         .dk-part-fill.ok { background:var(--disk-ok); }
         .dk-part-fill.warn { background:var(--disk-warn); }
         .dk-part-fill.danger { background:var(--disk-danger); }
-        .dk-part-info { font-size:calc(var(--fs-body) * 0.8); color:var(--text2); text-shadow:var(--ts2); font-variant-numeric:tabular-nums; white-space:nowrap; flex-shrink:0; }
+        .dk-empty { grid-column:1 / -1; align-self:center; justify-self:center; font-size:var(--fs-body); color:var(--text2); text-shadow:var(--ts2); }
 
         /* ── 歌词播放器（左栏，行12-16）── */
         .lyric-wrap { grid-row:11/17; grid-column:1/9; display:flex; flex-direction:column; }
