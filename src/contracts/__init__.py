@@ -25,9 +25,12 @@ from contracts.settings import (
 )
 from contracts.workspace import (
     DataSourceDescriptor,
+    WidgetConstraints,
     WidgetDefinition,
     WidgetInstance,
+    WidgetLayout,
     WorkspaceDefinition,
+    WorkspaceGrid,
 )
 
 __all__ = [
@@ -54,7 +57,10 @@ __all__ = [
     "SettingsSaveResult",
     "TokenPlanCapability",
     "UsageSource",
+    "WidgetConstraints",
     "WidgetDefinition",
     "WidgetInstance",
+    "WidgetLayout",
     "WorkspaceDefinition",
+    "WorkspaceGrid",
 ]

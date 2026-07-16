@@ -4,14 +4,16 @@ import { createNetworkComponent } from './components/network.js';
 import { createPlayerComponent, PLAYER_SINGLE_INSTANCE } from './components/player.js';
 import { createSystemInfoComponent } from './components/system-info.js';
 import { createUptimeComponent } from './components/uptime.js';
+import { createVibeComponent, VIBE_SINGLE_INSTANCE } from './components/vibe.js';
 
 const registrations = new Map([
-    ['builtin.system.info', { create: createSystemInfoComponent }],
-    ['builtin.system.network', { create: createNetworkComponent }],
-    ['builtin.system.uptime', { create: createUptimeComponent }],
-    ['builtin.system.disks', { create: createDisksComponent }],
-    ['builtin.media.player', { create: createPlayerComponent, singleInstance: PLAYER_SINGLE_INSTANCE }],
-    ['builtin.github.contributions', { create: createGitHubComponent }],
+    ['builtin.dashboard.system-info', { create: createSystemInfoComponent, singleInstance: true }],
+    ['builtin.dashboard.network', { create: createNetworkComponent, singleInstance: true }],
+    ['builtin.dashboard.uptime', { create: createUptimeComponent, singleInstance: true }],
+    ['builtin.dashboard.disks', { create: createDisksComponent, singleInstance: true }],
+    ['builtin.dashboard.vibe', { create: createVibeComponent, singleInstance: VIBE_SINGLE_INSTANCE }],
+    ['builtin.dashboard.player', { create: createPlayerComponent, singleInstance: PLAYER_SINGLE_INSTANCE }],
+    ['builtin.dashboard.github', { create: createGitHubComponent, singleInstance: true }],
 ]);
 
 export const BUILTIN_COMPONENT_TYPES = Object.freeze([...registrations.keys()]);

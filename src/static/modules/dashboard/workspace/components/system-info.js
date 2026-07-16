@@ -26,7 +26,7 @@ export function createSystemInfoComponent() {
 
     return {
         mount(context) {
-            if (root) return;
+            if (root) return root;
             root = document.createElement('div');
             root.className = 'card sysCard';
             root.id = 'sysCard';
@@ -38,6 +38,7 @@ export function createSystemInfoComponent() {
                 + '<div class="hw-main-item"><div class="skeleton" style="width:76px;height:76px;border-radius:50%;"></div><div class="skeleton" style="width:44px;height:9px;margin-top:6px;"></div></div>'
                 + '</div></div>';
             context.root.appendChild(root);
+            return root;
         },
         onData(system) {
             if (!root || !system) return;

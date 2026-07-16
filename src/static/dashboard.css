@@ -120,14 +120,32 @@
         .grid {
             width:100%; height:100%;
             display:grid;
-            grid-template-rows: 44px repeat(15, minmax(0,1fr));
-            grid-template-columns: repeat(16, minmax(0,1fr));
+            grid-template-rows:44px minmax(0,1fr);
+            grid-template-columns:minmax(0,1fr);
             gap:8px; padding:32px 34px 22px 44px;
         }
-        #workspaceHost { display:contents; }
+        #workspaceHost {
+            grid-row:2; grid-column:1;
+            min-width:0; min-height:0;
+            display:grid;
+            grid-template-columns:repeat(16, minmax(0,1fr));
+            grid-template-rows:repeat(15, minmax(0,1fr));
+            gap:8px;
+            position:relative;
+        }
+        .workspace-error {
+            grid-column:1 / -1; grid-row:1 / -1; z-index:20;
+            align-self:center; justify-self:center;
+            max-width:min(560px, 90%); padding:18px 22px;
+            border:1px solid var(--card-border); border-radius:14px;
+            background:var(--card-bg); box-shadow:var(--card-shadow);
+            color:var(--text); text-align:center; font-size:var(--fs-body);
+        }
+        .workspace-error strong { display:block; margin-bottom:6px; color:var(--crimson-light); font-size:calc(var(--fs-body) * 1.25); }
+        .workspace-error span { color:var(--text2); }
 
         /* ── Header ── */
-        .hdr { grid-row:1; grid-column:1/-1; display:grid; grid-template-columns:1fr auto 1fr; align-items:center; }
+        .hdr { grid-row:1; grid-column:1; display:grid; grid-template-columns:1fr auto 1fr; align-items:center; }
         .hdr-l { display:flex; align-items:center; gap:10px; }
         .hdr-l .mark {
             width:20px; height:20px; border:2px solid var(--crimson); border-radius:50%; position:relative;
@@ -333,8 +351,8 @@
             100% { background-position: 0% 50%; }
         }
 
-        /* ── 网络状态（系统信息右侧，行2-4）── */
-        .netCard { grid-row:2/5; grid-column:7/9; padding:6px 7px; }
+        /* ── 网络状态 ── */
+        .netCard { padding:6px 7px; }
         .net-rows { justify-content:center; gap:8px; }
         .net-row { display:flex; align-items:center; justify-content:space-between; gap:5px; flex-wrap:nowrap; white-space:nowrap; }
         .net-icon { font-size:calc(var(--fs-body) * 1.3); width:14px; text-align:center; flex-shrink:0; }
@@ -344,13 +362,12 @@
         .net-value { font-size:calc(var(--fs-body) * 1.5); font-weight:700; color:var(--text); font-variant-numeric:tabular-nums; white-space:nowrap; margin-left:auto; }
         .net-unit { font-size:calc(var(--fs-body) * 0.9); color:var(--text2); margin-left:2px; font-weight:400; }
 
-        /* ── 开机时间（网络下方，行5-6）── */
-        .uptimeCard { grid-row:5/7; grid-column:7/9; padding:6px 7px; }
+        /* ── 开机时间 ── */
+        .uptimeCard { padding:6px 7px; }
         .uptime-body { flex-direction:column; align-items:center; justify-content:center; }
         .uptime-val { font-size:calc(var(--fs-body) * 1.2); font-weight:700; color:var(--text); line-height:1.2; }
 
-        /* ── Token Plan & 今日消耗（右栏，行2-11）── */
-        .tokenCard { grid-row:2/11; grid-column:9/17; }
+        /* ── Token Plan & 今日消耗 ── */
         .today-top { display:flex; align-items:baseline; gap:8px; margin-bottom:4px; }
         .today-big { font-size:calc(var(--fs-body) * 2.6); font-weight:700; color:var(--crimson-light); line-height:1; }
         .today-big-sub { font-size:var(--fs-body); color:var(--text2); text-shadow:var(--ts2); }
@@ -393,8 +410,8 @@
         .bar-info .v { font-weight:600; color:var(--text); }
         .bar-info .s { color:var(--text2); text-shadow:var(--ts2); }
 
-        /* ── 系统信息（左上，行2-5）── */
-        .sysCard { grid-row:2/7; grid-column:1/7; overflow:visible; }
+        /* ── 系统信息 ── */
+        .sysCard { overflow:visible; }
         #sysMain { justify-content:center; align-items:center; }
 
         /* CPU / 内存 / 独显，纵向三列（名字在环下方） */
@@ -409,8 +426,7 @@
         .hw-main-sub { font-size:calc(var(--fs-body) * 0.9); color:var(--text2); text-shadow:var(--ts2); display:block; line-height:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:2px; }
         .hw-main-name { font-size:var(--fs-body); font-weight:600; color:var(--text); text-shadow:var(--ts2); display:block; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
-        /* ── 磁盘（左栏，行6-10；仅逻辑盘，按盘符排序）── */
-        .diskCard { grid-row:7/11; grid-column:1/9; }
+        /* ── 磁盘（仅逻辑盘，按盘符排序）── */
         .dk-section { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px 16px; align-content:center; }
         .dk-drive-row { min-width:0; display:flex; align-items:center; gap:7px; }
         .dk-drive-letter { width:24px; font-size:calc(var(--fs-body) * 1.05); font-weight:800; color:var(--text); text-shadow:var(--ts2); flex-shrink:0; letter-spacing:0.03em; text-align:right; }
@@ -421,8 +437,8 @@
         .dk-part-fill.danger { background:var(--disk-danger); }
         .dk-empty { grid-column:1 / -1; align-self:center; justify-self:center; font-size:var(--fs-body); color:var(--text2); text-shadow:var(--ts2); }
 
-        /* ── 歌词播放器（左栏，行12-16）── */
-        .lyric-wrap { grid-row:11/17; grid-column:1/9; display:flex; flex-direction:column; }
+        /* ── 歌词播放器 ── */
+        .lyric-wrap { display:flex; flex-direction:column; }
         .lyric-wrap .card-foot-l, .lyric-wrap .card-foot-r { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
         .lyric-wrap .card-foot-r { text-align:right; }
 
@@ -475,8 +491,8 @@
         .lyric-offset-btn:hover { background:var(--button-hover-bg); color:var(--text); }
         .lyric-offset-val { font-size:var(--fs-body); color:var(--text2); text-shadow:var(--ts2); min-width:24px; text-align:center; font-variant-numeric:tabular-nums; }
 
-        /* ── GitHub（右栏，行11-17）── */
-        .gh-wrap { grid-row:11/17; grid-column:9/17; display:flex; flex-direction:column; }
+        /* ── GitHub ── */
+        .gh-wrap { display:flex; flex-direction:column; }
         .gh-grid { flex:1; display:flex; flex-direction:column; overflow:hidden; }
         .gh-months { display:flex; margin-bottom:0; }
         .gh-month { font-size:calc(var(--fs-body) * 0.8); color:var(--text2); text-shadow:var(--ts2); }

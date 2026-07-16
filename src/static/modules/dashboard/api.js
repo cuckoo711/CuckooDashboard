@@ -6,7 +6,18 @@ async function fetchJson(url, options) {
 }
 
 export const fetchDashboardData = () => fetchJson('/api/data');
-export const fetchWorkspaceManifest = () => fetchJson('/api/workspaces/main');
+export async function fetchWorkspaceManifest(workspaceId = 'main', options) {
+    const normalizedId = String(workspaceId || 'main');
+    const response = await secureFetch(`/api/workspaces/${encodeURIComponent(normalizedId)}`, options);
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+        const error = new Error(payload?.error || `Workspace manifest request failed: HTTP ${response.status}`);
+        error.status = response.status;
+        error.workspaceId = normalizedId;
+        throw error;
+    }
+    return payload;
+}
 export const fetchSystem = () => fetchJson('/api/system');
 export const fetchMedia = () => fetchJson('/api/media');
 export const fetchTheme = () => fetchJson('/api/theme');

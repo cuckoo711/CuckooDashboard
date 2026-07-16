@@ -44,6 +44,23 @@ class WorkspaceRegistry:
         if unknown_sources:
             source_ids = ", ".join(sorted(unknown_sources))
             raise ValueError(f"widget references unknown data source(s): {source_ids}")
+        constraints = definition.constraints
+        if min(
+            definition.default_width,
+            definition.default_height,
+            constraints.min_width,
+            constraints.min_height,
+            constraints.max_width,
+            constraints.max_height,
+        ) < 1:
+            raise ValueError(f"widget has invalid size metadata: {widget_type}")
+        if (
+            constraints.min_width > constraints.max_width
+            or constraints.min_height > constraints.max_height
+            or not constraints.min_width <= definition.default_width <= constraints.max_width
+            or not constraints.min_height <= definition.default_height <= constraints.max_height
+        ):
+            raise ValueError(f"widget has inconsistent size metadata: {widget_type}")
         if widget_type in self._widgets:
             raise ValueError(f"widget already registered: {widget_type}")
         self._widgets[widget_type] = definition
@@ -53,6 +70,13 @@ class WorkspaceRegistry:
         workspace_id = _require_identifier(definition.id, "workspace id")
         if definition.version < 1:
             raise ValueError("workspace version must be at least 1")
+        if definition.is_manifest_v2:
+            _require_identifier(definition.name or "", "workspace name")
+            _require_identifier(definition.kind or "", "workspace kind")
+            if (definition.revision or 0) < 1:
+                raise ValueError("workspace revision must be at least 1")
+            if definition.grid is None or definition.grid.columns != 16 or definition.grid.rows != 15:
+                raise ValueError("Manifest v2 workspaces must use a 16x15 grid")
         if workspace_id in self._workspaces:
             raise ValueError(f"workspace already registered: {workspace_id}")
 
@@ -61,6 +85,8 @@ class WorkspaceRegistry:
         singleton_types: set[str] = set()
         for instance in definition.widgets:
             self._validate_widget_instance(instance)
+            if definition.is_manifest_v2:
+                self._validate_v2_layout(instance, columns=16, rows=15)
             if instance.id in instance_ids:
                 raise ValueError(f"workspace contains duplicate widget id: {instance.id}")
             instance_ids.add(instance.id)
@@ -68,6 +94,8 @@ class WorkspaceRegistry:
             widget = self._widgets.get(instance.type)
             if widget is None:
                 raise ValueError(f"workspace references unknown widget: {instance.type}")
+            if definition.is_manifest_v2 and instance.constraints != widget.constraints:
+                raise ValueError(f"workspace widget constraints differ from definition: {instance.type}")
             unknown_sources.update(set(widget.sources) - self._data_sources.keys())
             if widget.single_instance:
                 if instance.type in singleton_types:
@@ -85,6 +113,31 @@ class WorkspaceRegistry:
         _require_identifier(instance.id, "widget instance id")
         _require_identifier(instance.type, "widget instance type")
         _require_identifier(instance.slot, "widget instance slot")
+
+    @staticmethod
+    def _validate_v2_layout(instance: WidgetInstance, *, columns: int, rows: int) -> None:
+        layout = instance.layout
+        constraints = instance.constraints
+        if layout is None or constraints is None:
+            raise ValueError(f"Manifest v2 widget is missing layout or constraints: {instance.id}")
+        if layout.x < 0 or layout.y < 0 or layout.width < 1 or layout.height < 1:
+            raise ValueError(f"widget has invalid layout: {instance.id}")
+        if layout.x + layout.width > columns or layout.y + layout.height > rows:
+            raise ValueError(f"widget layout exceeds workspace grid: {instance.id}")
+        if min(
+            constraints.min_width,
+            constraints.min_height,
+            constraints.max_width,
+            constraints.max_height,
+        ) < 1:
+            raise ValueError(f"widget has invalid constraints: {instance.id}")
+        if constraints.min_width > constraints.max_width or constraints.min_height > constraints.max_height:
+            raise ValueError(f"widget has invalid constraints: {instance.id}")
+        if not (
+            constraints.min_width <= layout.width <= constraints.max_width
+            and constraints.min_height <= layout.height <= constraints.max_height
+        ):
+            raise ValueError(f"widget layout violates constraints: {instance.id}")
 
     def get_data_source(self, source_id: str) -> DataSourceDefinition:
         return self._data_sources[source_id]
@@ -112,7 +165,7 @@ class WorkspaceRegistry:
             for source_id in widget.sources:
                 if source_id not in source_ids:
                     source_ids.append(source_id)
-        return {
+        payload = {
             "id": workspace.id,
             "version": workspace.version,
             "required": workspace.required,
@@ -121,7 +174,20 @@ class WorkspaceRegistry:
                 for source_id in source_ids
             ],
             "widgets": [
-                instance.to_payload(self._widgets[instance.type])
+                instance.to_payload(
+                    self._widgets[instance.type],
+                    manifest_version=2 if workspace.is_manifest_v2 else 1,
+                )
                 for instance in workspace.widgets
             ],
         }
+        if workspace.is_manifest_v2:
+            payload.update(
+                {
+                    "revision": workspace.revision,
+                    "name": workspace.name,
+                    "kind": workspace.kind,
+                    "grid": workspace.grid.to_payload(),
+                }
+            )
+        return payload

@@ -2,30 +2,52 @@ import {$, escHtml} from './dom.js';
 import {requestJson} from './api.js';
 import {showMessage} from './state.js';
 
-const PAGE_LABELS = {dashboard: '看板', music: '音乐舞台', unknown: '未知'};
-const PAGE_ICONS = {dashboard: '📊', music: '🎵', unknown: '❓'};
+const PAGE_LABELS = {dashboard: '看板', music: '音乐舞台', settings: '设置页', unknown: '未知'};
 let settingsWebSocket = null;
 let settingsWebSocketRetry = 1000;
+let latestClients = [];
+let clientWorkspaces = [{id: 'main', name: '主工作区'}];
+
+function targetOptions(client) {
+    const current = client.page === 'music' ? 'page:music' : `workspace:${client.workspace_id || 'main'}`;
+    const workspaceOptions = clientWorkspaces.map((workspace) => {
+        const value = `workspace:${workspace.id}`;
+        return `<option value="${escHtml(value)}" ${value === current ? 'selected' : ''}>${escHtml(workspace.name)} (${escHtml(workspace.id)})</option>`;
+    }).join('');
+    return workspaceOptions + `<option value="page:music" ${current === 'page:music' ? 'selected' : ''}>音乐舞台</option>`;
+}
 
 function renderClientsList(clients) {
+    latestClients = Array.isArray(clients) ? clients : [];
     const container = $('#clientsList');
-    if (!clients || !clients.length) {
+    if (!container) return;
+    if (!latestClients.length) {
         container.innerHTML = '<div class="empty-row">暂无在线客户端</div>';
         return;
     }
-    container.innerHTML = clients.map((client) => {
+    container.innerHTML = latestClients.map((client) => {
         const page = client.page || 'unknown';
-        const label = PAGE_LABELS[page] || page;
-        const icon = PAGE_ICONS[page] || '❓';
-        const targetPage = page === 'music' ? 'dashboard' : 'music';
-        const targetLabel = PAGE_LABELS[targetPage];
+        const workspace = clientWorkspaces.find((item) => item.id === client.workspace_id);
+        const label = page === 'dashboard' && workspace ? workspace.name : (PAGE_LABELS[page] || page);
         return '<div class="client-row" data-client-id="' + escHtml(client.id) + '">' +
             '<span class="client-id">' + escHtml(client.id) + '</span>' +
-            '<span class="client-page">' + icon + ' ' + escHtml(label) + '</span>' +
+            '<span class="client-page">当前：' + escHtml(label) + '</span>' +
+            '<select class="client-target-select" aria-label="选择客户端目标">' + targetOptions(client) + '</select>' +
             '<button type="button" class="small-btn client-screenshot-btn" data-client-id="' + escHtml(client.id) + '">截图</button>' +
-            '<button type="button" class="small-btn client-nav-btn" data-navigate-to="' + targetPage + '">切换到 ' + escHtml(targetLabel) + '</button>' +
+            '<button type="button" class="small-btn client-nav-btn">发送</button>' +
             '</div>';
     }).join('');
+}
+
+export function setClientWorkspaces(workspaces) {
+    const normalized = (Array.isArray(workspaces) ? workspaces : [])
+        .map((workspace) => ({id: String(workspace?.id || ''), name: String(workspace?.name || workspace?.id || '')}))
+        .filter((workspace) => workspace.id);
+    if (!normalized.some((workspace) => workspace.id === 'main')) {
+        normalized.unshift({id: 'main', name: '主工作区'});
+    }
+    clientWorkspaces = normalized;
+    if (latestClients.length) renderClientsList(latestClients);
 }
 
 export async function refreshClientsList() {
@@ -117,15 +139,20 @@ async function navigateClient(button) {
     const row = button.closest('.client-row');
     if (!row) return;
     const clientId = row.dataset.clientId;
-    const targetPage = button.dataset.navigateTo;
-    if (!clientId || !targetPage) return;
+    const select = $('.client-target-select', row);
+    const target = select?.value || '';
+    if (!clientId || !target) return;
+    const body = target === 'page:music'
+        ? {page: 'music'}
+        : {workspace_id: target.replace(/^workspace:/, '')};
     button.disabled = true;
+    if (select) select.disabled = true;
     const original = button.textContent;
     button.textContent = '发送中…';
     try {
         await requestJson(`/api/settings/clients/${encodeURIComponent(clientId)}/navigate`, {
             method: 'POST',
-            body: {page: targetPage},
+            body,
         });
         button.textContent = '已发送';
         setTimeout(refreshClientsList, 1500);
@@ -136,6 +163,7 @@ async function navigateClient(button) {
         setTimeout(() => {
             button.textContent = original;
             button.disabled = false;
+            if (select) select.disabled = false;
         }, 2000);
     }
 }

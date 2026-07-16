@@ -10,6 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Callable
+from urllib.parse import quote
 
 from core.config import load_config, set_config_value
 from features.appearance.service import get_font_payload
@@ -112,9 +113,11 @@ class WebSocketHub:
                 "spectrum_fps": _SPECTRUM_FPS_DEFAULT,
                 "spectrum_last_sent_at": 0.0,
                 "lyric": False,
+                "lyric_explicit": False,
                 "source_subscriptions": None,
                 "id": client_id,
                 "page": "unknown",
+                "workspace_id": None,
             }
             self._recalc_vibe_locked()
             total = len(self._clients)
@@ -237,7 +240,7 @@ class WebSocketHub:
         for sock in self._client_sockets():
             with self._lock:
                 state = self._states.get(sock) or {}
-                interested = bool(state.get("lyric")) or state.get("page") in {"music", "dashboard"}
+                interested = self._state_wants_lyric(state)
             if not interested:
                 continue
             try:
@@ -267,6 +270,10 @@ class WebSocketHub:
                 {
                     "id": state.get("id", "?"),
                     "page": state.get("page", "unknown"),
+                    "workspace_id": (
+                        state.get("workspace_id")
+                        or ("main" if state.get("page") == "dashboard" else None)
+                    ),
                     "connected": bool(getattr(sock, "connected", False)),
                     "sources": (
                         None
@@ -277,17 +284,47 @@ class WebSocketHub:
                 for sock, state in self._states.items()
             ]
 
-    def navigate_client(self, client_id: str, page: str) -> bool:
-        if page not in {"dashboard", "music"}:
+    def navigate_client(
+        self,
+        client_id: str,
+        page: str = "dashboard",
+        *,
+        workspace_id: str | None = None,
+        url: str | None = None,
+    ) -> bool:
+        """Navigate one client while preserving the legacy dashboard/music protocol."""
+        if workspace_id is not None:
+            workspace_id = str(workspace_id).strip()
+            if not workspace_id:
+                return False
+            page = "dashboard"
+            url = "/" if workspace_id == "main" else f"/workspaces/{quote(workspace_id, safe='')}"
+        elif page not in {"dashboard", "music"}:
             return False
+        elif url is None:
+            url = "/" if page == "dashboard" else "/music"
+
         target = self._find_client(client_id)
         if target is None:
             return False
-        url = "/" if page == "dashboard" else "/music"
-        if not self._send(target, {"type": "navigate", "page": page, "url": url}):
+        message = {"type": "navigate", "page": page, "url": url}
+        if page == "dashboard":
+            message["workspace_id"] = workspace_id or "main"
+        if not self._send(target, message):
             self._remove_client(target)
             return False
         return True
+
+    def workspace_client_ids(self, workspace_id: str) -> list[str]:
+        """Return connected Dashboard client ids currently reporting one workspace."""
+        workspace_id = str(workspace_id or "")
+        with self._lock:
+            return [
+                str(state.get("id") or "?")
+                for state in self._states.values()
+                if state.get("page") == "dashboard"
+                and (state.get("workspace_id") or "main") == workspace_id
+            ]
 
     def request_screenshot(self, client_id: str) -> str | None:
         target = self._find_client(client_id)
@@ -376,16 +413,25 @@ class WebSocketHub:
                 logger.info("[ws] vibe coding: %s", "ON" if vibe else "OFF")
             elif msg_type == "report":
                 page = str(msg.get("page") or "unknown")
+                workspace_id = None
+                if page == "dashboard":
+                    workspace_id = str(msg.get("workspace_id") or "main").strip() or "main"
                 with self._lock:
                     state = self._states.get(sock)
                     if state is None:
                         return
                     state["page"] = page
+                    state["workspace_id"] = workspace_id
                     if page == "music" or (
                         page == "dashboard" and state.get("source_subscriptions") is None
                     ):
                         state["lyric"] = True
-                logger.info("[ws] client %s reports page: %s", client_id, page)
+                logger.info(
+                    "[ws] client %s reports page: %s%s",
+                    client_id,
+                    page,
+                    f" ({workspace_id})" if workspace_id else "",
+                )
             elif msg_type == "subscribe":
                 channel = str(msg.get("channel") or "")
                 if channel == "spectrum":
@@ -404,6 +450,7 @@ class WebSocketHub:
                         state = self._states.get(sock)
                         if state is not None:
                             state["lyric"] = active
+                            state["lyric_explicit"] = True
                     if active:
                         self._send(sock, {"type": "lyric", "data": get_lyric_frame()})
                 elif "sources" in msg:
@@ -779,11 +826,15 @@ class WebSocketHub:
             return self._lyric_interest_count_locked()
 
     def _lyric_interest_count_locked(self) -> int:
-        return sum(
-            1
-            for state in self._states.values()
-            if state.get("lyric") or state.get("page") in {"music", "dashboard"}
-        )
+        return sum(1 for state in self._states.values() if self._state_wants_lyric(state))
+
+    @staticmethod
+    def _state_wants_lyric(state: dict[str, Any]) -> bool:
+        if state.get("lyric_explicit"):
+            return bool(state.get("lyric"))
+        if state.get("source_subscriptions") is not None:
+            return bool(state.get("lyric"))
+        return bool(state.get("lyric")) or state.get("page") in {"music", "dashboard"}
 
     @staticmethod
     def _lyric_key(frame: dict) -> tuple[str, int, str, str]:

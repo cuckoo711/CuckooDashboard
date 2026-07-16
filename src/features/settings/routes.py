@@ -12,6 +12,7 @@ from runtime.lifecycle import get_runtime
 from features.settings.persistence import reveal_secret
 from features.settings.schema import SettingsValidationError
 from features.settings.service import get_settings_payload, save_settings_payload
+from workspaces.repository import WorkspaceNotFoundError
 
 logger = logging.getLogger("cuckoo.dashboard")
 
@@ -91,16 +92,31 @@ def api_settings_navigate_client(client_id):
     require_loopback_access()
     require_post_protection()
     payload = request.get_json(silent=True) or {}
+    workspace_id = payload.get("workspace_id")
     target_page = payload.get("page")
-    if target_page not in ("dashboard", "music"):
-        return jsonify({"error": {"message": "page 必须是 dashboard 或 music"}}), 400
+    runtime = get_runtime()
+    if workspace_id is not None:
+        workspace_id = str(workspace_id).strip()
+        if not workspace_id:
+            return jsonify({"error": {"message": "workspace_id 不能为空"}}), 400
+        try:
+            current_app.extensions["workspace_service"].get_workspace(workspace_id)
+        except WorkspaceNotFoundError:
+            return jsonify({"error": {"message": "目标工作区不存在"}}), 404
+        target_page = "dashboard"
+    elif target_page not in ("dashboard", "music"):
+        return jsonify({"error": {"message": "page 必须是 dashboard 或 music，或提供 workspace_id"}}), 400
     try:
-        sent = get_runtime().hub.navigate_client(client_id, target_page)
+        sent = (
+            runtime.hub.navigate_client(client_id, workspace_id=workspace_id)
+            if workspace_id is not None
+            else runtime.hub.navigate_client(client_id, target_page)
+        )
     except Exception:
         return jsonify({"error": {"message": "发送失败，客户端可能已断开"}}), 500
     if not sent:
         return jsonify({"error": {"message": "未找到该客户端"}}), 404
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "page": target_page, "workspace_id": workspace_id})
 
 
 @blueprint.route("/api/settings/clients/<client_id>/screenshot", methods=["POST"])

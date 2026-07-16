@@ -75,7 +75,7 @@ export function createGitHubComponent() {
 
     return {
         mount(context) {
-            if (root) return;
+            if (root) return root;
             root = document.createElement('div');
             root.className = 'card gh-wrap';
             root.dataset.workspaceSlot = context.slot;
@@ -83,6 +83,7 @@ export function createGitHubComponent() {
                 + '<div class="card-body gh-grid" id="ghGrid"><div class="skeleton" style="flex:1; width:100%;"></div></div>'
                 + '<div class="card-foot"><span class="card-foot-l" id="ghUser"></span><span class="card-foot-r" id="ghTotal"></span></div>';
             context.root.appendChild(root);
+            return root;
         },
         onData(payload, source) {
             draw(payload, source);

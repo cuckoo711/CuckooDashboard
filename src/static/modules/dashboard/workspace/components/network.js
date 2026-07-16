@@ -5,7 +5,7 @@ export function createNetworkComponent() {
 
     return {
         mount(context) {
-            if (root) return;
+            if (root) return root;
             root = document.createElement('div');
             root.className = 'card netCard';
             root.dataset.workspaceSlot = context.slot;
@@ -15,6 +15,7 @@ export function createNetworkComponent() {
                 + '<div class="net-row"><span class="net-icon down">↓</span><span class="net-label">下载</span>'
                 + '<span class="net-value" id="netDown">-- <span class="net-unit">KB/s</span></span></div></div>';
             context.root.appendChild(root);
+            return root;
         },
         onData(payload) {
             const network = payload?.network;

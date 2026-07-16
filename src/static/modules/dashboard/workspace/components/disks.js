@@ -5,7 +5,7 @@ export function createDisksComponent() {
 
     return {
         mount(context) {
-            if (root) return;
+            if (root) return root;
             root = document.createElement('div');
             root.className = 'card diskCard';
             root.id = 'diskCard';
@@ -19,6 +19,7 @@ export function createDisksComponent() {
                 + '<div class="skeleton" style="height:9px;width:65%;margin-bottom:4px;"></div>'
                 + '<div class="skeleton" style="height:5px;width:100%;"></div></div>';
             context.root.appendChild(root);
+            return root;
         },
         onData(payload) {
             const element = root?.querySelector('#sysDisks');

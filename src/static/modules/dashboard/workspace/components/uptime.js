@@ -3,13 +3,14 @@ export function createUptimeComponent() {
 
     return {
         mount(context) {
-            if (root) return;
+            if (root) return root;
             root = document.createElement('div');
             root.className = 'card uptimeCard';
             root.dataset.workspaceSlot = context.slot;
             root.innerHTML = '<div class="card-head"><span class="card-head-l"><span class="bar"></span>已运行</span></div>'
                 + '<div class="card-body uptime-body"><span class="uptime-val" id="uptimeVal">--</span></div>';
             context.root.appendChild(root);
+            return root;
         },
         onData(payload) {
             const uptime = payload?.system?.uptime;

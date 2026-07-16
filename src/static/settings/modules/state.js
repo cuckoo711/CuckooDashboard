@@ -4,6 +4,8 @@ export const state = {
     payload: null,
     dirty: false,
     saving: false,
+    workspaceDirty: false,
+    workspaceSaving: false,
     providerPanels: [],
     credentialRevision: null,
 };
@@ -17,6 +19,16 @@ export function setDirty(dirty) {
         message.className = 'save-message';
         message.textContent = state.dirty ? '有未保存修改' : '配置未修改';
     }
+}
+
+export function setWorkspaceDirty(dirty) {
+    state.workspaceDirty = !!dirty;
+    const badge = $('#workspaceDirtyBadge');
+    if (badge) badge.hidden = !state.workspaceDirty;
+}
+
+export function hasUnsavedChanges() {
+    return state.dirty || state.workspaceDirty;
 }
 
 export function showMessage(text, kind) {

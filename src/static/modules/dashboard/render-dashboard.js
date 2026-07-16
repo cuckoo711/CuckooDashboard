@@ -5,12 +5,19 @@ import { currencyPrefix, cssVar, escHtml, fmtNum, fmtTok, safeNumber } from './u
 export function drawTodayStacked(inMiss, outTok, cacheTok) {
     const total = inMiss + outTok + cacheTok;
     if (total <= 0) return;
-    document.getElementById('segCache').style.width = `${cacheTok / total * 100}%`;
-    document.getElementById('segIn').style.width = `${inMiss / total * 100}%`;
-    document.getElementById('segOut').style.width = `${outTok / total * 100}%`;
-    document.getElementById('todayCachePct').textContent = `${(cacheTok / total * 100).toFixed(1)}%`;
-    document.getElementById('todayInPct').textContent = `${(inMiss / total * 100).toFixed(1)}%`;
-    document.getElementById('todayOutPct').textContent = `${(outTok / total * 100).toFixed(1)}%`;
+    const cacheSegment = document.getElementById('segCache');
+    const inputSegment = document.getElementById('segIn');
+    const outputSegment = document.getElementById('segOut');
+    const cachePercent = document.getElementById('todayCachePct');
+    const inputPercent = document.getElementById('todayInPct');
+    const outputPercent = document.getElementById('todayOutPct');
+    if (!cacheSegment || !inputSegment || !outputSegment || !cachePercent || !inputPercent || !outputPercent) return;
+    cacheSegment.style.width = `${cacheTok / total * 100}%`;
+    inputSegment.style.width = `${inMiss / total * 100}%`;
+    outputSegment.style.width = `${outTok / total * 100}%`;
+    cachePercent.textContent = `${(cacheTok / total * 100).toFixed(1)}%`;
+    inputPercent.textContent = `${(inMiss / total * 100).toFixed(1)}%`;
+    outputPercent.textContent = `${(outTok / total * 100).toFixed(1)}%`;
 }
 
 export function drawRing(percent, used, limit, itemName) {
@@ -22,26 +29,31 @@ export function drawRing(percent, used, limit, itemName) {
     const remain = 100 - pct;
     const remainAmount = Math.max(0, normalizedLimit - normalizedUsed);
     const foreground = document.getElementById('ringFg');
+    const percentElement = document.getElementById('ringPct');
+    const label = document.getElementById('ringLabel');
+    if (!foreground || !percentElement || !label) return;
     foreground.style.strokeDashoffset = circumference * (1 - remain / 100);
     foreground.style.stroke = pct >= 90 ? cssVar('--crimson') : pct >= 70 ? cssVar('--warn') : cssVar('--gold');
-    document.getElementById('ringPct').textContent = `${remain.toFixed(1)}%`;
-    const label = document.getElementById('ringLabel');
+    percentElement.textContent = `${remain.toFixed(1)}%`;
     label.textContent = `${fmtTok(remainAmount)} 剩余`;
     label.title = itemName || '';
 }
 
 function resetRing() {
     const foreground = document.getElementById('ringFg');
+    const percentElement = document.getElementById('ringPct');
+    const label = document.getElementById('ringLabel');
+    if (!foreground || !percentElement || !label) return;
     foreground.style.strokeDashoffset = 2 * Math.PI * 35;
     foreground.style.stroke = cssVar('--ring-bg');
-    document.getElementById('ringPct').textContent = '--%';
-    const label = document.getElementById('ringLabel');
+    percentElement.textContent = '--%';
     label.textContent = '暂无数据';
     label.title = '';
 }
 
 function drawModelBars(data) {
     const element = document.getElementById('modelBars');
+    if (!element) return;
     if (!data?.available || !Array.isArray(data.rows) || !data.rows.length) {
         state.dashboard.lastModelsKey = '';
         element.innerHTML = '<div class="ld">暂无数据</div>';
@@ -120,14 +132,25 @@ export function handleDashboardData(data = {}) {
     const cache = today.cache || 0;
     const inputMiss = today.inMiss || 0;
     if (input > 0 || output > 0 || total > 0) {
-        document.getElementById('todayTotal').textContent = fmtTok(total);
-        document.getElementById('todayCache').textContent = fmtTok(cache);
-        document.getElementById('todayCachePct').textContent = total > 0 ? `${(cache / total * 100).toFixed(1)}%` : '0%';
-        document.getElementById('todayIn').textContent = fmtTok(inputMiss);
-        document.getElementById('todayInPct').textContent = total > 0 ? `${(inputMiss / total * 100).toFixed(1)}%` : '0%';
-        document.getElementById('todayOut').textContent = fmtTok(output);
-        document.getElementById('todayOutPct').textContent = total > 0 ? `${(output / total * 100).toFixed(1)}%` : '0%';
-        drawTodayStacked(inputMiss, output, cache);
+        const elements = {
+            total: document.getElementById('todayTotal'),
+            cache: document.getElementById('todayCache'),
+            cachePercent: document.getElementById('todayCachePct'),
+            input: document.getElementById('todayIn'),
+            inputPercent: document.getElementById('todayInPct'),
+            output: document.getElementById('todayOut'),
+            outputPercent: document.getElementById('todayOutPct'),
+        };
+        if (Object.values(elements).every(Boolean)) {
+            elements.total.textContent = fmtTok(total);
+            elements.cache.textContent = fmtTok(cache);
+            elements.cachePercent.textContent = total > 0 ? `${(cache / total * 100).toFixed(1)}%` : '0%';
+            elements.input.textContent = fmtTok(inputMiss);
+            elements.inputPercent.textContent = total > 0 ? `${(inputMiss / total * 100).toFixed(1)}%` : '0%';
+            elements.output.textContent = fmtTok(output);
+            elements.outputPercent.textContent = total > 0 ? `${(output / total * 100).toFixed(1)}%` : '0%';
+            drawTodayStacked(inputMiss, output, cache);
+        }
     }
     handleVibeData(data.vibe || {});
 }

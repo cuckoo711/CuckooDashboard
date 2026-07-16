@@ -218,33 +218,40 @@ def test_builtin_registry_contains_required_main_workspace():
 
     workspace = registry.get_workspace("main")
     assert workspace.required is True
-    assert workspace.sources == ("dashboard.aggregate",)
+    assert workspace.sources == ()
     assert {widget.id for widget in workspace.widgets} == {
         "system-info",
-        "system-network",
-        "system-uptime",
-        "system-disks",
-        "media-player",
-        "github-contributions",
+        "network",
+        "uptime",
+        "disks",
+        "token-card",
+        "player",
+        "github",
     }
     assert {widget.type for widget in workspace.widgets} == {
-        "builtin.system.info",
-        "builtin.system.network",
-        "builtin.system.uptime",
-        "builtin.system.disks",
-        "builtin.media.player",
-        "builtin.github.contributions",
+        "builtin.dashboard.system-info",
+        "builtin.dashboard.network",
+        "builtin.dashboard.uptime",
+        "builtin.dashboard.disks",
+        "builtin.dashboard.vibe",
+        "builtin.dashboard.player",
+        "builtin.dashboard.github",
     }
-    system_instances = [
-        widget for widget in workspace.widgets if widget.type.startswith("builtin.system.")
-    ]
+    assert all(registry.get_widget(widget.type).single_instance for widget in workspace.widgets)
+    system_types = {
+        "builtin.dashboard.system-info",
+        "builtin.dashboard.network",
+        "builtin.dashboard.uptime",
+        "builtin.dashboard.disks",
+    }
+    system_instances = [widget for widget in workspace.widgets if widget.type in system_types]
     assert len(system_instances) == 4
     assert all(
         registry.get_widget(instance.type).sources == ("system.snapshot",)
         for instance in system_instances
     )
     player_instance = next(
-        widget for widget in workspace.widgets if widget.type == "builtin.media.player"
+        widget for widget in workspace.widgets if widget.type == "builtin.dashboard.player"
     )
     player = registry.get_widget(player_instance.type)
     assert player.sources == ("media.playback",)
@@ -253,9 +260,14 @@ def test_builtin_registry_contains_required_main_workspace():
 
     manifest = registry.serialize_workspace("main")
     assert manifest["id"] == "main"
-    assert manifest["version"] == 1
+    assert manifest["version"] == 2
+    assert manifest["revision"] == 1
+    assert manifest["name"] == "Main Dashboard"
+    assert manifest["kind"] == "builtin"
+    assert manifest["grid"] == {"columns": 16, "rows": 15}
     assert manifest["required"] is True
     assert {source["id"] for source in manifest["sources"]} == set(sources)
+    assert all("layout" in widget and "constraints" in widget for widget in manifest["widgets"])
 
 
 def test_workspace_manifest_route_uses_runtime_registry_and_returns_json_404():

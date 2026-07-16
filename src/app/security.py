@@ -50,8 +50,28 @@ def require_post_protection() -> None:
     abort(403)
 
 
+def _is_trusted_loopback_host(value: str | None) -> bool:
+    """Reject DNS-rebinding Host values on loopback-only management surfaces."""
+    if not value:
+        return False
+    try:
+        hostname = (urlparse(f"//{value}").hostname or "").rstrip(".").lower()
+        if hostname == "localhost":
+            return True
+        address = ipaddress.ip_address(hostname)
+        if address.is_loopback:
+            return True
+        return bool(
+            isinstance(address, ipaddress.IPv6Address)
+            and address.ipv4_mapped
+            and address.ipv4_mapped.is_loopback
+        )
+    except (ValueError, TypeError):
+        return False
+
+
 def require_loopback_access() -> None:
-    """Restrict local configuration surfaces to IPv4/IPv6 loopback clients."""
+    """Restrict local management surfaces to loopback peers and trusted Host values."""
     remote_addr = request.remote_addr
     try:
         address = ipaddress.ip_address(remote_addr) if remote_addr else None
@@ -60,7 +80,7 @@ def require_loopback_access() -> None:
             is_loopback = address.ipv4_mapped.is_loopback
     except ValueError:
         is_loopback = False
-    if not is_loopback:
+    if not is_loopback or not _is_trusted_loopback_host(request.host):
         abort(403, description="settings is only available from loopback")
 
 

@@ -18,11 +18,13 @@
 - Hardware override support (CPU model, GPU model, memory name, VRAM size)
 
 ### Workspace Module Host
-- The required `main` workspace is described by a versioned manifest instead of hard-coded card composition
-- System info, network, uptime, disks, player, and GitHub are registered built-in widget types
-- The four system widgets share one `system.snapshot` acquisition and render independent views of the same payload
-- The browser host uses a static widget allowlist, mounts lifecycle-managed components, and subscribes only to manifest-declared data sources/channels
-- Legacy `/`, `/music`, REST payloads, and WebSocket message types remain compatible while the workspace platform evolves
+- `main` and user-created workspaces are persisted in `data/workspaces.db` as revisioned Manifest v2 documents
+- Every workspace uses a fixed 16 × 15 content grid; Settings can add/remove, drag, resize, duplicate, rename, and delete workspaces
+- System info, network, uptime, disks, Vibe, player, and GitHub are registered single-instance built-in widget types
+- The four system widgets share one `system.snapshot`; each client subscribes only to the data sources/channels required by its current workspace
+- `/` remains the `main` alias, while custom workspaces have stable `/workspaces/<workspace_id>` URLs
+- Revision compare-and-swap prevents two Settings tabs from silently overwriting each other's layout changes
+- The browser keeps a static widget allowlist: manifests describe composition and layout but never supply executable code or arbitrary HTML
 
 ### Provider 数据系统
 - Provider 自动发现、能力声明与动态配置面板
@@ -133,6 +135,8 @@ python run_dashboard.py --dev   # Debug mode with auto-reload
 
 密码、Token 默认以掩码显示，点击“查看”才会读取明文；留空默认保持原值，使用“清空”按钮才会删除敏感配置。保存后会清理相关缓存并立即应用，大多数配置无需重启服务。
 
+同一页面的“工作区与布局”面板独立管理 `data/workspaces.db`：可新建空白工作区、复制现有工作区、添加或移除七种内置卡片，并在 16 × 15 预览网格中拖动和缩放。工作区保存与 YAML 配置保存互不混用；若另一标签页已先保存，旧 revision 会收到 `409`，本地草稿会保留以便人工处理。
+
 ### 3. Desktop App (optional)
 
 ```bash
@@ -151,13 +155,15 @@ The desktop app reads `data/monitor.json` to determine which display to use, the
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/` | GET | Dashboard HTML page |
+| `/` | GET | `main` workspace Dashboard page |
+| `/workspaces/<workspace_id>` | GET | Dashboard shell for an existing persisted workspace |
 | `/music` | GET | Full-screen music stage (lyrics + optional loopback spectrum) |
-| `/ws` | WebSocket | Bidirectional: legacy pushes plus per-client data-source/channel subscriptions, Vibe, init, ping, navigation and screenshots |
+| `/ws` | WebSocket | Legacy pushes plus per-client workspace/source/channel reports, Vibe, updates, navigation and screenshots |
 | `/api/data` | GET | Aggregated daily usage, configurable Vibe card payload, and GitHub contributions |
 | `/api/health` | GET | Lightweight cached service health; does not refresh external data |
 | `/api/system` | GET | System hardware info (CPU/GPU/Memory/Disk/Network) |
-| `/api/workspaces/<workspace_id>` | GET | Versioned workspace manifest, built-in widget instances, data-source metadata, and channel dependencies |
+| `/api/workspaces` | GET | Public workspace summaries for navigation |
+| `/api/workspaces/<workspace_id>` | GET | Manifest v2 with revision, 16 × 15 layouts, widget constraints, data sources, and channels |
 | `/api/providers` | GET | Dynamically discovered Provider metadata, capabilities, and health |
 | `/api/providers/<provider>/status` | GET | Generic Provider health/status resource |
 | `/api/providers/<provider>/today` | GET | Standardized Provider daily-usage resource |
@@ -178,17 +184,27 @@ The desktop app reads `data/monitor.json` to determine which display to use, the
 | `/api/theme` | GET/POST | Read or set the active theme by name |
 | `/api/theme/next` | POST | Switch to the next theme |
 | `/api/off-peak-badge` | GET | Off-peak time range configuration for badge display |
-| `/settings` | GET | Local-only configuration management page |
-| `/api/settings` | GET/POST | Read sanitized configuration or save validated configuration (local-only) |
+| `/settings` | GET | Local-only configuration and workspace management page |
+| `/api/settings` | GET/POST | Read sanitized configuration or save validated YAML configuration (local-only) |
+| `/api/settings/workspaces` | GET/POST | List workspaces/catalog or create an empty workspace (local-only) |
+| `/api/settings/workspaces/<workspace_id>` | GET/PUT/DELETE | Read, revision-save, or delete a workspace (local-only) |
+| `/api/settings/workspaces/<workspace_id>/duplicate` | POST | Duplicate a workspace with a new stable ID (local-only) |
+| `/api/settings/clients/<client_id>/navigate` | POST | Navigate one online client to Music, `main`, or a custom workspace (local-only) |
 | `/api/settings/reveal` | POST | Reveal one explicitly requested secret field (local-only) |
 | `/auth/<provider>/` | GET | Provider-owned local authentication/account page |
 | `/auth/<provider>/api/...` | GET/POST | Provider-owned authentication lifecycle APIs in a protected namespace |
 
-POST endpoints require same-origin `Origin`/`Referer` or an `X-Dashboard-Token` header. The `/settings` page, `/api/settings*`, and Provider authentication namespaces additionally require a loopback client address (`127.0.0.1` or `::1`). Set the Dashboard token through `/settings` (it is stored in the DPAPI Vault) or use `DASHBOARD_TOKEN` when exposing other Dashboard APIs beyond `127.0.0.1`.
+State-changing endpoints require same-origin `Origin`/`Referer` or an `X-Dashboard-Token` header. The `/settings` page, `/api/settings*`, and Provider authentication namespaces additionally require a loopback client address (`127.0.0.1` or `::1`; workspace CRUD protects POST/PUT/PATCH/DELETE). Set the Dashboard token through `/settings` (it is stored in the DPAPI Vault) or use `DASHBOARD_TOKEN` when exposing other Dashboard APIs beyond `127.0.0.1`.
 
 ## Configuration
 
 Copy `config/config.example.yaml` to `config/config.yaml` and fill only non-sensitive settings. Configuration, the encrypted Vault, and runtime state are git-ignored.
+
+### Workspace Database
+
+Editable workspaces are stored separately in `data/workspaces.db` using SQLite schema version 1. The `workspaces` table stores identity, name, kind, required flag, Manifest contract version, grid size and revision; `workspace_widgets` stores ordered card placements and canonical resize constraints. The required `main` row is seeded only when absent, so application restarts and upgrades do not overwrite a saved layout.
+
+Workspace updates replace the parent metadata and all card rows in one `BEGIN IMMEDIATE` transaction. `PUT` and `DELETE` requests include the current revision; a missing delete revision is rejected, while a stale revision returns `409 workspace_conflict` and leaves the database unchanged. The database contains layout/runtime metadata only—credentials remain exclusively in the DPAPI Vault.
 
 ### Credential Vault
 
@@ -257,7 +273,7 @@ dashboard:
 
 | Key | Description |
 |---|---|
-| `DASHBOARD_TOKEN` | Optional token accepted via `X-Dashboard-Token` for protected POST APIs |
+| `DASHBOARD_TOKEN` | Optional token accepted via `X-Dashboard-Token` for protected state-changing APIs |
 
 ## Project Structure
 
@@ -295,10 +311,12 @@ dashboard:
 │   │   ├── health.py
 │   │   ├── settings.py
 │   │   └── workspace.py          # Data-source, widget type/instance and workspace contracts
-│   ├── workspaces/               # Per-runtime registry and built-in main workspace
+│   ├── workspaces/               # Registry, built-ins, SQLite repository and workspace service
 │   │   ├── registry.py
 │   │   ├── data_sources.py
-│   │   └── builtins.py
+│   │   ├── builtins.py
+│   │   ├── repository.py
+│   │   └── service.py
 │   ├── core/                     # Config, Vault, caching, subprocess and Windows infra
 │   ├── providers/                # Auto-discovered, capability-based plugins
 │   │   ├── __init__.py           # Registry, typed invocation and Schema discovery
@@ -356,13 +374,13 @@ Stable cross-module structures are defined with standard-library dataclasses, Pr
 
 Provider functions continue returning their compatible dict/list payloads. Consumers normalize internally and serialize back to the existing API wire format, including `today.in/out/cache/total/inMiss` and all current Vibe/Settings keys.
 
-### Workspace Registry and Built-in Widgets
+### Workspace Registry, Persistence, and Built-in Widgets
 
-Each `DashboardRuntime` owns an isolated `WorkspaceRegistry`; App Factory stores the same instance in `app.extensions["workspace_registry"]`. The registry separates reusable `WidgetDefinition` types from `WidgetInstance` placements, validates source references and single-instance constraints, and serializes the required `main` workspace through `/api/workspaces/main`.
+Each `DashboardRuntime` owns an isolated `WorkspaceRegistry`, `WorkspaceRepository`, and `WorkspaceService`; App Factory exposes the same instances through `app.extensions`. The Registry owns immutable data-source/widget capabilities and the built-in `main` seed. The SQLite Repository owns user state and atomic revision updates. The Service validates every 16 × 15 placement, rejects overlap/out-of-bounds/constraint changes, and enriches persisted rows into public Manifest v2 payloads.
 
-The first built-in widget set is `builtin.system.info`, `builtin.system.network`, `builtin.system.uptime`, `builtin.system.disks`, `builtin.media.player`, and `builtin.github.contributions`. System widgets intentionally share one `system.snapshot` source, while the player declares both `media.playback` and the optional `media.lyric` channel. The browser's static registry maps these stable IDs to local component factories; the server never supplies executable module URLs or arbitrary HTML.
+The built-in widget set is `builtin.dashboard.system-info`, `builtin.dashboard.network`, `builtin.dashboard.uptime`, `builtin.dashboard.disks`, `builtin.dashboard.vibe`, `builtin.dashboard.player`, and `builtin.dashboard.github`. All are single-instance within one workspace. System widgets intentionally share `system.snapshot`; Vibe owns `dashboard.aggregate`; the player declares `media.playback` plus the optional `media.lyric` channel. Removing a card removes its otherwise-unused data-source/channel subscription.
 
-The current manifest is read-only and uses the existing fixed grid slots. Persistent user workspaces, drag/resize editing, and third-party installation are later layers built on the type/instance and source/channel boundaries established here.
+The Dashboard host renders the Header outside the workspace coordinate system and mounts cards inside a nested 16 × 15 CSS Grid using Manifest `layout` values. Settings uses the same server-authoritative constraints in a Pointer Events editor with collision rejection and first-fit placement. The browser registry remains a static allowlist, so persisted manifests cannot inject executable modules or arbitrary HTML.
 
 ### Native ES Modules
 
@@ -377,7 +395,9 @@ The dashboard uses a single WebSocket connection (`/ws`) managed by `WebSocketHu
 3. Registered snapshot sources are fetched once per due cycle and fanned out to every matching client; system/media/GitHub use the 1s cadence and Dashboard aggregate uses 20s/60s Vibe cadence
 4. Spectrum broadcaster honors each visible client's requested 12–60 FPS cadence
 5. Lyric broadcaster polls at 120ms but sends only when the active track/line changes; the Dashboard subscribes only when its manifest contains the player channel
-6. Clients can report page type, add/replace/remove source subscriptions, subscribe to spectrum/lyrics, toggle Vibe, request initialization, ping and return screenshots
+6. Dashboard reports include `workspace_id` (legacy dashboard reports default to `main`); Settings can navigate a client to `/`, `/workspaces/<id>`, or `/music`
+7. Workspace writes broadcast `workspace_updated`; only clients showing that workspace refetch the Manifest, replace source/channel subscriptions, and report the new revision/workspace state
+8. Clients can still add/replace/remove source subscriptions, subscribe to spectrum/lyrics, toggle Vibe, request initialization, ping and return screenshots
 
 All disconnect paths use one cleanup operation so spectrum references are released exactly once. Dashboard media remains slim while the Music Stage receives the full media payload.
 
@@ -412,17 +432,20 @@ python -m pytest -q
 node --check src/static/modules/dashboard/main.js
 node --check src/static/modules/music/main.js
 node --check src/static/settings/modules/main.js
+
+# Pure 16 × 15 placement/collision tests
+node --test src/tests/grid-layout.test.mjs
 ```
 
-The test suite covers App Factory and Workspace Registry isolation, the complete route surface, managed runtime shutdown/restart, source-filtered WebSocket broadcasting and subscription cleanup, Provider/Dashboard/Health/Settings/Workspace contracts, AST dependency boundaries, workspace Host/DataBus behavior, ES Module import resolution/cycle detection, Node syntax checks, and loopback-only Settings module assets.
+The test suite covers App Factory/Registry/SQLite isolation, workspace seed/CRUD/CAS rollback, the complete route and loopback security surface, managed runtime shutdown/restart, source-filtered WebSocket broadcasting and workspace navigation, Provider/Dashboard/Health/Settings/Workspace contracts, AST dependency boundaries, workspace Host/DataBus behavior, Manifest v2 fallback parity, ES Module import resolution/cycle detection, Node syntax checks, and pure grid placement/collision rules.
 
 ## Security
 
 - `config/credentials.vault` is the only persistent credential store. It is encrypted with Windows DPAPI, bound to the Windows user profile, and git-ignored together with its lock file.
 - `config/config.yaml` and `config/config.example.yaml` contain only non-sensitive configuration. Never add passwords, cookies, access tokens, JWTs, or client secrets to either file.
-- `data/` contains only non-secret auto-generated caches/runtime state and is fully git-ignored.
-- Provider authentication and Settings POST endpoints are loopback-only and reject cross-site requests unless they are same-origin or include `X-Dashboard-Token`.
-- Vault writes use a lock and a monotonic revision to prevent concurrent Settings/authentication updates from overwriting each other.
+- `data/` contains only non-secret auto-generated caches/runtime state, including `workspaces.db`, and is fully git-ignored.
+- Provider authentication and Settings state-changing endpoints are loopback-only and reject cross-site requests unless they are same-origin or include `X-Dashboard-Token`.
+- Vault and workspace writes use independent revisions/locks so concurrent Settings, authentication, and layout updates cannot silently overwrite each other.
 - Only schema-v4 configuration and the Vault are supported; legacy configuration and plaintext credential files are never read, migrated, or deleted automatically.
 - Internal network HTTPS with self-signed certs is auto-detected and verification skipped for local platform clients.
 

@@ -226,6 +226,29 @@ def test_explicit_dashboard_sources_do_not_force_optional_lyric_channel():
     assert hub._states[modular]["lyric"] is False
     assert hub._states[legacy]["lyric"] is True
     assert hub._states[music]["lyric"] is True
+    assert hub._lyric_interest_count() == 2
+
+    assert hub.broadcast_lyric({"type": "lyric", "data": {"lyric": "line"}}) == 2
+    assert modular.messages == []
+    assert legacy.messages[-1]["type"] == "lyric"
+    assert music.messages[-1]["type"] == "lyric"
+
+
+def test_explicit_lyric_unsubscribe_overrides_dashboard_page_fallback():
+    hub = WebSocketHub()
+    sock = _Socket()
+    _add_client(hub, sock, page="dashboard")
+
+    hub._handle_message(
+        sock,
+        "client-1",
+        json.dumps({"type": "subscribe", "channel": "lyric", "active": False}),
+    )
+
+    assert hub._states[sock]["lyric_explicit"] is True
+    assert hub._lyric_interest_count() == 0
+    assert hub.broadcast_lyric({"type": "lyric", "data": {"lyric": "hidden"}}) == 0
+    assert sock.messages == []
 
 
 def test_explicit_subscriptions_filter_legacy_message_types():
@@ -296,3 +319,54 @@ def test_media_broadcast_keeps_dashboard_slim_music_full_and_filters_sources():
     assert "cover_palette" not in dashboard_data
     assert music_data == frame
     assert excluded.messages == []
+
+
+def test_dashboard_report_tracks_workspace_and_keeps_legacy_main_default():
+    hub = WebSocketHub()
+    legacy = _Socket()
+    custom = _Socket()
+    music = _Socket()
+    _add_client(hub, legacy)
+    _add_client(hub, custom)
+    _add_client(hub, music)
+
+    hub._handle_message(legacy, "client-1", json.dumps({"type": "report", "page": "dashboard"}))
+    hub._handle_message(
+        custom,
+        "client-2",
+        json.dumps({"type": "report", "page": "dashboard", "workspace_id": "ws_demo"}),
+    )
+    hub._handle_message(music, "client-3", json.dumps({"type": "report", "page": "music"}))
+
+    clients = {item["id"]: item for item in hub.list_clients()}
+    assert clients["client-1"]["workspace_id"] == "main"
+    assert clients["client-2"]["workspace_id"] == "ws_demo"
+    assert clients["client-3"]["workspace_id"] is None
+    assert hub.workspace_client_ids("main") == ["client-1"]
+    assert hub.workspace_client_ids("ws_demo") == ["client-2"]
+
+
+def test_workspace_navigation_extends_legacy_dashboard_and_music_messages():
+    hub = WebSocketHub()
+    sock = _Socket()
+    _add_client(hub, sock)
+
+    assert hub.navigate_client("client-1", "dashboard") is True
+    assert sock.messages[-1] == {
+        "type": "navigate",
+        "page": "dashboard",
+        "url": "/",
+        "workspace_id": "main",
+    }
+
+    assert hub.navigate_client("client-1", workspace_id="ws demo") is True
+    assert sock.messages[-1] == {
+        "type": "navigate",
+        "page": "dashboard",
+        "url": "/workspaces/ws%20demo",
+        "workspace_id": "ws demo",
+    }
+
+    assert hub.navigate_client("client-1", "music") is True
+    assert sock.messages[-1] == {"type": "navigate", "page": "music", "url": "/music"}
+    assert hub.navigate_client("missing", workspace_id="main") is False

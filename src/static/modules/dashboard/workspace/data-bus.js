@@ -1,6 +1,7 @@
 export class DataBus {
     constructor() {
         this.subscriptions = new Map();
+        this.latestPayloads = new Map();
     }
 
     subscribe(source, handler) {
@@ -17,6 +18,7 @@ export class DataBus {
     }
 
     publish(source, payload) {
+        this.latestPayloads.set(source, payload);
         const handlers = this.subscriptions.get(source);
         if (!handlers) return 0;
         const subscribers = [...handlers];
@@ -30,6 +32,14 @@ export class DataBus {
         return subscribers.length;
     }
 
+    hasLatest(source) {
+        return this.latestPayloads.has(source);
+    }
+
+    latest(source) {
+        return this.latestPayloads.get(source);
+    }
+
     unsubscribe(source, handler) {
         const handlers = this.subscriptions.get(source);
         if (!handlers) return false;
@@ -40,6 +50,7 @@ export class DataBus {
 
     clear() {
         this.subscriptions.clear();
+        this.latestPayloads.clear();
     }
 }
 

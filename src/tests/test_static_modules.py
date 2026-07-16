@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -24,12 +25,13 @@ STATIC_IMPORT_RE = re.compile(
 DYNAMIC_IMPORT_RE = re.compile(r"\bimport\(\s*['\"]([^'\"]+)['\"]\s*\)")
 INLINE_HANDLER_RE = re.compile(r"\son[a-z]+\s*=", re.IGNORECASE)
 EXPECTED_DASHBOARD_WIDGET_TYPES = {
-    "builtin.system.info",
-    "builtin.system.network",
-    "builtin.system.uptime",
-    "builtin.system.disks",
-    "builtin.media.player",
-    "builtin.github.contributions",
+    "builtin.dashboard.system-info",
+    "builtin.dashboard.network",
+    "builtin.dashboard.uptime",
+    "builtin.dashboard.disks",
+    "builtin.dashboard.vibe",
+    "builtin.dashboard.player",
+    "builtin.dashboard.github",
 }
 
 
@@ -63,8 +65,8 @@ def test_dashboard_html_keeps_shell_and_delegates_builtin_cards_to_workspace_hos
     source = (STATIC / "dashboard.html").read_text(encoding="utf-8")
     assert 'id="workspaceHost"' in source
     assert 'class="hdr"' in source
-    assert 'id="vibeCard"' in source
     for marker in (
+        'id="vibeCard"',
         'id="sysCard"',
         'id="diskCard"',
         'class="card netCard"',
@@ -80,13 +82,35 @@ def test_dashboard_builtin_type_allowlist_matches_backend_registry():
     registry_source = (workspace / "registry.js").read_text(encoding="utf-8")
     fallback_source = (workspace / "default-manifest.js").read_text(encoding="utf-8")
     frontend_types = set(re.findall(r"\['(builtin\.[^']+)'\s*,\s*\{", registry_source))
-    fallback_types = set(re.findall(r"type:\s*'(builtin\.[^']+)'", fallback_source))
+    fallback_types = set(re.findall(r"widget\('[^']+',\s*'(builtin\.[^']+)'", fallback_source))
     backend_types = {
         widget.type
         for widget in create_builtin_workspace_registry().get_workspace("main").widgets
     }
     assert frontend_types == fallback_types == backend_types == EXPECTED_DASHBOARD_WIDGET_TYPES
     assert "import(" not in registry_source
+
+
+def test_frontend_fallback_manifest_matches_builtin_backend_manifest():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js 不可用")
+    result = subprocess.run(
+        [
+            node,
+            "--input-type=module",
+            "-e",
+            "import('./src/static/modules/dashboard/workspace/default-manifest.js')"
+            ".then((module) => process.stdout.write(JSON.stringify(module.DEFAULT_WORKSPACE_MANIFEST)))",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    frontend = json.loads(result.stdout)
+    backend = create_builtin_workspace_registry().serialize_workspace("main")
+    assert frontend == backend
 
 
 def test_workspace_components_preserve_legacy_dom_contract():
@@ -96,7 +120,8 @@ def test_workspace_components_preserve_legacy_dom_contract():
         "sysCard", "dot-system", "sysMain", "diskCard", "sysDisks", "netUp", "netDown",
         "uptimeVal", "lyricCard", "dot-media", "lyricText", "lyricScroll", "lyricIdle",
         "lyricTitle", "lyricOffsetVal", "lyricArtist", "dot-github", "ghGrid", "ghUser", "ghTotal",
-        'data-action="player-control"', 'data-action="adjust-lyric-offset"',
+        "vibeCard", "dot-vibe", "vibeToggle", "ringFg", "todayTotal", "vibeBalances",
+        'data-action="player-control"', 'data-action="adjust-lyric-offset"', 'data-action="toggle-vibe"',
     ):
         assert marker in combined
 
@@ -106,13 +131,82 @@ def test_dashboard_optional_channels_follow_workspace_manifest():
     main_source = (dashboard / "main.js").read_text(encoding="utf-8")
     ws_source = (dashboard / "ws.js").read_text(encoding="utf-8")
 
-    assert "summary.channels.includes('media.lyric')" in main_source
-    assert "activeChannels.forEach" in ws_source
+    assert "types.has('builtin.dashboard.player')" in main_source
+    assert "channelIds.forEach" in ws_source
     assert "'media.lyric': 'lyric'" in ws_source
     assert ws_source.index("type: 'subscribe', sources: activeSources") < ws_source.index(
-        "type: 'report', page: 'dashboard'"
+        "type: 'report', page: 'dashboard', workspace_id: activeWorkspaceId"
     )
+    assert "bus.publish('media.lyric'" in ws_source
     assert "channel: 'lyric', active: true" not in ws_source
+
+
+def test_dashboard_workspace_v2_layout_and_loading_contracts():
+    dashboard = STATIC / "modules" / "dashboard"
+    workspace = dashboard / "workspace"
+    css = (STATIC / "dashboard.css").read_text(encoding="utf-8")
+    manifest = (workspace / "default-manifest.js").read_text(encoding="utf-8")
+    host = (workspace / "host.js").read_text(encoding="utf-8")
+    main = (dashboard / "main.js").read_text(encoding="utf-8")
+    api = (dashboard / "api.js").read_text(encoding="utf-8")
+    ws = (dashboard / "ws.js").read_text(encoding="utf-8")
+    vibe = (dashboard / "vibe.js").read_text(encoding="utf-8")
+
+    assert "grid-template-rows:44px minmax(0,1fr)" in css
+    assert "#workspaceHost" in css
+    assert "grid-template-columns:repeat(16" in css
+    assert "grid-template-rows:repeat(15" in css
+    for fixed_position in (
+        ".sysCard { grid-row:", ".netCard { grid-row:", ".uptimeCard { grid-row:",
+        ".diskCard { grid-row:", ".tokenCard { grid-row:", ".lyric-wrap { grid-row:",
+        ".gh-wrap { grid-row:",
+    ):
+        assert fixed_position not in css
+
+    assert "version: 2" in manifest
+    assert "revision: 1" in manifest
+    assert "grid: { columns: 16, rows: 15 }" in manifest
+    for layout in (
+        "{ x: 0, y: 0, width: 6, height: 5 }",
+        "{ x: 6, y: 0, width: 2, height: 3 }",
+        "{ x: 6, y: 3, width: 2, height: 2 }",
+        "{ x: 0, y: 5, width: 8, height: 4 }",
+        "{ x: 8, y: 0, width: 8, height: 9 }",
+        "{ x: 0, y: 9, width: 8, height: 6 }",
+        "{ x: 8, y: 9, width: 8, height: 6 }",
+    ):
+        assert layout in manifest
+    assert "revision: manifest.revision" in host
+    assert "manifest.grid must be 16x15" in host
+    assert "manifest.name must be a non-empty string" in host
+    assert "layout: widget.layout" in host
+    assert "element.style.gridColumn" in host
+    assert "element.style.gridRow" in host
+    assert "stagingRoot" in host
+
+    assert "workspaceIdFromPath" in main
+    assert "workspaceId !== 'main'" in main
+    assert "workspaceRequestSequence" in main
+    assert "showWorkspaceError" in main
+    assert "fetchWorkspaceManifest(workspaceId)" in main
+    assert "encodeURIComponent(normalizedId)" in api
+    assert "case 'workspace_updated'" in ws
+    assert "workspace_id: activeWorkspaceId" in ws
+    assert "reconcileWorkspace('websocket_open')" in ws
+    assert "socket.send(JSON.stringify({ type: 'init' }))" in ws
+    assert "handleDashboardData" not in ws
+    assert "dashboardDataBus.publish('dashboard.aggregate'" in vibe
+
+
+def test_dashboard_components_return_roots_and_vibe_owns_token_dom():
+    components = STATIC / "modules" / "dashboard" / "workspace" / "components"
+    for name in ("system-info.js", "network.js", "uptime.js", "disks.js", "player.js", "github.js", "vibe.js"):
+        source = (components / name).read_text(encoding="utf-8")
+        assert "context.root.appendChild(root);" in source, name
+        assert "return root;" in source, name
+    vibe = (components / "vibe.js").read_text(encoding="utf-8")
+    assert "root.id = 'vibeCard'" in vibe
+    assert "handleDashboardData(payload" in vibe
 
 
 def test_all_relative_and_absolute_module_imports_resolve():
@@ -258,6 +352,35 @@ async function load(file) {
   await mod.evaluate();
   return mod.namespace;
 }
+class FakeElement {
+  constructor(ownerDocument) {
+    this.ownerDocument = ownerDocument;
+    this.nodeType = 1;
+    this.parentNode = null;
+    this.childNodes = [];
+    this.dataset = {};
+    this.style = {};
+  }
+  appendChild(child) {
+    child.remove();
+    child.parentNode = this;
+    this.childNodes.push(child);
+    return child;
+  }
+  replaceChildren(...children) {
+    this.childNodes.slice().forEach((child) => child.remove());
+    children.forEach((child) => this.appendChild(child));
+  }
+  remove() {
+    if (!this.parentNode) return;
+    const siblings = this.parentNode.childNodes;
+    const index = siblings.indexOf(this);
+    if (index >= 0) siblings.splice(index, 1);
+    this.parentNode = null;
+  }
+}
+const fakeDocument = { createElement() { return new FakeElement(fakeDocument); } };
+global.document = fakeDocument;
 (async () => {
   const busModule = await load('src/static/modules/dashboard/workspace/data-bus.js');
   const hostModule = await load('src/static/modules/dashboard/workspace/host.js');
@@ -268,6 +391,7 @@ async function load(file) {
   unsubscribe();
   bus.publish('system.snapshot', { value: 2 });
   if (JSON.stringify(seen) !== JSON.stringify([['system.snapshot', 1]])) throw new Error('unsubscribe');
+  if (!bus.hasLatest('system.snapshot') || bus.latest('system.snapshot').value !== 2) throw new Error('latest payload cache');
   let isolated = 0;
   bus.subscribe('isolated.source', () => { throw new Error('expected subscriber failure'); });
   bus.subscribe('isolated.source', () => { isolated += 1; });
@@ -284,36 +408,83 @@ async function load(file) {
     has(type) { return type === 'test.widget'; },
     get(type) {
       if (!this.has(type)) return null;
-      return { create() { return {
-        mount() { mounts += 1; },
-        onData(payload) { updates += payload.value; },
-        destroy() { destroys += 1; },
-      }; } };
+      return { create() {
+        let element = null;
+        return {
+          mount(context) {
+            mounts += 1;
+            element = fakeDocument.createElement('div');
+            context.root.appendChild(element);
+            if (context.widget.id === 'fail') throw new Error('expected mount failure');
+            return element;
+          },
+          onData(payload) { updates += payload.value; },
+          destroy() { destroys += 1; element?.remove(); },
+        };
+      } };
     },
   };
-  const host = new hostModule.WorkspaceHost({ root: {}, registry, bus });
+  const root = fakeDocument.createElement('main');
+  const host = new hostModule.WorkspaceHost({ root, registry, bus });
+  const baseWidget = {
+    id: 'one', type: 'test.widget', slot: 'main',
+    sources: ['system.snapshot'], channels: ['media.lyric'],
+    layout: { x: 0, y: 0, width: 2, height: 2 },
+    constraints: { min_width: 1, min_height: 1, max_width: 16, max_height: 15 },
+  };
   const manifest = {
-    id: 'test', version: 1, required: true,
+    id: 'test', version: 2, revision: 1, name: 'Test', kind: 'custom', required: true,
+    grid: { columns: 16, rows: 15 },
     sources: [{ id: 'dashboard.aggregate' }],
-    widgets: [{ id: 'one', type: 'test.widget', slot: 'main', sources: ['system.snapshot'], channels: ['media.lyric'] }],
+    widgets: [baseWidget],
   };
   const first = host.mount(manifest);
   host.mount(JSON.parse(JSON.stringify(manifest)));
-  bus.publish('system.snapshot', { value: 3 });
-  if (mounts !== 1 || updates !== 3) throw new Error('idempotent mount');
+  if (mounts !== 1 || root.childNodes.length !== 1) throw new Error('idempotent mount');
+  if (updates !== 2) throw new Error('initial replay');
+  if (root.childNodes[0].style.gridColumn !== '1 / span 2') throw new Error('grid column');
+  if (root.childNodes[0].style.gridRow !== '1 / span 2') throw new Error('grid row');
   if (JSON.stringify(first.sources.sort()) !== JSON.stringify(['dashboard.aggregate', 'system.snapshot'])) throw new Error('sources');
   if (JSON.stringify(first.channels) !== JSON.stringify(['media.lyric'])) throw new Error('channels');
-  const changed = host.mount({ ...manifest, sources: [{ id: 'other.aggregate' }] });
-  if (mounts !== 2 || destroys !== 1) throw new Error('workspace source change did not remount');
-  if (JSON.stringify(changed.sources.sort()) !== JSON.stringify(['other.aggregate', 'system.snapshot'])) throw new Error('changed sources');
-  host.destroy();
-  bus.publish('system.snapshot', { value: 4 });
-  if (destroys !== 2 || updates !== 3) throw new Error('destroy');
+
+  const revised = host.mount({ ...manifest, revision: 2 });
+  if (mounts !== 2 || destroys !== 1 || revised.revision !== 2 || updates !== 4) throw new Error('revision did not remount with replay');
+  const moved = host.mount({
+    ...manifest,
+    revision: 3,
+    widgets: [{ ...baseWidget, layout: { x: 2, y: 0, width: 2, height: 2 } }],
+  });
+  if (mounts !== 3 || destroys !== 2 || updates !== 6) throw new Error('layout did not remount with replay');
+  if (root.childNodes[0].style.gridColumn !== '3 / span 2') throw new Error('updated grid column');
+  bus.publish('system.snapshot', { value: 3 });
+  if (updates !== 9) throw new Error('active subscription');
+
+  const stableNode = root.childNodes[0];
+  let failed = false;
+  try {
+    host.mount({ ...manifest, revision: 4, widgets: [{ ...baseWidget, id: 'fail' }] });
+  } catch (_error) { failed = true; }
+  if (!failed || root.childNodes[0] !== stableNode || host.summary().revision !== moved.revision) {
+    throw new Error('failed mount replaced stable workspace');
+  }
   let rejected = false;
   try {
-    host.mount({ ...manifest, widgets: [{ ...manifest.widgets[0], type: 'unknown.widget' }] });
+    host.mount({
+      ...manifest,
+      revision: 5,
+      widgets: [{ ...baseWidget, constraints: { ...baseWidget.constraints, min_width: 3 } }],
+    });
+  } catch (_error) { rejected = true; }
+  if (!rejected) throw new Error('invalid constraints accepted');
+  rejected = false;
+  try {
+    host.mount({ ...manifest, revision: 6, widgets: [{ ...baseWidget, type: 'unknown.widget' }] });
   } catch (_error) { rejected = true; }
   if (!rejected) throw new Error('unknown type accepted');
+
+  host.destroy();
+  bus.publish('system.snapshot', { value: 4 });
+  if (root.childNodes.length !== 0 || updates !== 9) throw new Error('destroy');
 })().catch((error) => { console.error(error); process.exit(1); });
 """
     result = subprocess.run(

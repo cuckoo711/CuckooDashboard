@@ -1,4 +1,4 @@
-import { drawLyric } from '../../lyrics.js';
+import { applyLyricFrame, drawLyric } from '../../lyrics.js';
 
 export const PLAYER_SINGLE_INSTANCE = true;
 
@@ -7,7 +7,7 @@ export function createPlayerComponent() {
 
     return {
         mount(context) {
-            if (root) return;
+            if (root) return root;
             root = document.createElement('div');
             root.className = 'card lyric-wrap';
             root.id = 'lyricCard';
@@ -25,9 +25,12 @@ export function createPlayerComponent() {
                 + '<button class="lyric-offset-btn" data-action="adjust-lyric-offset" data-delta="0.5">+</button></span>'
                 + '<span class="card-foot-r" id="lyricArtist">--</span></div>';
             context.root.appendChild(root);
+            return root;
         },
-        onData(payload) {
-            if (root) drawLyric(payload);
+        onData(payload, source) {
+            if (!root) return;
+            if (source === 'media.lyric') applyLyricFrame(payload || {});
+            else drawLyric(payload);
         },
         destroy() {
             root?.remove();

@@ -1,5 +1,5 @@
 import { fetchDashboardData, fetchVibe, postVibe } from './api.js';
-import { handleDashboardData } from './render-dashboard.js';
+import { dashboardDataBus } from './workspace/data-bus.js';
 import { state } from './state.js';
 
 export function applyVibeUi() {
@@ -30,7 +30,7 @@ export async function toggleVibe() {
     storeVibeState();
     applyVibeUi();
     sendVibeState();
-    try { handleDashboardData(await fetchDashboardData()); }
+    try { dashboardDataBus.publish('dashboard.aggregate', await fetchDashboardData()); }
     catch (error) { console.error('Refresh error:', error); }
 }
 
