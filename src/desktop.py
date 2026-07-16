@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MiMo Usage Desktop App
+Cuckoo Dashboard Desktop App
 原生桌面应用，无需打开浏览器。
 
 使用方式:
@@ -31,11 +31,11 @@ setup_logging(load_config())
 # 导入Flask应用
 from dashboard import app, start_background_threads_once
 from core.monitor import load_target_monitor
-from providers.mimo.api import get_mimo_api
+from providers import get_providers
 
 logger = logging.getLogger(__name__)
 
-APP_NAME = "MiMoUsageDashboard"
+APP_NAME = "CuckooDashboard"
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "run_desktop.py"
 PYTHONW = Path(__file__).resolve().parent.parent / "venv" / "Scripts" / "pythonw.exe"
 
@@ -96,7 +96,7 @@ def uninstall_autostart():
 
 
 def main():
-    parser = argparse.ArgumentParser(description='MiMo Usage Desktop App')
+    parser = argparse.ArgumentParser(description='Cuckoo Dashboard Desktop App')
     parser.add_argument('--port', type=int, default=5000, help='服务器端口 (默认: 5000)')
     parser.add_argument('--dev', action='store_true', help='开发模式 (显示Flask日志)')
     parser.add_argument('--install', action='store_true', help='注册开机自启后退出')
@@ -126,15 +126,16 @@ def main():
     win_x, win_y = monitor['left'], monitor['top']
     print(f"[OK] 找到目标显示器: {monitor['name']} ({monitor['width']}x{monitor['height']}) at ({win_x},{win_y})")
 
-    # MiMo Cookie 仅影响 MiMo 卡片，不应阻塞桌面看板启动
-    try:
-        api = get_mimo_api()
-        if api:
-            print("[OK] Cookie detected")
-        else:
-            print("[WARN] MiMo Cookie missing or expired; dashboard will start with MiMo unavailable")
-    except Exception as e:
-        print(f"[WARN] MiMo check failed: {e}; dashboard will continue")
+    # Provider 认证/健康问题只影响对应插件，绝不阻塞桌面看板启动。
+    provider_statuses = []
+    for provider_id, provider in sorted(get_providers().items(), key=lambda item: item[0].casefold()):
+        get_status = getattr(provider, "get_status", None)
+        try:
+            status = get_status() if callable(get_status) else {"status": "unknown"}
+        except Exception as exc:
+            status = {"status": "error", "error": str(exc)}
+        provider_statuses.append(f"{provider_id}:{status.get('status', 'unknown')}")
+    print("[INFO] Provider 状态: " + (", ".join(provider_statuses) or "无已发现 Provider"))
 
     # 启动 WebSocket 广播线程
     start_background_threads_once()
@@ -158,7 +159,7 @@ def main():
     print(f"[OK] Server ready: {url}")
 
     window = webview.create_window(
-        title='MiMo Usage Dashboard',
+        title='Usage Dashboard',
         url=url,
         x=win_x,
         y=win_y,

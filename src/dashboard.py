@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-MiMo Usage Dashboard
-Web 看板服务器，用于副屏显示 MiMo 使用情况。
+Cuckoo Dashboard
+可扩展 Web 看板服务器，用于副屏显示系统与 Provider 数据。
 
 使用方式:
     python dashboard.py              # 默认端口 5000
@@ -76,9 +76,10 @@ from services.spectrum_service import (
     save_music_offsets,
     start_beat_calibration,
 )
-from providers import fetch_all_data, get_auth_providers, get_nug_payload, get_nug_channel_breakdown
+from providers import get_auth_providers, get_providers
 from providers.auth import refresh_scheduler
-from providers.auth_routes import ProviderAuthRouter
+from services.dashboard_data_service import fetch_dashboard_data, get_provider_public_data
+from providers.auth_routes import ProviderAuthRouter, ProviderPublicRouter
 from services.player_service import ALLOWED_PLAYER_ACTIONS, control_player
 from services.settings_service import (
     SettingsValidationError,
@@ -136,10 +137,10 @@ def _get_font_payload() -> dict:
 def _get_dashboard_data() -> dict:
     """组合既有今日用量与可配置的 Vibe 卡片数据。
 
-    ``fetch_all_data`` 可携带由任意聚合器产生的私有 Provider 快照；这里将其
-    传给 Vibe 服务复用后移除，避免向 API/WS 客户端泄露内部缓存结构。
+    通用聚合器可携带按 Provider ID 归档的私有快照；这里将其传给 Vibe 服务
+    复用后移除，避免向 API/WS 客户端泄露内部缓存结构。
     """
-    data = dict(fetch_all_data())
+    data = dict(fetch_dashboard_data())
     snapshots = data.pop("_provider_snapshots", {})
     data["vibe"] = get_vibe_data(prefetched_provider_data=snapshots)
     return data
@@ -1201,20 +1202,39 @@ def api_player_control(action):
 
 @app.route("/api/system")
 def api_system():
-    """返回系统硬件信息（独立端点，不依赖 MiMo 登录）"""
+    """返回系统硬件信息（独立端点，不依赖任何 Provider 认证）"""
     return jsonify(get_system_info())
 
 
-@app.route("/api/nug")
-def api_nug():
-    """返回 NUG 平台余额和用量"""
-    return jsonify(get_nug_payload())
+@app.route("/api/providers")
+def api_providers():
+    """返回已发现 Provider 的通用元数据与健康摘要。"""
+    result = []
+    for provider_id, provider in sorted(get_providers().items(), key=lambda item: item[0].casefold()):
+        get_status = getattr(provider, "get_status", None)
+        try:
+            status = get_status() if callable(get_status) else {"status": "unknown", "ok": False}
+        except Exception as exc:
+            status = {"status": "error", "ok": False, "error": str(exc)}
+        result.append({
+            "id": provider_id,
+            "capabilities": list(getattr(provider, "CAPABILITIES", ()) or ()),
+            "status": status if isinstance(status, dict) else {"status": "unknown", "ok": False},
+        })
+    return jsonify({"providers": result})
 
 
-@app.route("/api/nug/channels")
-def api_nug_channels():
-    """返回 NUG 按 channel 分组的用量明细"""
-    return jsonify(get_nug_channel_breakdown(days=7))
+@app.route("/api/providers/<provider_id>/<resource>")
+def api_provider_data(provider_id: str, resource: str):
+    """读取 Provider 声明的通用公开资源，不识别具体 Provider 名称。"""
+    try:
+        days = max(1, min(365, int(request.args.get("days", 7))))
+    except (TypeError, ValueError):
+        abort(400)
+    data = get_provider_public_data(provider_id, resource, days=days)
+    if data is None:
+        abort(404)
+    return jsonify({"provider": provider_id, "resource": resource, "data": data})
 
 
 # ============================================================
@@ -1293,8 +1313,33 @@ def register_provider_auth_routes() -> None:
 register_provider_auth_routes()
 
 
+_public_provider_routes_registered = False
+
+
+def register_provider_public_routes() -> None:
+    """动态挂载 Provider 自己拥有的公开 API 或兼容别名。"""
+    global _public_provider_routes_registered
+    if _public_provider_routes_registered:
+        return
+    for provider_id, provider in get_providers().items():
+        register = getattr(provider, "register_public_routes", None)
+        if not callable(register):
+            continue
+        router = ProviderPublicRouter(provider_id, require_post_protection=require_post_protection)
+        try:
+            register(router)
+            router.register(app)
+            logger.info("[provider-api] 已挂载 Provider 公开路由: %s", provider_id)
+        except Exception:
+            logger.exception("[provider-api] 挂载 Provider %s 公开路由失败", provider_id)
+    _public_provider_routes_registered = True
+
+
+register_provider_public_routes()
+
+
 def main():
-    parser = argparse.ArgumentParser(description="MiMo Usage Dashboard")
+    parser = argparse.ArgumentParser(description="Cuckoo Dashboard")
     parser.add_argument("--port", "-p", type=int, default=5000, help="端口号 (默认 5000)")
     parser.add_argument("--host", default="0.0.0.0", help="监听地址 (默认 0.0.0.0)")
     parser.add_argument("--open", "-o", action="store_true", help="自动打开浏览器")
@@ -1307,7 +1352,7 @@ def main():
         logger.info(f"正在打开浏览器: {url}")
         webbrowser.open(url)
 
-    logger.info("MiMo Dashboard 启动中...")
+    logger.info("Cuckoo Dashboard 启动中...")
     logger.info(f"访问地址: http://{args.host}:{args.port}")
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         logger.info("[security] 当前不是仅本机监听；POST 接口会要求同源或 X-Dashboard-Token")

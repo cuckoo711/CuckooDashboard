@@ -10,12 +10,12 @@ MiMo Token Usage Checker
   4. 手动 Cookie      - 从浏览器开发者工具复制
 
 使用方式:
-    python mimo_usage.py                  # 交互式选择登录方式
-    python mimo_usage.py --login qr       # 扫码登录
-    python mimo_usage.py --login browser  # 浏览器 Cookie
-    python mimo_usage.py --login password # 密码登录
-    python mimo_usage.py --cookie FILE    # 从文件加载 Cookie
-    python mimo_usage.py --json           # JSON 格式输出
+    python -m providers.mimo                  # 交互式选择登录方式
+    python -m providers.mimo --login qr       # 扫码登录
+    python -m providers.mimo --login browser  # 浏览器 Cookie
+    python -m providers.mimo --login password # 密码登录
+    python -m providers.mimo --cookie FILE    # 从文件加载 Cookie
+    python -m providers.mimo --json           # JSON 格式输出
 """
 
 import argparse
@@ -809,7 +809,7 @@ def get_cookie_with_refresh(cookie_str: str, cache_info: dict) -> str:
     # passToken 刷新失败，browser/password 方式可以重登
     if method not in ("browser", "password"):
         print("passToken 刷新失败，请重新登录。")
-        print("  运行: python mimo_usage.py --login qr --save")
+        print("  运行: python -m providers.mimo --login qr --save")
         sys.exit(1)
 
     print("Cookie 已过期，尝试自动重新获取...")
@@ -820,7 +820,7 @@ def get_cookie_with_refresh(cookie_str: str, cache_info: dict) -> str:
         return new_cookie
 
     print("\n自动刷新失败。请手动重新登录:")
-    print("  python mimo_usage.py --no-cache")
+    print("  python -m providers.mimo --no-cache")
     sys.exit(1)
 
 
@@ -1305,13 +1305,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
-  python mimo_usage.py                    交互式选择登录方式
-  python mimo_usage.py --login qr         扫码登录（推荐）
-  python mimo_usage.py --login browser    自动从浏览器读取 Cookie
-  python mimo_usage.py --login password   密码登录
-  python mimo_usage.py --cookie FILE      从文件加载 Cookie
-  python mimo_usage.py --json             JSON 格式输出
-  python mimo_usage.py --save             登录后将 Cookie 保存到 DPAPI Vault（支持自动刷新）
+  python -m providers.mimo                    交互式选择登录方式
+  python -m providers.mimo --login qr         扫码登录（推荐）
+  python -m providers.mimo --login browser    自动从浏览器读取 Cookie
+  python -m providers.mimo --login password   密码登录
+  python -m providers.mimo --cookie FILE      从文件加载 Cookie
+  python -m providers.mimo --json             JSON 格式输出
+  python -m providers.mimo --save             登录后将 Cookie 保存到 DPAPI Vault（支持自动刷新）
 
 Cookie 自动刷新:
   登录成功后，脚本会将 Cookie 和登录方式保存到 DPAPI Vault。
@@ -1447,7 +1447,7 @@ Cookie 自动刷新:
         sys.exit(1)
     except (json.JSONDecodeError, KeyError) as e:
         print(f"数据解析失败: {e}")
-        print("可能是 Cookie 已过期，请重新登录: python mimo_usage.py --no-cache")
+        print("可能是 Cookie 已过期，请重新登录: python -m providers.mimo --no-cache")
         sys.exit(1)
 
 

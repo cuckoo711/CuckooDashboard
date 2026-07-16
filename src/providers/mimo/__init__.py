@@ -9,9 +9,9 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from core.config import get_provider_config
+from providers.runtime_config import get_provider_config
 from core.credentials import VaultError
-from mimo_usage import (
+from providers.mimo.implementation import (
     MiMoAPI,
     QRCodeLogin,
     XiaomiLoginError,
@@ -28,7 +28,8 @@ from providers.mimo.api import get_mimo_api, is_cookie_valid, reload_config as r
 
 logger = logging.getLogger("cuckoo.providers.mimo")
 
-CAPABILITIES = ["token_plan", "balance", "api_usage"]
+PROVIDER_ID = "mimo"
+CAPABILITIES = ["token_plan", "balance", "api_usage", "daily_usage"]
 
 CONFIG_SCHEMA = {
     "config_key": "mimo",
@@ -46,6 +47,7 @@ AUTH_DESCRIPTOR = {
     "auth_path": "/auth/mimo/",
     "custom_ui": True,
 }
+
 
 _last_success_at: str | None = None
 _last_error: str | None = None
@@ -153,6 +155,33 @@ def get_usage_summary() -> dict | None:
 
 
 def get_channel_breakdown(days: int = 7) -> list | None:
+    return None
+
+
+def get_today_usage() -> dict[str, int | str] | None:
+    """将 MiMo 的月度明细适配为 Provider 无关的今日用量契约。"""
+    daily_data = get_daily_detail() or {}
+    rows = daily_data.get("tokenUsage") if isinstance(daily_data, dict) else None
+    if not isinstance(rows, list):
+        return None
+    now = datetime.utcnow()
+    target_key = f"{now.month:02d}-{now.day:02d}"
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) < 5 or str(row[0]) != target_key:
+            continue
+        input_tokens = int(row[1] or 0)
+        output_tokens = int(row[2] or 0)
+        total_tokens = int(row[3] or 0)
+        cached_input_tokens = int(row[4] or 0)
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cached_input_tokens": cached_input_tokens,
+            "uncached_input_tokens": max(0, input_tokens - cached_input_tokens),
+            "total_tokens": total_tokens,
+            "source_count": 1,
+            "period": "today",
+        }
     return None
 
 

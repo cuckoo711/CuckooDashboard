@@ -33,7 +33,7 @@ class MemoryVault:
 @pytest.fixture
 def base_config():
     return {
-        "config_version": 3,
+        "config_version": 4,
         "dashboard": {
             "off_peak_badge": {"enabled": True, "ranges": [{"start": "00:00", "end": "08:00"}]},
             "vibe_coding": {"ring": {}, "model_bars": {}, "balances": []},

@@ -1,6 +1,6 @@
-"""MiMo 官方平台 provider — API 封装与 Cookie 管理。
+"""MiMo Provider 的 API 封装与 Cookie 管理。
 
-从 mimo_usage.py 导入 MiMoAPI 及 Cookie 工具函数，
+从同一插件包的 ``implementation`` 模块导入 MiMoAPI 与 Vault Cookie 工具函数，
 提供自动检测有效性、过期刷新功能。
 """
 
@@ -9,12 +9,12 @@ from __future__ import annotations
 import logging
 import time
 
-from core.config import get_provider_config
+from providers.runtime_config import get_provider_config
 
 try:
-    from mimo_usage import MiMoAPI, load_cookies, refresh_mimo_cookie, save_cookies
+    from providers.mimo.implementation import MiMoAPI, load_cookies, refresh_mimo_cookie, save_cookies
 except ImportError as exc:
-    raise RuntimeError("无法导入 mimo_usage.py，请确保文件存在") from exc
+    raise RuntimeError("无法导入 MiMo Provider CLI 模块") from exc
 
 logger = logging.getLogger("cuckoo.providers.mimo")
 
@@ -34,7 +34,7 @@ def get_mimo_api() -> MiMoAPI | None:
     cache_info = load_cookies()
     cookie_str = cache_info.get("cookie")
     if not cookie_str:
-        logger.info("[MiMo] 未找到 Cookie，请先运行 mimo_usage.py --login qr --save 登录")
+        logger.info("[MiMo] 未找到 Cookie，请先运行 python -m providers.mimo --login qr --save 登录")
         _mimo_cookie_valid = False
         return None
 
@@ -61,7 +61,7 @@ def get_mimo_api() -> MiMoAPI | None:
                 _mimo_cookie_valid = True
                 logger.info("[MiMo] 自动刷新成功，已保存新 Cookie [OK]")
             else:
-                logger.error("[MiMo] 自动刷新失败，请手动运行: python mimo_usage.py --login qr --save")
+                logger.error("[MiMo] 自动刷新失败，请手动运行: python -m providers.mimo --login qr --save")
                 _mimo_cookie_valid = False
         else:
             _mimo_cookie_valid = True

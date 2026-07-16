@@ -43,7 +43,7 @@ def test_fake_provider_schema_appears_without_settings_code_changes(monkeypatch)
         "get_status": lambda self: {"status": "unknown", "ok": False, "enabled": True}
     })()
     base = {
-        "config_version": 3,
+        "config_version": 4,
         "providers": {"atlas": {"enabled": True}},
         "dashboard": {},
     }

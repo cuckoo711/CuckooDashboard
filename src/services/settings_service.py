@@ -9,9 +9,10 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
 
-from core.config import CONFIG_VERSION, get_provider_config, load_config, migrate_config, save_config
+from core.config import CONFIG_VERSION, load_config, save_config
 from core.credentials import VaultConflict, VaultError, get_global_secret, get_provider_state, vault
 from providers import get_provider_config_schemas, get_providers
+from providers.runtime_config import get_provider_config
 from services.font_service import font_exists, list_fonts
 from services.spectrum_service import list_capture_devices, load_music_offsets, request_capture_restart, save_music_offsets
 from services.theme import THEMES
@@ -878,7 +879,7 @@ def save_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     if raw_revision is not None and (isinstance(raw_revision, bool) or not isinstance(raw_revision, int) or raw_revision < 0):
         raise SettingsValidationError("credential_revision 必须是非负整数")
 
-    current, _ = migrate_config(load_config())
+    current = load_config()
     next_config = copy.deepcopy(current)
     vault_globals: dict[str, str] = {}
     vault_provider_secrets: dict[str, dict[str, Any]] = {}
@@ -903,7 +904,7 @@ def save_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             vault_globals["dashboard_token"] = _global_secret_update(
                 secrets, "dashboard.token", _global_vault_secret("dashboard_token")
             )
-        # 防止旧配置残留在本次保存后重新进入 YAML。
+        # 明文全局密钥绝不能写入 YAML。
         dashboard.pop("token", None)
 
     if "github_token" in secrets:
@@ -1029,11 +1030,11 @@ def apply_runtime_config() -> tuple[list[str], list[str]]:
     applied: list[str] = []
     errors: list[str] = []
     try:
-        from providers import invalidate_data_cache
-        invalidate_data_cache()
-        applied.append("providers")
+        from services.dashboard_data_service import invalidate_dashboard_data_cache
+        invalidate_dashboard_data_cache()
+        applied.append("dashboard_data")
     except Exception as exc:
-        errors.append(f"providers: {exc}")
+        errors.append(f"dashboard_data: {exc}")
 
     for provider_name, provider in get_providers().items():
         reload_fn = getattr(provider, "reload_config", None)

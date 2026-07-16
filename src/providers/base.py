@@ -1,12 +1,13 @@
 """providers 插件体系 — 接口规范与标准数据格式定义。
 
 每个插件是 providers/ 下的一个子文件夹，其 __init__.py 为入口文件。
-入口文件需声明 CAPABILITIES 列表，并实现对应的标准函数。
+入口文件必须声明与目录名一致的 ``PROVIDER_ID``、CAPABILITIES 列表，并实现对应的标准函数。
 
 === CAPABILITIES 可选值 ===
 - "token_plan"  : Token 套餐相关（额度、用量、每日明细、按模型明细）
 - "balance"     : 账户余额/费用
 - "api_usage"   : API 调用量统计（按量付费、按渠道分组）
+- "daily_usage" : 标准化今日 Token 用量，供主看板跨 Provider 聚合
 
 === 各 capability 对应的入口函数签名 ===
 
@@ -87,6 +88,20 @@ get_channel_breakdown(days: int = 7) -> list | None
         ...
     ]
 
+--- daily_usage ---
+get_today_usage() -> dict | None
+    返回 Provider 自己解析后的今日用量；核心只消费下面的标准字段，绝不解析
+    Provider 的原始接口格式：
+    {
+        "input_tokens": int,
+        "output_tokens": int,
+        "cached_input_tokens": int,
+        "uncached_input_tokens": int,  # 可选；缺失时核心用 input-cache 计算
+        "total_tokens": int,
+        "source_count": int,           # 可选，聚合的账户/实例/渠道数量
+        "period": "today",            # 可选
+    }
+
 === Vibe Coding 卡片来源选择 ===
 Dashboard 的 ``dashboard.vibe_coding`` 仅使用 Provider 注册名和 capability，
 不依赖任何内置 Provider 名称：
@@ -134,6 +149,8 @@ AUTH_DESCRIPTOR = {
 - ``can_delete_account(account_id) -> list[dict]``：返回仍引用账户的项目，非空时框架拒绝删除。
 - ``register_auth_routes(router)``：注册 Provider 自定义认证页面/API；框架限制在
   ``/auth/<provider>/`` 与 ``/auth/<provider>/api/`` 命名空间。
+- ``register_public_routes(router)``：可选自定义公开数据资源；只能使用
+  ``/api/providers/<provider>/custom/...`` 命名空间。
 
 自动刷新由 ``providers.auth.auto_refresh`` 装饰器标记：
 ```python
@@ -148,7 +165,7 @@ def refresh_credentials() -> RefreshResult: ...
 Provider 可声明 ``CONFIG_SCHEMA``，让本地配置后台自动渲染配置表单：
 ```python
 CONFIG_SCHEMA = {
-    "config_key": "provider_name",
+    "config_key": "provider_id",  # 必须等于 Provider 目录/注册名
     "title": "显示名称",
     "description": "配置说明",
     "order": 30,

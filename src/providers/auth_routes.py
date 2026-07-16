@@ -118,3 +118,57 @@ class ProviderAuthRouter:
         if self._asset_dir is not None:
             app.register_blueprint(self._asset_blueprint)
         self._registered = True
+
+
+class ProviderPublicRouter:
+    """Provider 自治的公开数据路由容器。
+
+    Provider 自定义公开资源固定在 ``/api/providers/<provider>/custom/...``，避免
+    与 Dashboard 提供的标准 Provider 资源冲突，也不支持旧 Provider 专用路径或兼容别名。
+    """
+
+    def __init__(self, provider_id: str, *, require_post_protection: Callable[[], None]) -> None:
+        if not re.fullmatch(r"[a-zA-Z0-9_-]+", provider_id):
+            raise ValueError("Provider 路由 ID 只能包含字母、数字、_ 和 -")
+        safe_id = provider_id.replace("-", "_")
+        self.provider_id = provider_id
+        self.prefix = f"/api/providers/{provider_id}/custom"
+        self._require_post_protection = require_post_protection
+        self._api_blueprint = Blueprint(f"provider_public_api_{safe_id}", __name__, url_prefix=self.prefix)
+        self._registered = False
+
+    @staticmethod
+    def _methods(methods: Iterable[str] | None) -> list[str]:
+        values = [str(method).upper() for method in (methods or ["GET"])]
+        return values or ["GET"]
+
+    def _guard(self, fn: Callable[..., Any], methods: Iterable[str]) -> Callable[..., Any]:
+        method_values = self._methods(methods)
+
+        @functools.wraps(fn)
+        def guarded(*args: Any, **kwargs: Any):
+            from flask import request
+
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                self._require_post_protection()
+            return fn(*args, **kwargs)
+
+        return guarded
+
+    def api(self, rule: str, *, methods: Iterable[str] | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """注册 ``/api/providers/<provider>/custom/...`` 下的公开资源。"""
+        route = rule if rule.startswith("/") else f"/{rule}"
+        method_values = self._methods(methods)
+
+        def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
+            endpoint = f"api_{fn.__name__}"
+            self._api_blueprint.add_url_rule(route, endpoint, self._guard(fn, method_values), methods=method_values)
+            return fn
+
+        return decorate
+
+    def register(self, app: Any) -> None:
+        if self._registered:
+            return
+        app.register_blueprint(self._api_blueprint)
+        self._registered = True

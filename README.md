@@ -1,6 +1,6 @@
 # Cuckoo Dashboard
 
-A real-time system monitoring dashboard with MiMo Token Plan tracking, GitHub contribution heatmap, and desktop audio player with synchronized lyrics.
+一个实时系统监控看板，支持通过完全插件化的 Provider 接入用量、余额、认证与账户数据，并集成 GitHub 贡献热力图和桌面音频播放器歌词。
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue) ![Flask](https://img.shields.io/badge/Flask-3.x-green) ![License](https://img.shields.io/badge/License-MIT-yellow)
 
@@ -17,13 +17,12 @@ A real-time system monitoring dashboard with MiMo Token Plan tracking, GitHub co
 - Physical disk hot-plug detection (30s interval)
 - Hardware override support (CPU model, GPU model, memory name, VRAM size)
 
-### MiMo Token Plan
-- Token Plan usage ring with remaining quota
-- Daily token consumption breakdown (input / output / cache hit)
-- Stacked bar visualization
-- Model-level usage breakdown
-- Pay-as-you-go usage tracking
-- Multi-source aggregation: MiMo + Local Platforms + NUG
+### Provider 数据系统
+- Provider 自动发现、能力声明与动态配置面板
+- 标准化今日 Token 用量聚合（输入 / 输出 / 缓存 / 非缓存输入）
+- Vibe 环形图、模型条和余额 Footer 可从任意兼容 Provider 选择
+- Provider 自己拥有认证账户、外部 API 格式和刷新策略
+- 单个 Provider 故障不会阻断其它 Provider 或系统监控
 
 ### GitHub Contribution Heatmap
 - Full-year contribution calendar
@@ -97,24 +96,15 @@ pip install -r requirements.txt
 
 ## Usage
 
-### 1. Login to MiMo
+### 1. Configure Providers
+
+启动 Dashboard 后访问本机 `/settings`。Provider 由目录自动发现；每个 Provider 在自己的
+`/auth/<provider>/` 页面中管理账户、登录、连通性测试、刷新和登出，核心不会要求特定 Provider 存在。
+
+MiMo 插件保留独立 CLI，但实现已位于插件包内：
 
 ```bash
-python src/mimo_usage.py
-
-# Options:
-#   1. QR Code login (scan with Xiaomi phone)
-#   2. Browser Cookie (auto-read from Chrome/Edge)
-#   3. Password login
-#   4. Manual Cookie input
-```
-
-Or with command-line flags:
-
-```bash
-python src/mimo_usage.py --login browser --save   # Auto-refresh cookies
-python src/mimo_usage.py --login qr               # QR code scan
-python src/mimo_usage.py --json                   # JSON output
+PYTHONPATH=src python -m providers.mimo --login qr --save
 ```
 
 ### 2. Start the Dashboard
@@ -160,8 +150,13 @@ The desktop app reads `data/monitor.json` to determine which display to use, the
 | `/api/data` | GET | Aggregated daily usage, configurable Vibe card payload, and GitHub contributions |
 | `/api/health` | GET | Lightweight cached service health; does not refresh external data |
 | `/api/system` | GET | System hardware info (CPU/GPU/Memory/Disk/Network) |
-| `/api/nug` | GET | NUG platform balance |
-| `/api/nug/channels` | GET | NUG per-channel usage breakdown (7 days) |
+| `/api/providers` | GET | Dynamically discovered Provider metadata, capabilities, and health |
+| `/api/providers/<provider>/status` | GET | Generic Provider health/status resource |
+| `/api/providers/<provider>/today` | GET | Standardized Provider daily-usage resource |
+| `/api/providers/<provider>/balance` | GET | Generic Provider balance resource when supported |
+| `/api/providers/<provider>/usage` | GET | Generic API-usage resource when supported |
+| `/api/providers/<provider>/channels?days=7` | GET | Generic channel/model breakdown resource when supported |
+| `/api/providers/<provider>/custom/...` | Provider-defined | Optional Provider-owned public resources, isolated from standard resources |
 | `/api/media` | GET | Current media info + lyrics |
 | `/api/media/cover` | GET | Current track cover art (SMTC thumbnail) |
 | `/api/media/reload` | POST | Clear lyrics cache and refetch |
@@ -193,18 +188,16 @@ All persistent authentication material is stored only in `config/credentials.vau
 
 The Settings page writes global Dashboard and GitHub tokens to the Vault. Each Provider owns its own account record structure and authentication screen under `/auth/<provider>/`; the framework only supplies encrypted storage, active-account state, refresh scheduling, and protected routes.
 
-At application startup, version-2 installations are migrated once: MiMo's `config/cookies.json`, local-platform `data/local_tokens.json`, and the legacy `github_token` / `dashboard.token` values are imported into the Vault and then removed from their old locations.
+启动入口不会执行配置或凭据迁移。运行时只接受 schema v4 YAML 和 DPAPI Vault；旧版 `config.yaml`、Cookie/JWT 文件或明文凭据既不会被读取，也不会被删除。需要切换的安装应先以 `config/config.example.yaml` 重建 v4 配置，再通过本机 Settings 与 Provider 认证页重新配置账户。
 
 ### Config Sections (`config/config.yaml`)
 
 | Section | Description |
 |---|---|
-| `config_version` | Canonical configuration schema version (currently `3`) |
+| `config_version` | 通用配置 schema 版本（当前为 `4`） |
 | `dashboard.off_peak_badge` | Off-peak time range and enable/disable |
 | `dashboard.vibe_coding` | Vibe ring, model-bar, and balance data-source selection |
-| `providers.mimo` | MiMo Provider enable state and non-secret preferences |
-| `providers.local_platform` | Local MiMo-compatible platform instance URLs and `credential_ref` account references |
-| `providers.nug` | NUG (NarraFork) Provider enable state and non-secret preferences |
+| `providers.<provider_id>` | 任意已发现 Provider 的非敏感运行时配置；字段由 Provider Schema 定义 |
 | `hardware_overrides` | Manual corrections for CPU/GPU/memory detection |
 | `theme` | Active theme name (auto-saved) |
 | `lyric_offset` | Lyric timing offset in seconds (auto-saved) |
@@ -212,26 +205,18 @@ At application startup, version-2 installations are migrated once: MiMo's `confi
 
 ### Provider Configuration
 
-Provider-specific non-secret settings use the canonical `providers.<provider_name>` layout. Plugins can declare a `CONFIG_SCHEMA` in `src/providers/<name>/__init__.py`; the local Settings page discovers it and renders its fields automatically. Sensitive fields must not be declared in this schema or saved to `config.yaml`: store them through the Provider's Vault account APIs instead.
+核心不会预置、导入或解释任何 Provider。插件以目录名作为稳定 `provider_id`，其 Registry ID、YAML namespace 和 Vault namespace 必须一致。插件可在 `src/providers/<provider_id>/__init__.py` 声明 `CONFIG_SCHEMA`、`CAPABILITIES`、认证 hook 和公开数据资源；设置页会自动发现并渲染非敏感配置。
 
-The framework supports multiple accounts per Provider and an active account ID. Built-in Provider authentication pages offer account selection, adding/removing credentials, login, connection testing, token refresh, and logout as appropriate for that Provider.
+Provider 的账户结构、密码、Cookie、JWT、Token 和外部 API 格式全部归 Provider 自己所有。核心只提供 DPAPI Vault、刷新调度、路由容器、统一今日用量聚合以及按能力调用。
 
-Example:
+最小配置示例：
 
 ```yaml
-config_version: 3
-providers:
-  mimo:
-    enabled: true
-  local_platform:
-    enabled: false
-    urls:
-      - name: "Local MiMo"
-        url: "http://127.0.0.1:8080"
-        credential_ref: "account-id-created-in-auth-page"
-  nug:
-    enabled: false
+config_version: 4
+providers: {}
 ```
+
+安装/发现 Provider 后，Settings 页面会按其 Schema 写入相应的 `providers.<provider_id>` 项。
 
 ### Vibe Coding Data Sources
 
@@ -274,37 +259,34 @@ dashboard:
 ├── run_desktop.py            # Entry point: start native desktop app
 ├── requirements.txt          # Python dependencies
 ├── config/                   # User configuration and secrets (git-ignored except example)
-│   ├── config.example.yaml       # Non-secret schema-v3 template
+│   ├── config.example.yaml       # Provider-agnostic schema-v4 template
 │   ├── config.yaml               # Private non-secret configuration
 │   └── credentials.vault         # DPAPI-encrypted credential Vault (never edit or share)
 ├── src/
-│   ├── dashboard.py          # Flask app, routes, auth route registration, background tasks
+│   ├── dashboard.py          # Flask app, generic Provider routes and background tasks
 │   ├── desktop.py            # PyWebView native window wrapper with monitor detection
-│   ├── mimo_usage.py         # MiMo login CLI tool (QR/browser/password/manual)
 │   ├── smtc_worker.py        # Standalone subprocess: SMTC + UIA + YesPlayMusic listener
 │   ├── core/                 # Core infrastructure
-│   │   ├── config.py             # YAML config load/save with mtime caching
+│   │   ├── config.py             # Provider-agnostic YAML load/save and schema-v4 storage
 │   │   ├── credentials.py        # DPAPI Vault, account state, revisions and locking
-│   │   ├── credential_migration.py # One-time legacy credential migration
 │   │   ├── cache.py              # TTLCache utility
 │   │   ├── proc.py               # PowerShell/subprocess execution (hidden window)
 │   │   ├── perfcounters.py       # PDH/WMI performance counter sampling
 │   │   └── monitor.py            # Windows display enumeration
-│   ├── providers/            # Plugin-based data source system
-│   │   ├── __init__.py           # Auto-discovery, aggregation, auth task startup
+│   ├── providers/            # Fully decoupled plugin system
+│   │   ├── __init__.py           # Auto-discovery, Registry, schemas and capability calls
+│   │   ├── runtime_config.py     # Provider-side YAML defaults + Vault-secret resolution
 │   │   ├── auth.py               # AuthResult, refresh decorator, scheduler
-│   │   ├── auth_routes.py        # Loopback/CSRF-protected provider auth routes
-│   │   ├── base.py               # Plugin interface specification
-│   │   ├── mimo/                 # MiMo official platform (Vault-backed Cookie auth)
-│   │   │   ├── api.py                # MiMoAPI wrapper and cookie validity check
-│   │   │   └── __init__.py           # Accounts, QR login, capabilities
-│   │   ├── nug/                  # NUG (NarraFork) platform (Vault-backed session auth)
-│   │   │   ├── client.py             # NUGClient HTTP client with refresh/relogin
-│   │   │   └── __init__.py           # Accounts, auth page, capabilities
-│   │   └── local_platform/       # Local MiMo-compatible platforms (Vault-backed JWT auth)
-│   │       ├── client.py             # LocalMimoAPI with account credentials
-│   │       ├── token_cache.py        # Vault token-cache adapter
-│   │       └── __init__.py           # Accounts, auth page, capabilities
+│   │   ├── auth_routes.py        # Generic auth/public Provider route containers
+│   │   ├── base.py               # Provider capability contracts
+│   │   ├── mimo/                 # MiMo Provider implementation
+│   │   │   ├── __main__.py           # `python -m providers.mimo` CLI entry
+│   │   │   ├── implementation.py     # Provider-owned QR/browser/password CLI implementation
+│   │   │   └── ...
+│   │   ├── nug/                  # NUG Provider implementation
+│   │   │   └── ...
+│   │   └── local_platform/       # Local-platform Provider implementation
+│   │       └── ...
 │   ├── services/             # Business logic services
 │   │   ├── github_service.py     # GitHub heatmap fetch/cache (GraphQL + scraping)
 │   │   ├── media_service.py      # SMTC media state, Netease + QQ Music lyrics
@@ -312,8 +294,9 @@ dashboard:
 │   │   ├── player_service.py     # Windows SMTC playback controls
 │   │   ├── off_peak_service.py   # Off-peak time range badge config
 │   │   ├── health_service.py     # Service health aggregation
+│   │   ├── dashboard_data_service.py # Capability-based daily-usage aggregation
 │   │   ├── theme.py              # Theme metadata and persistence
-│   │   └── config.py             # Backward-compat re-export of core.config
+│   │   └── config.py             # Provider-agnostic config storage exports
 │   ├── static/
 │   │   ├── dashboard.html
 │   │   ├── dashboard.css
@@ -321,7 +304,7 @@ dashboard:
 │   │   └── bg/                   # Theme background images
 │   └── tests/
 │       ├── test_credentials_vault.py
-│       ├── test_credentials_migration.py
+│       ├── test_config_storage.py
 │       ├── test_auth_lifecycle.py
 │       ├── test_auth_routes.py
 │       └── ...
@@ -344,15 +327,16 @@ The dashboard uses a single WebSocket connection (`/ws`) for all real-time data:
 
 ### Provider Plugin System
 
-Providers are auto-discovered from `src/providers/*/` directories. Each plugin declares `CAPABILITIES` and implements standardized functions:
+Providers are auto-discovered from `src/providers/*/` directories. The host never imports or identifies a concrete Provider. Each plugin declares `CAPABILITIES` and implements standardized functions:
 
+- **daily_usage**: `get_today_usage()` → normalized input/output/cache/total values for cross-Provider aggregation
 - **token_plan**: `get_plan_detail()`, `get_plan_usage()`, `get_daily_detail()`, `get_model_breakdown()`
 - **balance**: `get_balance()`
 - **api_usage**: `get_usage_summary()`, `get_channel_breakdown()`
 - **All plugins**: `get_status()` for health reporting
-- **Authentication-capable plugins**: account lifecycle hooks such as `get_auth_status()`, `login()`, `refresh_credentials()`, `logout()`, and an optional `render_auth_page()`
+- **Authentication-capable plugins**: account lifecycle hooks such as `get_auth_status()`, `test_connection()`, `refresh_credentials()`, `logout()`, and `register_auth_routes()`
 
-Provider authentication is exposed only within the local, CSRF-protected `/auth/<provider>/` namespace. Providers define the credential payload for their own accounts; the shared Vault never imposes a password, cookie, JWT, or token schema. `@auto_refresh` can refresh credentials both before provider requests and on a background schedule.
+Provider authentication is exposed only within the local, CSRF-protected `/auth/<provider>/` namespace. Generic public Provider resources live under `/api/providers/<provider>/...`. Providers define their own account structures, external APIs, and credential payloads; the shared Vault never imposes a password, cookie, JWT, or token schema. `@auto_refresh` can refresh credentials both before provider requests and on a background schedule.
 
 ### Performance Counter Sampling
 
@@ -369,7 +353,7 @@ GPU LUID mapping stabilizes across refresh cycles to prevent card assignment fli
 - `data/` contains only non-secret auto-generated caches/runtime state and is fully git-ignored.
 - Provider authentication and Settings POST endpoints are loopback-only and reject cross-site requests unless they are same-origin or include `X-Dashboard-Token`.
 - Vault writes use a lock and a monotonic revision to prevent concurrent Settings/authentication updates from overwriting each other.
-- Legacy plaintext credential files are imported once at startup and deleted only after a successful Vault migration.
+- Only schema-v4 configuration and the Vault are supported; legacy configuration and plaintext credential files are never read, migrated, or deleted automatically.
 - Internal network HTTPS with self-signed certs is auto-detected and verification skipped for local platform clients.
 
 ## Acknowledgments

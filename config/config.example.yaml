@@ -1,7 +1,7 @@
-# MiMo Usage Dashboard 配置文件
-# 所有运行时配置统一在此管理
+# Cuckoo Dashboard 配置文件
+# 核心只保存通用运行时配置；Provider 自己声明配置、账户和认证能力。
 
-config_version: 3
+config_version: 4
 
 # Dashboard 设置
 dashboard:
@@ -50,23 +50,9 @@ dashboard:
     #     enabled: true
 
 # Provider 配置
-# 每个 src/providers/ 插件的配置统一放在 providers.<provider_name> 下。
-providers:
-  # MiMo 账户、Cookie 与刷新信息由认证页或 CLI 写入 Windows DPAPI Vault。
-  mimo:
-    enabled: true
-
-  # 本地平台（MiMo 兼容）；每个 URL 的 credential_ref 指向认证页创建的账户 ID。
-  local_platform:
-    enabled: false
-    urls: []
-    # urls 格式示例:
-    # - url: "http://192.168.1.100:7778"
-    #   credential_ref: "local-账户ID"
-
-  # NUG 账户（地址、用户名、密码、session）由认证页写入 Windows DPAPI Vault。
-  nug:
-    enabled: false
+# 核心不会预置或解释任何 Provider ID。已发现插件的非敏感配置会写入
+# providers.<provider_id>；账户、Cookie、JWT、密码和 Token 始终在 DPAPI Vault 中。
+providers: {}
 
 # GitHub token 由设置页写入 Windows DPAPI Vault，勿在 YAML 中保存。
 

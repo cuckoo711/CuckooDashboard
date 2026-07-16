@@ -9,14 +9,15 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-from core.config import get_provider_config, set_provider_config
+from providers.runtime_config import get_provider_config, set_provider_config
 from core.credentials import VaultError, get_provider_state, update_provider_state
 from providers.auth import RefreshResult, auto_refresh, get_refresh_status
 from providers.local_platform.client import LocalMimoAPI
 
 logger = logging.getLogger("cuckoo.providers.local_platform")
 
-CAPABILITIES = ["token_plan"]
+PROVIDER_ID = "local_platform"
+CAPABILITIES = ["token_plan", "daily_usage"]
 
 CONFIG_SCHEMA = {
     "config_key": "local_platform",
@@ -45,6 +46,7 @@ AUTH_DESCRIPTOR = {
     "auth_path": "/auth/local_platform/",
     "custom_ui": True,
 }
+
 
 _local_apis: list[LocalMimoAPI] | None = None
 _last_success_at: str | None = None
@@ -280,6 +282,29 @@ def aggregate_today_usage() -> dict | None:
         _last_available_count = 0
         _last_error = str(exc)
         return None
+
+
+def get_today_usage() -> dict[str, int | str] | None:
+    """将本地兼容平台聚合结果转换为 Provider 无关的今日用量。"""
+    usage = aggregate_today_usage()
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = int(usage.get("totalInputTokens", 0) or 0)
+    output_tokens = int(usage.get("totalOutputTokens", 0) or 0)
+    cached_input_tokens = int(usage.get("totalCacheReadTokens", 0) or 0)
+    total_tokens = int(usage.get("totalTokens", 0) or 0)
+    source_count = int(_last_available_count or 0)
+    if not source_count:
+        return None
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cached_input_tokens": cached_input_tokens,
+        "uncached_input_tokens": max(0, input_tokens - cached_input_tokens),
+        "total_tokens": total_tokens,
+        "source_count": source_count,
+        "period": "today",
+    }
 
 
 # ============================================================

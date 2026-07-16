@@ -8,14 +8,15 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from core.config import get_provider_config
+from providers.runtime_config import get_provider_config
 from core.credentials import VaultError, get_provider_state, update_provider_state
 from providers.auth import RefreshResult, auto_refresh, get_refresh_status
 from providers.nug.client import NUGClient
 
 logger = logging.getLogger("cuckoo.providers.nug")
 
-CAPABILITIES = ["balance", "api_usage"]
+PROVIDER_ID = "nug"
+CAPABILITIES = ["balance", "api_usage", "daily_usage"]
 
 CONFIG_SCHEMA = {
     "config_key": "nug",
@@ -33,6 +34,7 @@ AUTH_DESCRIPTOR = {
     "auth_path": "/auth/nug/",
     "custom_ui": True,
 }
+
 
 _CLIENT: NUGClient | None = None
 _CLIENT_ACCOUNT_ID = ""
@@ -216,6 +218,34 @@ def get_channel_breakdown(days: int = 7) -> list | None:
     _LAST_ERROR = None
     _LAST_SUCCESS_AT = datetime.now(timezone.utc).isoformat()
     return [{**row, "currency": row.get("currency", "USD")} if isinstance(row, dict) else row for row in rows]
+
+
+def get_today_usage() -> dict[str, int | str] | None:
+    """在 NUG 插件内部解析渠道统计，向核心暴露统一今日用量。"""
+    rows = get_channel_breakdown(days=1)
+    if not isinstance(rows, list):
+        return None
+    input_tokens = output_tokens = cached_input_tokens = total_tokens = 0
+    source_count = 0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        source_count += 1
+        input_tokens += int(row.get("inputTokens", 0) or 0)
+        output_tokens += int(row.get("outputTokens", 0) or 0)
+        cached_input_tokens += int(row.get("cacheReadTokens", 0) or 0)
+        total_tokens += int(row.get("totalTokens", 0) or 0)
+    if not source_count:
+        return None
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cached_input_tokens": cached_input_tokens,
+        "uncached_input_tokens": max(0, input_tokens - cached_input_tokens),
+        "total_tokens": total_tokens,
+        "source_count": source_count,
+        "period": "today",
+    }
 
 
 # ============================================================
