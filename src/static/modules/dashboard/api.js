@@ -6,6 +6,7 @@ async function fetchJson(url, options) {
 }
 
 export const fetchDashboardData = () => fetchJson('/api/data');
+export const fetchWorkspaceManifest = () => fetchJson('/api/workspaces/main');
 export const fetchSystem = () => fetchJson('/api/system');
 export const fetchMedia = () => fetchJson('/api/media');
 export const fetchTheme = () => fetchJson('/api/theme');

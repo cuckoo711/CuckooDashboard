@@ -14,6 +14,7 @@ _EXPECTED = {
     ("/api/health", frozenset({"GET"})),
     ("/api/off-peak-badge", frozenset({"GET"})),
     ("/api/system", frozenset({"GET"})),
+    ("/api/workspaces/<workspace_id>", frozenset({"GET"})),
     ("/api/vibe", frozenset({"GET", "POST"})),
     ("/api/theme", frozenset({"GET", "POST"})),
     ("/api/theme/next", frozenset({"POST"})),

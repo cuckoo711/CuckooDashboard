@@ -17,6 +17,7 @@ from features.providers.routes import blueprint as providers_blueprint
 from features.providers.routes import register_provider_routes
 from features.settings.routes import blueprint as settings_blueprint
 from features.system.routes import blueprint as system_blueprint
+from features.workspaces.routes import blueprint as workspaces_blueprint
 from runtime.lifecycle import DashboardRuntime
 
 SRC_DIR = Path(__file__).resolve().parents[1]
@@ -40,6 +41,7 @@ def create_app(
 
     dashboard_runtime = runtime or DashboardRuntime()
     app.extensions["dashboard_runtime"] = dashboard_runtime
+    app.extensions["workspace_registry"] = dashboard_runtime.workspace_registry
 
     sock = Sock(app)
     app.extensions["dashboard_sock"] = sock
@@ -52,6 +54,7 @@ def create_app(
     app.register_blueprint(media_blueprint)
     app.register_blueprint(music_blueprint)
     app.register_blueprint(system_blueprint)
+    app.register_blueprint(workspaces_blueprint)
     app.register_blueprint(providers_blueprint)
     register_provider_routes(app)
     return app

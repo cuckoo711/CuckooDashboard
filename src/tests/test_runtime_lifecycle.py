@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from runtime import lifecycle as lifecycle_module
 from runtime.lifecycle import DashboardRuntime
+from workspaces.registry import WorkspaceRegistry
 
 
 class _Hub:
@@ -24,6 +25,17 @@ class _Hub:
 
     def health(self):
         return {"running": self.running}
+
+
+def test_runtime_uses_injected_registry_without_mutating_injected_websocket():
+    hub = _Hub()
+    registry = WorkspaceRegistry()
+
+    runtime = DashboardRuntime(websocket=hub, workspace_registry=registry)
+
+    assert runtime.workspace_registry is registry
+    assert runtime.websocket is hub
+    assert not hasattr(hub, "workspace_registry")
 
 
 class _Scheduler:

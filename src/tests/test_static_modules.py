@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from app.factory import create_app
+from workspaces.builtins import create_builtin_workspace_registry
 
 STATIC = Path(__file__).resolve().parents[1] / "static"
 MODULE_FILES = sorted((STATIC / "modules").rglob("*.js")) + sorted(
@@ -22,6 +23,14 @@ STATIC_IMPORT_RE = re.compile(
 )
 DYNAMIC_IMPORT_RE = re.compile(r"\bimport\(\s*['\"]([^'\"]+)['\"]\s*\)")
 INLINE_HANDLER_RE = re.compile(r"\son[a-z]+\s*=", re.IGNORECASE)
+EXPECTED_DASHBOARD_WIDGET_TYPES = {
+    "builtin.system.info",
+    "builtin.system.network",
+    "builtin.system.uptime",
+    "builtin.system.disks",
+    "builtin.media.player",
+    "builtin.github.contributions",
+}
 
 
 def _import_targets(path: Path) -> list[str]:
@@ -48,6 +57,62 @@ def test_html_uses_module_entries_without_inline_handlers():
     for name in ("dashboard.html", "music.html"):
         source = (STATIC / name).read_text(encoding="utf-8")
         assert source.index("html2canvas.min.js") < source.index('type="module"'), name
+
+
+def test_dashboard_html_keeps_shell_and_delegates_builtin_cards_to_workspace_host():
+    source = (STATIC / "dashboard.html").read_text(encoding="utf-8")
+    assert 'id="workspaceHost"' in source
+    assert 'class="hdr"' in source
+    assert 'id="vibeCard"' in source
+    for marker in (
+        'id="sysCard"',
+        'id="diskCard"',
+        'class="card netCard"',
+        'class="card uptimeCard"',
+        'id="lyricCard"',
+        'id="ghGrid"',
+    ):
+        assert marker not in source
+
+
+def test_dashboard_builtin_type_allowlist_matches_backend_registry():
+    workspace = STATIC / "modules" / "dashboard" / "workspace"
+    registry_source = (workspace / "registry.js").read_text(encoding="utf-8")
+    fallback_source = (workspace / "default-manifest.js").read_text(encoding="utf-8")
+    frontend_types = set(re.findall(r"\['(builtin\.[^']+)'\s*,\s*\{", registry_source))
+    fallback_types = set(re.findall(r"type:\s*'(builtin\.[^']+)'", fallback_source))
+    backend_types = {
+        widget.type
+        for widget in create_builtin_workspace_registry().get_workspace("main").widgets
+    }
+    assert frontend_types == fallback_types == backend_types == EXPECTED_DASHBOARD_WIDGET_TYPES
+    assert "import(" not in registry_source
+
+
+def test_workspace_components_preserve_legacy_dom_contract():
+    components = STATIC / "modules" / "dashboard" / "workspace" / "components"
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in components.glob("*.js"))
+    for marker in (
+        "sysCard", "dot-system", "sysMain", "diskCard", "sysDisks", "netUp", "netDown",
+        "uptimeVal", "lyricCard", "dot-media", "lyricText", "lyricScroll", "lyricIdle",
+        "lyricTitle", "lyricOffsetVal", "lyricArtist", "dot-github", "ghGrid", "ghUser", "ghTotal",
+        'data-action="player-control"', 'data-action="adjust-lyric-offset"',
+    ):
+        assert marker in combined
+
+
+def test_dashboard_optional_channels_follow_workspace_manifest():
+    dashboard = STATIC / "modules" / "dashboard"
+    main_source = (dashboard / "main.js").read_text(encoding="utf-8")
+    ws_source = (dashboard / "ws.js").read_text(encoding="utf-8")
+
+    assert "summary.channels.includes('media.lyric')" in main_source
+    assert "activeChannels.forEach" in ws_source
+    assert "'media.lyric': 'lyric'" in ws_source
+    assert ws_source.index("type: 'subscribe', sources: activeSources") < ws_source.index(
+        "type: 'report', page: 'dashboard'"
+    )
+    assert "channel: 'lyric', active: true" not in ws_source
 
 
 def test_all_relative_and_absolute_module_imports_resolve():
@@ -168,6 +233,88 @@ Promise.all([
   'src/static/modules/music/main.js',
   'src/static/settings/modules/main.js',
 ].map(load)).catch((error) => { console.error(error); process.exit(1); });
+"""
+    result = subprocess.run(
+        [node, "--experimental-vm-modules", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_workspace_data_bus_and_host_basic_behavior_with_node():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js 不可用")
+    script = r"""
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+async function load(file) {
+  const absolute = path.resolve(file);
+  const mod = new vm.SourceTextModule(fs.readFileSync(absolute, 'utf8'), { identifier: absolute });
+  await mod.link(() => { throw new Error('unexpected import'); });
+  await mod.evaluate();
+  return mod.namespace;
+}
+(async () => {
+  const busModule = await load('src/static/modules/dashboard/workspace/data-bus.js');
+  const hostModule = await load('src/static/modules/dashboard/workspace/host.js');
+  const bus = new busModule.DataBus();
+  const seen = [];
+  const unsubscribe = bus.subscribe('system.snapshot', (payload, source) => seen.push([source, payload.value]));
+  if (bus.publish('system.snapshot', { value: 1 }) !== 1) throw new Error('publish count');
+  unsubscribe();
+  bus.publish('system.snapshot', { value: 2 });
+  if (JSON.stringify(seen) !== JSON.stringify([['system.snapshot', 1]])) throw new Error('unsubscribe');
+  let isolated = 0;
+  bus.subscribe('isolated.source', () => { throw new Error('expected subscriber failure'); });
+  bus.subscribe('isolated.source', () => { isolated += 1; });
+  const originalConsoleError = console.error;
+  console.error = () => {};
+  const isolatedCount = bus.publish('isolated.source', {});
+  console.error = originalConsoleError;
+  if (isolatedCount !== 2 || isolated !== 1) throw new Error('subscriber isolation');
+
+  let mounts = 0;
+  let updates = 0;
+  let destroys = 0;
+  const registry = {
+    has(type) { return type === 'test.widget'; },
+    get(type) {
+      if (!this.has(type)) return null;
+      return { create() { return {
+        mount() { mounts += 1; },
+        onData(payload) { updates += payload.value; },
+        destroy() { destroys += 1; },
+      }; } };
+    },
+  };
+  const host = new hostModule.WorkspaceHost({ root: {}, registry, bus });
+  const manifest = {
+    id: 'test', version: 1, required: true,
+    sources: [{ id: 'dashboard.aggregate' }],
+    widgets: [{ id: 'one', type: 'test.widget', slot: 'main', sources: ['system.snapshot'], channels: ['media.lyric'] }],
+  };
+  const first = host.mount(manifest);
+  host.mount(JSON.parse(JSON.stringify(manifest)));
+  bus.publish('system.snapshot', { value: 3 });
+  if (mounts !== 1 || updates !== 3) throw new Error('idempotent mount');
+  if (JSON.stringify(first.sources.sort()) !== JSON.stringify(['dashboard.aggregate', 'system.snapshot'])) throw new Error('sources');
+  if (JSON.stringify(first.channels) !== JSON.stringify(['media.lyric'])) throw new Error('channels');
+  const changed = host.mount({ ...manifest, sources: [{ id: 'other.aggregate' }] });
+  if (mounts !== 2 || destroys !== 1) throw new Error('workspace source change did not remount');
+  if (JSON.stringify(changed.sources.sort()) !== JSON.stringify(['other.aggregate', 'system.snapshot'])) throw new Error('changed sources');
+  host.destroy();
+  bus.publish('system.snapshot', { value: 4 });
+  if (destroys !== 2 || updates !== 3) throw new Error('destroy');
+  let rejected = false;
+  try {
+    host.mount({ ...manifest, widgets: [{ ...manifest.widgets[0], type: 'unknown.widget' }] });
+  } catch (_error) { rejected = true; }
+  if (!rejected) throw new Error('unknown type accepted');
+})().catch((error) => { console.error(error); process.exit(1); });
 """
     result = subprocess.run(
         [node, "--experimental-vm-modules", "-e", script],

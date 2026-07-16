@@ -9,6 +9,8 @@ from runtime.websocket import WebSocketHub
 from services.media_service import stop_media_service
 from services.spectrum_service import shutdown_spectrum
 from services.system_service import stop_system_service
+from workspaces.builtins import create_builtin_workspace_registry
+from workspaces.registry import WorkspaceRegistry
 
 
 class DashboardRuntime:
@@ -20,8 +22,18 @@ class DashboardRuntime:
         *,
         websocket: WebSocketHub | None = None,
         auth_scheduler: AuthRefreshScheduler | None = None,
+        workspace_registry: WorkspaceRegistry | None = None,
     ) -> None:
-        self.websocket = websocket or WebSocketHub()
+        self.workspace_registry = (
+            workspace_registry
+            if workspace_registry is not None
+            else create_builtin_workspace_registry()
+        )
+        self.websocket = (
+            websocket
+            if websocket is not None
+            else WebSocketHub(workspace_registry=self.workspace_registry)
+        )
         # Compatibility alias used by feature route modules.
         self.hub = self.websocket
         self.auth_scheduler = auth_scheduler or refresh_scheduler
@@ -37,6 +49,7 @@ class DashboardRuntime:
 
     def init_app(self, app) -> "DashboardRuntime":
         app.extensions["dashboard_runtime"] = self
+        app.extensions["workspace_registry"] = self.workspace_registry
         return self
 
     def start(self) -> bool:

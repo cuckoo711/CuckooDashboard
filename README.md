@@ -17,6 +17,13 @@
 - Physical disk hot-plug detection (30s interval)
 - Hardware override support (CPU model, GPU model, memory name, VRAM size)
 
+### Workspace Module Host
+- The required `main` workspace is described by a versioned manifest instead of hard-coded card composition
+- System info, network, uptime, disks, player, and GitHub are registered built-in widget types
+- The four system widgets share one `system.snapshot` acquisition and render independent views of the same payload
+- The browser host uses a static widget allowlist, mounts lifecycle-managed components, and subscribes only to manifest-declared data sources/channels
+- Legacy `/`, `/music`, REST payloads, and WebSocket message types remain compatible while the workspace platform evolves
+
 ### Provider 数据系统
 - Provider 自动发现、能力声明与动态配置面板
 - 标准化今日 Token 用量聚合（输入 / 输出 / 缓存 / 非缓存输入）
@@ -146,10 +153,11 @@ The desktop app reads `data/monitor.json` to determine which display to use, the
 |---|---|---|
 | `/` | GET | Dashboard HTML page |
 | `/music` | GET | Full-screen music stage (lyrics + optional loopback spectrum) |
-| `/ws` | WebSocket | Bidirectional: server pushes data, client sends vibe/init/spectrum subscribe |
+| `/ws` | WebSocket | Bidirectional: legacy pushes plus per-client data-source/channel subscriptions, Vibe, init, ping, navigation and screenshots |
 | `/api/data` | GET | Aggregated daily usage, configurable Vibe card payload, and GitHub contributions |
 | `/api/health` | GET | Lightweight cached service health; does not refresh external data |
 | `/api/system` | GET | System hardware info (CPU/GPU/Memory/Disk/Network) |
+| `/api/workspaces/<workspace_id>` | GET | Versioned workspace manifest, built-in widget instances, data-source metadata, and channel dependencies |
 | `/api/providers` | GET | Dynamically discovered Provider metadata, capabilities, and health |
 | `/api/providers/<provider>/status` | GET | Generic Provider health/status resource |
 | `/api/providers/<provider>/today` | GET | Standardized Provider daily-usage resource |
@@ -275,6 +283,7 @@ dashboard:
 │   │   ├── media/                # Media/cover/player routes
 │   │   ├── music/                # Music stage, spectrum and calibration routes
 │   │   ├── system/               # System-monitoring routes
+│   │   ├── workspaces/           # Public workspace-manifest routes
 │   │   ├── providers/            # Generic and Provider-owned route registration
 │   │   └── appearance/           # Theme/font routes and payload service
 │   ├── runtime/
@@ -284,7 +293,12 @@ dashboard:
 │   │   ├── provider.py
 │   │   ├── dashboard.py
 │   │   ├── health.py
-│   │   └── settings.py
+│   │   ├── settings.py
+│   │   └── workspace.py          # Data-source, widget type/instance and workspace contracts
+│   ├── workspaces/               # Per-runtime registry and built-in main workspace
+│   │   ├── registry.py
+│   │   ├── data_sources.py
+│   │   └── builtins.py
 │   ├── core/                     # Config, Vault, caching, subprocess and Windows infra
 │   ├── providers/                # Auto-discovered, capability-based plugins
 │   │   ├── __init__.py           # Registry, typed invocation and Schema discovery
@@ -309,7 +323,8 @@ dashboard:
 │   │   ├── settings.html/css/js
 │   │   ├── modules/
 │   │   │   ├── shared/           # Fetch, player, font, WS and screenshot helpers
-│   │   │   ├── dashboard/        # Dashboard native ES Modules
+│   │   │   ├── dashboard/        # Dashboard shell, DataBus and workspace host
+│   │   │   │   └── workspace/    # Static registry plus built-in widget components
 │   │   │   └── music/            # Music-stage native ES Modules
 │   │   └── settings/modules/     # Loopback-only Settings ES Modules
 │   └── tests/                    # Unit, contract, architecture, route and module tests
@@ -341,6 +356,14 @@ Stable cross-module structures are defined with standard-library dataclasses, Pr
 
 Provider functions continue returning their compatible dict/list payloads. Consumers normalize internally and serialize back to the existing API wire format, including `today.in/out/cache/total/inMiss` and all current Vibe/Settings keys.
 
+### Workspace Registry and Built-in Widgets
+
+Each `DashboardRuntime` owns an isolated `WorkspaceRegistry`; App Factory stores the same instance in `app.extensions["workspace_registry"]`. The registry separates reusable `WidgetDefinition` types from `WidgetInstance` placements, validates source references and single-instance constraints, and serializes the required `main` workspace through `/api/workspaces/main`.
+
+The first built-in widget set is `builtin.system.info`, `builtin.system.network`, `builtin.system.uptime`, `builtin.system.disks`, `builtin.media.player`, and `builtin.github.contributions`. System widgets intentionally share one `system.snapshot` source, while the player declares both `media.playback` and the optional `media.lyric` channel. The browser's static registry maps these stable IDs to local component factories; the server never supplies executable module URLs or arbitrary HTML.
+
+The current manifest is read-only and uses the existing fixed grid slots. Persistent user workspaces, drag/resize editing, and third-party installation are later layers built on the type/instance and source/channel boundaries established here.
+
 ### Native ES Modules
 
 Dashboard, Music and Settings use browser-native ES Modules without a bundler or framework. Shared stateless helpers live in `static/modules/shared`; page state and controllers live in page-specific modules. HTML inline handlers were removed in favor of module-bound `data-action` events. Settings modules are served only through the loopback-protected `/settings-assets/modules/...` namespace.
@@ -349,14 +372,14 @@ Dashboard, Music and Settings use browser-native ES Modules without a bundler or
 
 The dashboard uses a single WebSocket connection (`/ws`) managed by `WebSocketHub`:
 
-1. On connect: asynchronously push `vibe_state`, `dashboard_data`, GitHub, media, system, theme and font data
-2. Main broadcaster (1s): fetch system + media + GitHub in parallel and broadcast cached/current results
-3. Spectrum broadcaster: honor each visible client's requested 12–60 FPS cadence
-4. Lyric broadcaster: poll at 120ms but send only when the active track/line changes
-5. Selected Vibe Providers refresh every 20s in Coding mode or 60s in Chilling mode
-6. Clients can report page type, subscribe to spectrum/lyrics, toggle Vibe, request initialization, ping and return screenshots
+1. Legacy clients keep the original initial push (`vibe_state`, `dashboard_data`, GitHub, media, system, theme and font)
+2. Workspace clients declare stable source IDs with `subscribe.sources`; subsequent snapshots are filtered per client while the legacy wire types remain unchanged
+3. Registered snapshot sources are fetched once per due cycle and fanned out to every matching client; system/media/GitHub use the 1s cadence and Dashboard aggregate uses 20s/60s Vibe cadence
+4. Spectrum broadcaster honors each visible client's requested 12–60 FPS cadence
+5. Lyric broadcaster polls at 120ms but sends only when the active track/line changes; the Dashboard subscribes only when its manifest contains the player channel
+6. Clients can report page type, add/replace/remove source subscriptions, subscribe to spectrum/lyrics, toggle Vibe, request initialization, ping and return screenshots
 
-All disconnect paths use one cleanup operation so spectrum references are released exactly once.
+All disconnect paths use one cleanup operation so spectrum references are released exactly once. Dashboard media remains slim while the Music Stage receives the full media payload.
 
 ### Provider Plugin System
 
@@ -391,7 +414,7 @@ node --check src/static/modules/music/main.js
 node --check src/static/settings/modules/main.js
 ```
 
-The test suite covers App Factory isolation, the complete route surface, managed runtime shutdown/restart, WebSocket subscription cleanup, Provider/Dashboard/Health/Settings contracts, AST dependency boundaries, ES Module import resolution/cycle detection, Node syntax checks, and loopback-only Settings module assets.
+The test suite covers App Factory and Workspace Registry isolation, the complete route surface, managed runtime shutdown/restart, source-filtered WebSocket broadcasting and subscription cleanup, Provider/Dashboard/Health/Settings/Workspace contracts, AST dependency boundaries, workspace Host/DataBus behavior, ES Module import resolution/cycle detection, Node syntax checks, and loopback-only Settings module assets.
 
 ## Security
 

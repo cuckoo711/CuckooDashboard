@@ -124,6 +124,7 @@
             grid-template-columns: repeat(16, minmax(0,1fr));
             gap:8px; padding:32px 34px 22px 44px;
         }
+        #workspaceHost { display:contents; }
 
         /* ── Header ── */
         .hdr { grid-row:1; grid-column:1/-1; display:grid; grid-template-columns:1fr auto 1fr; align-items:center; }

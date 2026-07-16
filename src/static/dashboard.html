@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cuckoo Dashboard</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/dashboard.css?v=dashboard-lrc-1">
+    <link rel="stylesheet" href="/static/dashboard.css?v=dashboard-workspace-1">
 
 </head>
 <body>
@@ -31,63 +31,8 @@
         </div>
     </div>
 
-    <!-- 左栏：系统信息 -->
-    <div class="card sysCard" id="sysCard">
-        <div class="card-head">
-            <span class="card-head-l"><span class="bar"></span>系统信息<span class="svc-dot" id="dot-system"></span></span>
-        </div>
-        <div class="card-body" id="sysMain">
-            <div class="hw-main">
-                <div class="hw-main-item"><div class="skeleton" style="width:76px;height:76px;border-radius:50%;"></div><div class="skeleton" style="width:44px;height:9px;margin-top:6px;"></div></div>
-                <div class="hw-main-item"><div class="skeleton" style="width:76px;height:76px;border-radius:50%;"></div><div class="skeleton" style="width:44px;height:9px;margin-top:6px;"></div></div>
-                <div class="hw-main-item"><div class="skeleton" style="width:76px;height:76px;border-radius:50%;"></div><div class="skeleton" style="width:44px;height:9px;margin-top:6px;"></div></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 左栏：磁盘 -->
-    <div class="card diskCard" id="diskCard">
-        <div class="card-head">
-            <span class="card-head-l"><span class="bar"></span>磁盘</span>
-        </div>
-        <div class="card-body dk-section" id="sysDisks">
-            <div class="skeleton" style="height:9px;width:70%;margin-bottom:4px;"></div>
-            <div class="skeleton" style="height:5px;width:100%;margin-bottom:8px;"></div>
-            <div class="skeleton" style="height:9px;width:60%;margin-bottom:4px;"></div>
-            <div class="skeleton" style="height:5px;width:100%;margin-bottom:8px;"></div>
-            <div class="skeleton" style="height:9px;width:65%;margin-bottom:4px;"></div>
-            <div class="skeleton" style="height:5px;width:100%;"></div>
-        </div>
-    </div>
-
-    <!-- 网络状态 -->
-    <div class="card netCard">
-        <div class="card-head">
-            <span class="card-head-l"><span class="bar"></span>网络</span>
-        </div>
-        <div class="card-body net-rows">
-            <div class="net-row">
-                <span class="net-icon up">↑</span>
-                <span class="net-label">上传</span>
-                <span class="net-value" id="netUp">-- <span class="net-unit">KB/s</span></span>
-            </div>
-            <div class="net-row">
-                <span class="net-icon down">↓</span>
-                <span class="net-label">下载</span>
-                <span class="net-value" id="netDown">-- <span class="net-unit">KB/s</span></span>
-            </div>
-        </div>
-    </div>
-
-    <!-- 开机时间 -->
-    <div class="card uptimeCard">
-        <div class="card-head">
-            <span class="card-head-l"><span class="bar"></span>已运行</span>
-        </div>
-        <div class="card-body uptime-body">
-            <span class="uptime-val" id="uptimeVal">--</span>
-        </div>
-    </div>
+    <!-- 内置工作区组件由 Host 挂载；display:contents 保持现有 16 列网格。 -->
+    <div id="workspaceHost"></div>
 
     <!-- 右栏：Vibe Coding & 今日消耗 -->
     <div class="card tokenCard" id="vibeCard">
@@ -139,48 +84,6 @@
         </div>
         <!-- 未配置余额时保持隐藏；由 dashboard.js 按配置动态生成最多两个条目。 -->
         <div class="card-foot vibe-balances" id="vibeBalances" hidden></div>
-    </div>
-
-    <!-- 左下：歌词播放器 -->
-    <div class="card lyric-wrap" id="lyricCard">
-        <div class="card-head">
-            <span class="card-head-l"><span class="bar"></span>播放器<span class="svc-dot" id="dot-media"></span></span>
-            <span class="card-head-r">
-                <a class="player-btn music-stage-link" href="/music" title="打开音乐舞台">🎛</a>
-                <span class="player-ctrl">
-                    <button class="player-btn" data-action="player-control" data-player-action="prev" title="上一首">⏮</button>
-                    <button class="player-btn" data-action="player-control" data-player-action="toggle" title="播放/暂停">⏯</button>
-                    <button class="player-btn" data-action="player-control" data-player-action="next" title="下一首">⏭</button>
-                </span>
-            </span>
-        </div>
-        <div class="card-body lyric-text" id="lyricText">
-            <div class="lyric-scroll" id="lyricScroll"></div>
-            <div class="lyric-idle" id="lyricIdle">未在播放</div>
-        </div>
-        <div class="card-foot">
-            <span class="card-foot-l" id="lyricTitle">--</span>
-            <span class="lyric-offset-wrap">
-                <button class="lyric-offset-btn" data-action="adjust-lyric-offset" data-delta="-0.5">−</button>
-                <span class="lyric-offset-val" id="lyricOffsetVal">0.0</span>
-                <button class="lyric-offset-btn" data-action="adjust-lyric-offset" data-delta="0.5">+</button>
-            </span>
-            <span class="card-foot-r" id="lyricArtist">--</span>
-        </div>
-    </div>
-
-    <!-- 右下：GitHub -->
-    <div class="card gh-wrap">
-        <div class="card-head">
-            <span class="card-head-l"><span class="bar"></span>GitHub 贡献<span class="svc-dot" id="dot-github"></span></span>
-        </div>
-        <div class="card-body gh-grid" id="ghGrid">
-            <div class="skeleton" style="flex:1; width:100%;"></div>
-        </div>
-        <div class="card-foot">
-            <span class="card-foot-l" id="ghUser"></span>
-            <span class="card-foot-r" id="ghTotal"></span>
-        </div>
     </div>
 </div>
 

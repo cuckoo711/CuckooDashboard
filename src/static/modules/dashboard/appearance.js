@@ -1,6 +1,6 @@
 import { createFontLoader } from '../shared/font-loader.js';
 import { fetchFont, fetchNextTheme, fetchTheme } from './api.js';
-import { drawRing, drawSystem } from './render-dashboard.js';
+import { drawRing } from './render-dashboard.js';
 import { state } from './state.js';
 
 const applyFontUrl = createFontLoader({
@@ -41,7 +41,6 @@ export function applyTheme(data = {}) {
     }
     try { localStorage.setItem('themeData', JSON.stringify(data)); } catch (_error) {}
     if (state.dashboard.lastRingArgs) drawRing(...state.dashboard.lastRingArgs);
-    if (state.dashboard.lastSystemData) drawSystem(state.dashboard.lastSystemData);
 }
 
 export async function cycleTheme() {

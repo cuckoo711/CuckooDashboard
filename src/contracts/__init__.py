@@ -23,6 +23,12 @@ from contracts.settings import (
     SettingsSaveRequest,
     SettingsSaveResult,
 )
+from contracts.workspace import (
+    DataSourceDescriptor,
+    WidgetDefinition,
+    WidgetInstance,
+    WorkspaceDefinition,
+)
 
 __all__ = [
     "ApiUsageCapability",
@@ -32,6 +38,7 @@ __all__ = [
     "DailyUsagePayload",
     "DashboardAggregate",
     "DashboardTotals",
+    "DataSourceDescriptor",
     "ProviderCallOutcome",
     "ProviderPanel",
     "ProviderProtocol",
@@ -47,4 +54,7 @@ __all__ = [
     "SettingsSaveResult",
     "TokenPlanCapability",
     "UsageSource",
+    "WidgetDefinition",
+    "WidgetInstance",
+    "WorkspaceDefinition",
 ]

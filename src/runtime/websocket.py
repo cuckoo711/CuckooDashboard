@@ -8,7 +8,8 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 from core.config import load_config, set_config_value
 from features.appearance.service import get_font_payload
@@ -30,6 +31,16 @@ _LYRIC_POLL_INTERVAL_S = 0.12
 _SPECTRUM_FPS_MIN = 12
 _SPECTRUM_FPS_MAX = 60
 _SPECTRUM_FPS_DEFAULT = 24
+_LEGACY_SOURCE_ORDER = ("dashboard_data", "github", "media", "system")
+
+
+@dataclass(frozen=True)
+class _SourceSpec:
+    source_id: str
+    message_type: str
+    getter: Callable[[], Any]
+    default_interval: float
+    active_interval: float | None = None
 
 
 def _load_vibe_state() -> bool:
@@ -67,11 +78,13 @@ def _clamp_spectrum_fps(value: Any) -> int:
 class WebSocketHub:
     """Own all WebSocket clients, protocol handling and broadcaster workers."""
 
-    def __init__(self) -> None:
+    def __init__(self, workspace_registry: Any = None) -> None:
         self._lock = threading.RLock()
         self._lifecycle_lock = threading.RLock()
         self._clients: list[Any] = []
         self._states: dict[Any, dict[str, Any]] = {}
+        self._workspace_registry = workspace_registry
+        self._source_last_run: dict[str, float] = {}
         self._vibe = _load_vibe_state()
         self._stop_event = threading.Event()
         self._threads: dict[str, threading.Thread] = {}
@@ -99,6 +112,7 @@ class WebSocketHub:
                 "spectrum_fps": _SPECTRUM_FPS_DEFAULT,
                 "spectrum_last_sent_at": 0.0,
                 "lyric": False,
+                "source_subscriptions": None,
                 "id": client_id,
                 "page": "unknown",
             }
@@ -126,6 +140,7 @@ class WebSocketHub:
             if any(thread.is_alive() for thread in self._threads.values()):
                 return False
             self._threads = {}
+            self._source_last_run = {}
             self._stop_event.clear()
             self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ws-fetch")
             workers = {
@@ -194,24 +209,18 @@ class WebSocketHub:
         }
 
     def broadcast(self, msg: dict) -> None:
-        data = json.dumps(msg, ensure_ascii=False)
-        dead = []
-        for sock in self._client_sockets():
-            try:
-                sock.send(data)
-            except Exception:
-                dead.append(sock)
-        for sock in dead:
-            self._remove_client(sock)
+        source_id = self._source_id_for_message_type(str(msg.get("type") or ""))
+        self._broadcast_message(msg, source_id=source_id)
 
-    def broadcast_media(self, frame: dict) -> None:
+    def broadcast_media(self, frame: dict, source_id: str | None = None) -> None:
+        source_id = source_id or self._source_id_for_message_type("media") or "media"
         full_data = json.dumps({"type": "media", "data": frame}, ensure_ascii=False)
         slim_data = json.dumps(
             {"type": "media", "data": _dashboard_media_payload(frame)},
             ensure_ascii=False,
         )
         dead = []
-        for sock in self._client_sockets():
+        for sock in self._source_targets(source_id):
             with self._lock:
                 page = (self._states.get(sock) or {}).get("page") or "unknown"
             try:
@@ -259,6 +268,11 @@ class WebSocketHub:
                     "id": state.get("id", "?"),
                     "page": state.get("page", "unknown"),
                     "connected": bool(getattr(sock, "connected", False)),
+                    "sources": (
+                        None
+                        if state.get("source_subscriptions") is None
+                        else sorted(state.get("source_subscriptions") or ())
+                    ),
                 }
                 for sock, state in self._states.items()
             ]
@@ -327,11 +341,16 @@ class WebSocketHub:
             except Exception as exc:
                 logger.error("[ws] init %s fetch error: %s", msg_type, exc)
 
+        with self._lock:
+            state = self._states.get(sock) or {}
+            subscriptions = state.get("source_subscriptions")
+            selected = None if subscriptions is None else set(subscriptions)
+
         self._send(sock, {"type": "vibe_state", "data": {"active": _load_vibe_state()}})
-        safe_send("dashboard_data", get_dashboard_data)
-        safe_send("github", get_github_data)
-        safe_send("media", get_media_info)
-        safe_send("system", get_system_info)
+        for spec in self._ordered_source_specs():
+            if selected is not None and spec.source_id not in selected:
+                continue
+            safe_send(spec.message_type, spec.getter)
         try:
             self._send(sock, {"type": "theme", "data": theme_response(load_theme_index())})
         except Exception:
@@ -362,7 +381,9 @@ class WebSocketHub:
                     if state is None:
                         return
                     state["page"] = page
-                    if page in {"music", "dashboard"}:
+                    if page == "music" or (
+                        page == "dashboard" and state.get("source_subscriptions") is None
+                    ):
                         state["lyric"] = True
                 logger.info("[ws] client %s reports page: %s", client_id, page)
             elif msg_type == "subscribe":
@@ -385,6 +406,11 @@ class WebSocketHub:
                             state["lyric"] = active
                     if active:
                         self._send(sock, {"type": "lyric", "data": get_lyric_frame()})
+                elif "sources" in msg:
+                    self._subscribe_sources(sock, msg.get("sources"), replace=bool(msg.get("replace", True)))
+            elif msg_type == "unsubscribe":
+                if "sources" in msg:
+                    self._unsubscribe_sources(sock, msg.get("sources"))
             elif msg_type == "init":
                 self._send_all_data(sock)
             elif msg_type == "ping":
@@ -402,7 +428,6 @@ class WebSocketHub:
             return
 
     def _broadcaster_loop(self) -> None:
-        vibe_counter = 0
         while not self._stop_event.is_set():
             started = time.monotonic()
             try:
@@ -411,32 +436,213 @@ class WebSocketHub:
                         executor = self._executor
                     if executor is None:
                         break
-                    futures = {
-                        executor.submit(get_system_info): "system",
-                        executor.submit(get_media_info): "media",
-                        executor.submit(get_github_data): "github",
-                    }
-                    for future in as_completed(futures):
-                        if self._stop_event.is_set():
-                            break
-                        msg_type = futures[future]
-                        try:
-                            result = future.result()
-                            if msg_type == "media":
-                                self.broadcast_media(result)
-                            else:
-                                self.broadcast({"type": msg_type, "data": result})
-                        except Exception as exc:
-                            logger.error("[ws] %s broadcast error: %s", msg_type, exc)
-                    vibe_counter += 1
-                    interval = 20 if self.get_vibe() else 60
-                    if vibe_counter >= interval:
-                        vibe_counter = 0
-                        self.broadcast({"type": "dashboard_data", "data": get_dashboard_data()})
+                    self._broadcast_due_sources(started, executor=executor)
             except Exception as exc:
                 logger.error("[ws] broadcaster error: %s", exc)
             elapsed = time.monotonic() - started
             self._stop_event.wait(max(0.0, 1.0 - elapsed))
+
+    def _broadcast_due_sources(
+        self,
+        now: float | None = None,
+        executor: ThreadPoolExecutor | None = None,
+    ) -> None:
+        now = time.monotonic() if now is None else now
+        due: list[_SourceSpec] = []
+        active = self.get_vibe()
+        for spec in self._source_specs():
+            if not self._source_targets(spec.source_id):
+                continue
+            interval = spec.active_interval if active and spec.active_interval is not None else spec.default_interval
+            last_run = self._source_last_run.get(spec.source_id)
+            if last_run is not None and now - last_run + 1e-6 < interval:
+                continue
+            self._source_last_run[spec.source_id] = now
+            due.append(spec)
+
+        if executor is None:
+            for spec in due:
+                self._fetch_and_publish_source(spec)
+            return
+
+        futures = {}
+        for spec in due:
+            try:
+                futures[executor.submit(spec.getter)] = spec
+            except Exception as exc:
+                logger.error("[ws] %s broadcast submit error: %s", spec.message_type, exc)
+        for future in as_completed(futures):
+            if self._stop_event.is_set():
+                break
+            spec = futures[future]
+            try:
+                self._publish_source_result(spec, future.result())
+            except Exception as exc:
+                logger.error("[ws] %s broadcast error: %s", spec.message_type, exc)
+
+    def _fetch_and_publish_source(self, spec: _SourceSpec) -> None:
+        try:
+            self._publish_source_result(spec, spec.getter())
+        except Exception as exc:
+            logger.error("[ws] %s broadcast error: %s", spec.message_type, exc)
+
+    def _publish_source_result(self, spec: _SourceSpec, result: Any) -> None:
+        if spec.message_type == "media":
+            self.broadcast_media(result, source_id=spec.source_id)
+        else:
+            self._broadcast_message(
+                {"type": spec.message_type, "data": result},
+                source_id=spec.source_id,
+            )
+
+    def _broadcast_message(self, msg: dict, source_id: str | None = None) -> None:
+        data = json.dumps(msg, ensure_ascii=False)
+        dead = []
+        targets = self._client_sockets() if source_id is None else self._source_targets(source_id)
+        for sock in targets:
+            try:
+                sock.send(data)
+            except Exception:
+                dead.append(sock)
+        for sock in dead:
+            self._remove_client(sock)
+
+    def _source_targets(self, source_id: str) -> list[Any]:
+        with self._lock:
+            return [
+                sock
+                for sock in self._clients
+                if (
+                    (self._states.get(sock) or {}).get("source_subscriptions") is None
+                    or source_id in ((self._states.get(sock) or {}).get("source_subscriptions") or ())
+                )
+            ]
+
+    def _subscribe_sources(self, sock: Any, sources: Any, replace: bool) -> None:
+        requested = self._normalize_source_ids(sources)
+        known = self._known_source_ids()
+        selected = {source_id for source_id in requested if source_id in known}
+        with self._lock:
+            state = self._states.get(sock)
+            if state is None:
+                return
+            current = state.get("source_subscriptions")
+            if replace:
+                state["source_subscriptions"] = selected
+            else:
+                subscriptions = set() if current is None else set(current)
+                subscriptions.update(selected)
+                state["source_subscriptions"] = subscriptions
+
+    def _unsubscribe_sources(self, sock: Any, sources: Any) -> None:
+        requested = self._normalize_source_ids(sources)
+        known = self._known_source_ids()
+        selected = {source_id for source_id in requested if source_id in known}
+        if not selected:
+            return
+        with self._lock:
+            state = self._states.get(sock)
+            if state is None:
+                return
+            current = state.get("source_subscriptions")
+            subscriptions = set(known) if current is None else set(current)
+            subscriptions.difference_update(selected)
+            state["source_subscriptions"] = subscriptions
+
+    @staticmethod
+    def _normalize_source_ids(sources: Any) -> list[str]:
+        if isinstance(sources, str):
+            sources = [sources]
+        if not isinstance(sources, (list, tuple, set)):
+            return []
+        return [str(source_id) for source_id in sources if source_id is not None]
+
+    def _known_source_ids(self) -> set[str]:
+        return {spec.source_id for spec in self._source_specs()}
+
+    def _source_id_for_message_type(self, message_type: str) -> str | None:
+        for spec in self._source_specs():
+            if spec.message_type == message_type:
+                return spec.source_id
+        return None
+
+    def _ordered_source_specs(self) -> list[_SourceSpec]:
+        order = {message_type: index for index, message_type in enumerate(_LEGACY_SOURCE_ORDER)}
+        return sorted(
+            self._source_specs(),
+            key=lambda spec: (order.get(spec.message_type, len(order)), spec.source_id),
+        )
+
+    def _source_specs(self) -> list[_SourceSpec]:
+        if self._workspace_registry is None:
+            return [
+                _SourceSpec("dashboard.aggregate", "dashboard_data", get_dashboard_data, 60.0, 20.0),
+                _SourceSpec("github.contributions", "github", get_github_data, 1.0, 1.0),
+                _SourceSpec("media.playback", "media", get_media_info, 1.0, 1.0),
+                _SourceSpec("system.snapshot", "system", get_system_info, 1.0, 1.0),
+            ]
+
+        definitions: list[Any] = []
+        registry = self._workspace_registry
+        try:
+            iterator = getattr(registry, "iter_data_sources", None)
+            if callable(iterator):
+                definitions = list(iterator())
+            else:
+                ids = getattr(registry, "data_source_ids", None)
+                getter = getattr(registry, "get_data_source", None)
+                if callable(ids) and callable(getter):
+                    definitions = [getter(source_id) for source_id in ids()]
+        except Exception as exc:
+            logger.error("[ws] data source registry error: %s", exc)
+            return []
+
+        specs: list[_SourceSpec] = []
+        seen: set[str] = set()
+        for definition in definitions:
+            if definition is None:
+                continue
+            descriptor = self._definition_field(definition, "descriptor")
+            source_id = str(self._definition_field(descriptor, "id") or "")
+            message_type = str(self._definition_field(descriptor, "legacy_message_type") or "")
+            getter = self._definition_field(definition, "getter")
+            if not source_id or not message_type or not callable(getter) or source_id in seen:
+                continue
+            default_interval = self._positive_interval(
+                self._definition_field(descriptor, "default_interval_seconds"),
+                fallback=1.0,
+            )
+            active_value = self._definition_field(descriptor, "active_interval_seconds")
+            active_interval = (
+                None
+                if active_value is None
+                else self._positive_interval(active_value, fallback=default_interval)
+            )
+            specs.append(
+                _SourceSpec(
+                    source_id,
+                    message_type,
+                    getter,
+                    default_interval,
+                    active_interval,
+                )
+            )
+            seen.add(source_id)
+        return specs
+
+    @staticmethod
+    def _definition_field(value: Any, name: str) -> Any:
+        if isinstance(value, dict):
+            return value.get(name)
+        return getattr(value, name, None)
+
+    @staticmethod
+    def _positive_interval(value: Any, fallback: float) -> float:
+        try:
+            interval = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        return interval if interval > 0 else fallback
 
     def _spectrum_loop(self) -> None:
         while not self._stop_event.is_set():

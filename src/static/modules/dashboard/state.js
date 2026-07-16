@@ -12,7 +12,6 @@ export const state = {
     },
     dashboard: {
         lastRingArgs: null,
-        lastSystemData: null,
         lastModelsKey: '',
     },
     clock: {

@@ -20,6 +20,9 @@ def test_factory_creates_isolated_apps_with_provider_routes():
 
     assert first is not second
     assert first.extensions["dashboard_runtime"] is not second.extensions["dashboard_runtime"]
+    assert first.extensions["workspace_registry"] is first.extensions["dashboard_runtime"].workspace_registry
+    assert second.extensions["workspace_registry"] is second.extensions["dashboard_runtime"].workspace_registry
+    assert first.extensions["workspace_registry"] is not second.extensions["workspace_registry"]
     assert _routes(first) == _routes(second)
 
     paths = {rule for rule, _ in _routes(first)}
