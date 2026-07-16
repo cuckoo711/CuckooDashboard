@@ -22,6 +22,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from core.config import load_config
+from core.credentials import VaultError, get_global_secret
 from core.logging_config import setup_logging
 
 # 初始化日志系统（需在其他模块 import 之前完成）
@@ -75,7 +76,9 @@ from services.spectrum_service import (
     save_music_offsets,
     start_beat_calibration,
 )
-from providers import fetch_all_data, get_nug_payload, get_nug_channel_breakdown
+from providers import fetch_all_data, get_auth_providers, get_nug_payload, get_nug_channel_breakdown
+from providers.auth import refresh_scheduler
+from providers.auth_routes import ProviderAuthRouter
 from services.player_service import ALLOWED_PLAYER_ACTIONS, control_player
 from services.settings_service import (
     SettingsValidationError,
@@ -670,10 +673,12 @@ _DASHBOARD_TOKEN = os.environ.get("DASHBOARD_TOKEN") or secrets.token_urlsafe(24
 
 
 def get_dashboard_token() -> str:
-    """获取 POST 防护 token；优先读取配置/环境变量，否则使用启动时随机值。"""
-    config = load_config()
-    token = (config.get("dashboard") or {}).get("token") or os.environ.get("DASHBOARD_TOKEN")
-    return str(token or _DASHBOARD_TOKEN)
+    """获取 POST 防护 token；优先 DPAPI Vault，其次环境变量和进程随机值。"""
+    try:
+        token = get_global_secret("dashboard_token", "")
+    except VaultError:
+        token = ""
+    return str(token or os.environ.get("DASHBOARD_TOKEN") or _DASHBOARD_TOKEN)
 
 
 def _same_site_from_header(value: str | None) -> bool:
@@ -1258,6 +1263,36 @@ def api_fonts_delete():
     return jsonify(result)
 
 
+_auth_routes_registered = False
+
+
+def register_provider_auth_routes() -> None:
+    """发现并挂载各 Provider 自定义认证页面/API 到受限命名空间。"""
+    global _auth_routes_registered
+    if _auth_routes_registered:
+        return
+    for provider_id, provider in get_auth_providers().items():
+        register = getattr(provider, "register_auth_routes", None)
+        if not callable(register):
+            continue
+        router = ProviderAuthRouter(
+            provider_id,
+            require_loopback=require_loopback_access,
+            require_post_protection=require_post_protection,
+        )
+        try:
+            register(router)
+            router.register(app)
+            logger.info("[auth] 已挂载 Provider 认证路由: %s", provider_id)
+        except Exception:
+            logger.exception("[auth] 挂载 Provider %s 认证路由失败", provider_id)
+    _auth_routes_registered = True
+
+
+# 模块导入完成后即注册路由，以便 Flask 测试客户端与生产服务器得到同一套 endpoint。
+register_provider_auth_routes()
+
+
 def main():
     parser = argparse.ArgumentParser(description="MiMo Usage Dashboard")
     parser.add_argument("--port", "-p", type=int, default=5000, help="端口号 (默认 5000)")
@@ -1281,6 +1316,7 @@ def main():
     # Flask reloader 会先启动父进程；只在实际服务进程中启动后台线程。
     if not args.dev or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         start_background_threads_once()
+        refresh_scheduler.start()
 
     app.run(
         host=args.host,

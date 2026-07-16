@@ -5,6 +5,10 @@ from __future__ import annotations
 from core.config import CONFIG_VERSION, migrate_config
 
 
+def test_credentials_vault_schema_version_is_three():
+    assert CONFIG_VERSION == 3
+
+
 def test_legacy_provider_sections_are_migrated_and_normalized():
     legacy = {
         "dashboard": {},

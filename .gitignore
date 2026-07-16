@@ -1,7 +1,7 @@
 .narrafork/
 .worktrees/
 
-# User config (secrets)
+# User config and Windows DPAPI credential Vault (secrets)
 config/*
 !config/config.example.yaml
 

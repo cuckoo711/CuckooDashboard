@@ -178,25 +178,33 @@ The desktop app reads `data/monitor.json` to determine which display to use, the
 | `/settings` | GET | Local-only configuration management page |
 | `/api/settings` | GET/POST | Read sanitized configuration or save validated configuration (local-only) |
 | `/api/settings/reveal` | POST | Reveal one explicitly requested secret field (local-only) |
+| `/auth/<provider>/` | GET | Provider-owned local authentication/account page |
+| `/auth/<provider>/api/...` | GET/POST | Provider-owned authentication lifecycle APIs in a protected namespace |
 
-POST endpoints require same-origin `Origin`/`Referer` or an `X-Dashboard-Token` header. The `/settings` page and `/api/settings*` endpoints additionally require a loopback client address (`127.0.0.1` or `::1`). Set `dashboard.token` in `config.yaml` or `DASHBOARD_TOKEN` env var when exposing other Dashboard APIs beyond `127.0.0.1`.
+POST endpoints require same-origin `Origin`/`Referer` or an `X-Dashboard-Token` header. The `/settings` page, `/api/settings*`, and Provider authentication namespaces additionally require a loopback client address (`127.0.0.1` or `::1`). Set the Dashboard token through `/settings` (it is stored in the DPAPI Vault) or use `DASHBOARD_TOKEN` when exposing other Dashboard APIs beyond `127.0.0.1`.
 
 ## Configuration
 
-Copy `config/config.example.yaml` to `config/config.yaml` and fill only values you need. The config file, cookies, token caches, GitHub cache, and all runtime state are git-ignored.
+Copy `config/config.example.yaml` to `config/config.yaml` and fill only non-sensitive settings. Configuration, the encrypted Vault, and runtime state are git-ignored.
+
+### Credential Vault
+
+All persistent authentication material is stored only in `config/credentials.vault`. On Windows it is encrypted with the current user's DPAPI context, so the file cannot be decrypted by a different Windows user or copied to another machine for use there. Do not manually edit, commit, back up for cross-machine reuse, or share this file.
+
+The Settings page writes global Dashboard and GitHub tokens to the Vault. Each Provider owns its own account record structure and authentication screen under `/auth/<provider>/`; the framework only supplies encrypted storage, active-account state, refresh scheduling, and protected routes.
+
+At application startup, version-2 installations are migrated once: MiMo's `config/cookies.json`, local-platform `data/local_tokens.json`, and the legacy `github_token` / `dashboard.token` values are imported into the Vault and then removed from their old locations.
 
 ### Config Sections (`config/config.yaml`)
 
 | Section | Description |
 |---|---|
-| `dashboard.token` | Optional token for POST endpoint protection |
+| `config_version` | Canonical configuration schema version (currently `3`) |
 | `dashboard.off_peak_badge` | Off-peak time range and enable/disable |
 | `dashboard.vibe_coding` | Vibe ring, model-bar, and balance data-source selection |
-| `config_version` | Canonical configuration schema version (currently `2`) |
-| `providers.mimo` | MiMo Provider enable state; Cookie remains in `cookies.json` |
-| `providers.local_platform` | Local MiMo-compatible platform instances (JWT auth) |
-| `providers.nug` | NUG (NarraFork) Provider credentials |
-| `github_token` | GitHub Personal Access Token for precise contribution data |
+| `providers.mimo` | MiMo Provider enable state and non-secret preferences |
+| `providers.local_platform` | Local MiMo-compatible platform instance URLs and `credential_ref` account references |
+| `providers.nug` | NUG (NarraFork) Provider enable state and non-secret preferences |
 | `hardware_overrides` | Manual corrections for CPU/GPU/memory detection |
 | `theme` | Active theme name (auto-saved) |
 | `lyric_offset` | Lyric timing offset in seconds (auto-saved) |
@@ -204,27 +212,25 @@ Copy `config/config.example.yaml` to `config/config.yaml` and fill only values y
 
 ### Provider Configuration
 
-Provider-specific settings use the canonical `providers.<provider_name>` layout. Existing configurations using top-level `local_platforms` or `nug` are migrated automatically on first load to `providers.local_platform` and `providers.nug`; a local pre-migration backup is kept in `config/`.
+Provider-specific non-secret settings use the canonical `providers.<provider_name>` layout. Plugins can declare a `CONFIG_SCHEMA` in `src/providers/<name>/__init__.py`; the local Settings page discovers it and renders its fields automatically. Sensitive fields must not be declared in this schema or saved to `config.yaml`: store them through the Provider's Vault account APIs instead.
 
-Each plugin may declare a `CONFIG_SCHEMA` in its `src/providers/<name>/__init__.py`. The local configuration page discovers these schemas and renders the corresponding form automatically. Supported schema field types include `boolean`, `string`, `secret`, `url`, `integer`, `number`, `select`, `color`, `time`, `string_list`, `object_list`, and `key_value_map`. New plugins should also expose `reload_config()` when their clients or caches depend on configuration.
+The framework supports multiple accounts per Provider and an active account ID. Built-in Provider authentication pages offer account selection, adding/removing credentials, login, connection testing, token refresh, and logout as appropriate for that Provider.
 
 Example:
 
 ```yaml
-config_version: 2
+config_version: 3
 providers:
   mimo:
     enabled: true
   local_platform:
     enabled: false
-    username: ""
-    password: ""
-    urls: []
+    urls:
+      - name: "Local MiMo"
+        url: "http://127.0.0.1:8080"
+        credential_ref: "account-id-created-in-auth-page"
   nug:
     enabled: false
-    url: ""
-    username: ""
-    password: ""
 ```
 
 ### Vibe Coding Data Sources
@@ -267,34 +273,38 @@ dashboard:
 ├── run_dashboard.py          # Entry point: start web dashboard
 ├── run_desktop.py            # Entry point: start native desktop app
 ├── requirements.txt          # Python dependencies
-├── config/                   # User-editable configuration (git-ignored except example)
-│   ├── config.example.yaml       # Template (copy to config.yaml)
-│   ├── config.yaml               # Private config (git-ignored)
-│   └── cookies.json              # MiMo login cookies (git-ignored)
+├── config/                   # User configuration and secrets (git-ignored except example)
+│   ├── config.example.yaml       # Non-secret schema-v3 template
+│   ├── config.yaml               # Private non-secret configuration
+│   └── credentials.vault         # DPAPI-encrypted credential Vault (never edit or share)
 ├── src/
-│   ├── dashboard.py          # Flask app, routes, WebSocket orchestration, background broadcaster
+│   ├── dashboard.py          # Flask app, routes, auth route registration, background tasks
 │   ├── desktop.py            # PyWebView native window wrapper with monitor detection
 │   ├── mimo_usage.py         # MiMo login CLI tool (QR/browser/password/manual)
 │   ├── smtc_worker.py        # Standalone subprocess: SMTC + UIA + YesPlayMusic listener
 │   ├── core/                 # Core infrastructure
 │   │   ├── config.py             # YAML config load/save with mtime caching
+│   │   ├── credentials.py        # DPAPI Vault, account state, revisions and locking
+│   │   ├── credential_migration.py # One-time legacy credential migration
 │   │   ├── cache.py              # TTLCache utility
 │   │   ├── proc.py               # PowerShell/subprocess execution (hidden window)
 │   │   ├── perfcounters.py       # PDH/WMI performance counter sampling
 │   │   └── monitor.py            # Windows display enumeration
 │   ├── providers/            # Plugin-based data source system
-│   │   ├── __init__.py           # Auto-discovery + dashboard aggregation (fetch_all_data)
+│   │   ├── __init__.py           # Auto-discovery, aggregation, auth task startup
+│   │   ├── auth.py               # AuthResult, refresh decorator, scheduler
+│   │   ├── auth_routes.py        # Loopback/CSRF-protected provider auth routes
 │   │   ├── base.py               # Plugin interface specification
-│   │   ├── mimo/                 # MiMo official platform (Cookie auth)
-│   │   │   ├── api.py                # MiMoAPI wrapper, cookie validity check, auto-refresh
-│   │   │   └── __init__.py           # Capabilities: token_plan, balance, api_usage
-│   │   ├── nug/                  # NUG (NarraFork) platform (session cookie auth)
-│   │   │   ├── client.py             # NUGClient HTTP client with 401 auto-relogin
-│   │   │   └── __init__.py           # Capabilities: balance, api_usage
-│   │   └── local_platform/       # Local MiMo-compatible platforms (JWT auth)
-│   │       ├── client.py             # LocalMimoAPI with token persistence
-│   │       ├── token_cache.py        # JWT token disk cache
-│   │       └── __init__.py           # Capabilities: token_plan
+│   │   ├── mimo/                 # MiMo official platform (Vault-backed Cookie auth)
+│   │   │   ├── api.py                # MiMoAPI wrapper and cookie validity check
+│   │   │   └── __init__.py           # Accounts, QR login, capabilities
+│   │   ├── nug/                  # NUG (NarraFork) platform (Vault-backed session auth)
+│   │   │   ├── client.py             # NUGClient HTTP client with refresh/relogin
+│   │   │   └── __init__.py           # Accounts, auth page, capabilities
+│   │   └── local_platform/       # Local MiMo-compatible platforms (Vault-backed JWT auth)
+│   │       ├── client.py             # LocalMimoAPI with account credentials
+│   │       ├── token_cache.py        # Vault token-cache adapter
+│   │       └── __init__.py           # Accounts, auth page, capabilities
 │   ├── services/             # Business logic services
 │   │   ├── github_service.py     # GitHub heatmap fetch/cache (GraphQL + scraping)
 │   │   ├── media_service.py      # SMTC media state, Netease + QQ Music lyrics
@@ -310,15 +320,14 @@ dashboard:
 │   │   ├── dashboard.js
 │   │   └── bg/                   # Theme background images
 │   └── tests/
-│       ├── test_lyrics.py
-│       ├── test_off_peak_service.py
-│       └── test_perfcounters.py
-├── data/                         # Auto-generated caches and runtime files (git-ignored)
+│       ├── test_credentials_vault.py
+│       ├── test_credentials_migration.py
+│       ├── test_auth_lifecycle.py
+│       ├── test_auth_routes.py
+│       └── ...
+├── data/                         # Auto-generated non-secret caches/runtime files (git-ignored)
 │   ├── github_cache.json
-│   ├── local_tokens.json
-│   ├── monitor.json              # Target display config for desktop mode
-│   ├── dashboard_err.log
-│   └── desktop_err.log
+│   └── monitor.json              # Target display config for desktop mode
 └── venv/
 ```
 
@@ -341,6 +350,9 @@ Providers are auto-discovered from `src/providers/*/` directories. Each plugin d
 - **balance**: `get_balance()`
 - **api_usage**: `get_usage_summary()`, `get_channel_breakdown()`
 - **All plugins**: `get_status()` for health reporting
+- **Authentication-capable plugins**: account lifecycle hooks such as `get_auth_status()`, `login()`, `refresh_credentials()`, `logout()`, and an optional `render_auth_page()`
+
+Provider authentication is exposed only within the local, CSRF-protected `/auth/<provider>/` namespace. Providers define the credential payload for their own accounts; the shared Vault never imposes a password, cookie, JWT, or token schema. `@auto_refresh` can refresh credentials both before provider requests and on a background schedule.
 
 ### Performance Counter Sampling
 
@@ -352,11 +364,12 @@ GPU LUID mapping stabilizes across refresh cycles to prevent card assignment fli
 
 ## Security
 
-- `config/` stores all user secrets and is git-ignored (except the example template).
-- `data/` stores auto-generated caches and is fully git-ignored.
-- `config/config.example.yaml` contains structure only; never put real credentials in it.
-- Protected POST endpoints reject cross-site requests unless they are same-origin or include `X-Dashboard-Token`.
-- Cookie auto-refresh uses passToken; credentials are never stored in plaintext beyond the encrypted cookie file.
+- `config/credentials.vault` is the only persistent credential store. It is encrypted with Windows DPAPI, bound to the Windows user profile, and git-ignored together with its lock file.
+- `config/config.yaml` and `config/config.example.yaml` contain only non-sensitive configuration. Never add passwords, cookies, access tokens, JWTs, or client secrets to either file.
+- `data/` contains only non-secret auto-generated caches/runtime state and is fully git-ignored.
+- Provider authentication and Settings POST endpoints are loopback-only and reject cross-site requests unless they are same-origin or include `X-Dashboard-Token`.
+- Vault writes use a lock and a monotonic revision to prevent concurrent Settings/authentication updates from overwriting each other.
+- Legacy plaintext credential files are imported once at startup and deleted only after a successful Vault migration.
 - Internal network HTTPS with self-signed certs is auto-detected and verification skipped for local platform clients.
 
 ## Acknowledgments

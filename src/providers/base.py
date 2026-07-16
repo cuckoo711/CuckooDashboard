@@ -112,6 +112,37 @@ get_status() -> dict
         "last_success_at": str | None,
     }
 
+=== 认证与凭据生命周期（可选） ===
+
+认证 Provider 的账户数据由 ``core.credentials`` 的 Windows DPAPI Vault 保存；Provider
+自行定义账户结构、活动账户与认证字段，不能在 config.yaml/data/ 中持久化 Cookie、
+JWT、密码或 API Key。
+
+可选声明：
+```python
+AUTH_DESCRIPTOR = {
+    "title": "认证管理标题",
+    "auth_path": "/auth/<provider>/",
+}
+```
+
+可选生命周期钩子：
+- ``get_auth_status() -> dict``：返回脱敏状态、活动账户、到期和刷新摘要。
+- ``test_connection(account_id=None) -> dict``：测试指定/活动账户。
+- ``refresh_credentials(account_id=None) -> RefreshResult``：Provider 自行决定刷新逻辑。
+- ``logout(account_id=None)``。
+- ``can_delete_account(account_id) -> list[dict]``：返回仍引用账户的项目，非空时框架拒绝删除。
+- ``register_auth_routes(router)``：注册 Provider 自定义认证页面/API；框架限制在
+  ``/auth/<provider>/`` 与 ``/auth/<provider>/api/`` 命名空间。
+
+自动刷新由 ``providers.auth.auto_refresh`` 装饰器标记：
+```python
+@auto_refresh(interval_seconds=300, mode="both")
+def refresh_credentials() -> RefreshResult: ...
+```
+``background`` 由后台调度器周期调用，``on_demand`` 在业务调用时按间隔执行，
+``both`` 同时启用两者。Provider 必须自行处理账号选择、401 与是否需要重新登录。
+
 === 配置 Schema（可选） ===
 
 Provider 可声明 ``CONFIG_SCHEMA``，让本地配置后台自动渲染配置表单：

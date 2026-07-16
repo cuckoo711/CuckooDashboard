@@ -1,11 +1,11 @@
 # MiMo Usage Dashboard 配置文件
 # 所有运行时配置统一在此管理
 
-config_version: 2
+config_version: 3
 
 # Dashboard 设置
 dashboard:
-  token: ""
+  # POST 防护 token 由设置页写入 Windows DPAPI 凭据 Vault，勿在 YAML 中保存。
 
   # 顶部“0.8x / 1.0x”闲时倍率标签（按北京时间判断）
   off_peak_badge:
@@ -52,30 +52,23 @@ dashboard:
 # Provider 配置
 # 每个 src/providers/ 插件的配置统一放在 providers.<provider_name> 下。
 providers:
-  # MiMo 认证 Cookie 由 mimo_usage.py / config/cookies.json 管理。
+  # MiMo 账户、Cookie 与刷新信息由认证页或 CLI 写入 Windows DPAPI Vault。
   mimo:
     enabled: true
 
-  # 本地平台（MiMo 兼容）
+  # 本地平台（MiMo 兼容）；每个 URL 的 credential_ref 指向认证页创建的账户 ID。
   local_platform:
     enabled: false
-    username: ""
-    password: ""
     urls: []
     # urls 格式示例:
     # - url: "http://192.168.1.100:7778"
-    # - url: "https://192.168.1.200:7778"
-    #   password: "custom_password"
+    #   credential_ref: "local-账户ID"
 
-  # NUG (NarraFork) 平台
+  # NUG 账户（地址、用户名、密码、session）由认证页写入 Windows DPAPI Vault。
   nug:
     enabled: false
-    url: ""
-    username: ""
-    password: ""
 
-# GitHub（当前仍由独立 Service 管理，不属于 src/providers 插件）
-github_token: ""
+# GitHub token 由设置页写入 Windows DPAPI Vault，勿在 YAML 中保存。
 
 # 硬件信息覆盖（用于修正自动检测不准确的情况）
 hardware_overrides:

@@ -2,7 +2,7 @@
 (function () {
     'use strict';
 
-    var state = {payload: null, dirty: false, saving: false, providerPanels: []};
+    var state = {payload: null, dirty: false, saving: false, providerPanels: [], credentialRevision: null};
     var idSeed = 0;
     var $ = function (selector, root) { return (root || document).querySelector(selector); };
     var $$ = function (selector, root) { return Array.prototype.slice.call((root || document).querySelectorAll(selector)); };
@@ -317,8 +317,20 @@
             var badge = el('span', 'provider-status ' + (status.status || 'unknown'), status.status || 'unknown');
             head.appendChild(badge);
             card.appendChild(head);
-            if (panel.status_only_auth) {
-                card.appendChild(el('div', 'provider-auth-note', '认证信息由独立登录流程管理，敏感凭据不会在此页面展示。'));
+            var auth = panel.auth || {};
+            var authDescriptor = panel.auth_descriptor || {};
+            if (panel.status_only_auth || authDescriptor.auth_path) {
+                var authNote = el('div', 'provider-auth-note');
+                var authText = (auth.status || 'unknown') + (auth.active_account_label ? ' · ' + auth.active_account_label : '');
+                authNote.appendChild(el('span', '', '认证状态：' + authText));
+                if (auth.last_error) authNote.appendChild(el('span', 'provider-auth-error', ' · ' + auth.last_error));
+                if (authDescriptor.auth_path) {
+                    var authButton = el('button', 'small-btn', '管理认证/账户');
+                    authButton.type = 'button';
+                    authButton.addEventListener('click', function () { window.open(authDescriptor.auth_path, '_blank', 'noopener'); });
+                    authNote.appendChild(authButton);
+                }
+                card.appendChild(authNote);
             }
             var fields = el('div', 'provider-field-grid');
             (panel.fields || []).forEach(function (spec) {
@@ -669,6 +681,7 @@
 
     function render(payload) {
         state.payload = payload;
+        state.credentialRevision = payload.credential_revision === undefined ? null : payload.credential_revision;
         var cfg = payload.config || {};
         var dashboard = cfg.dashboard || {};
         var offPeak = dashboard.off_peak_badge || {};
@@ -888,7 +901,9 @@
         Object.keys(providers.secrets).forEach(function (key) { secrets[key] = providers.secrets[key]; });
         var config = collectGlobalConfig();
         config.providers = providers.values;
-        return {config: config, secrets: secrets};
+        var result = {config: config, secrets: secrets};
+        if (state.credentialRevision !== null) result.credential_revision = state.credentialRevision;
+        return result;
     }
 
     async function loadSettings() {

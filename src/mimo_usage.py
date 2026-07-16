@@ -25,9 +25,12 @@ import os
 import re
 import sys
 import time
+import uuid
 import webbrowser
 from pathlib import Path
 import urllib.parse
+
+from core.credentials import VaultError, get_provider_state, update_provider_state
 
 try:
     import requests
@@ -62,7 +65,7 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/131.0.0.0 Safari/537.36"
 )
-COOKIES_FILE = Path(__file__).resolve().parent.parent / "config" / "cookies.json"
+MIMO_PROVIDER_ID = "mimo"
 REQUEST_TIMEOUT = 15
 
 # ============================================================
@@ -517,30 +520,136 @@ class PasswordLogin:
 
 
 # ============================================================
-# Cookie 缓存
+# Cookie Vault / MiMo 账户管理
 # ============================================================
 
 
-def save_cookies(cookie_str: str, method: str = "", extra: dict = None):
-    """保存 Cookie 和登录信息到文件"""
-    data = {
-        "cookie": cookie_str,
-        "method": method,
-        "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-    }
-    if extra:
-        data.update(extra)
-    COOKIES_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"Cookie 已保存到 {COOKIES_FILE}")
+def _normalise_mimo_state(value: object) -> dict:
+    state = dict(value) if isinstance(value, dict) else {}
+    accounts = state.get("accounts")
+    state["accounts"] = dict(accounts) if isinstance(accounts, dict) else {}
+    active = state.get("active_account_id")
+    state["active_account_id"] = active if isinstance(active, str) else ""
+    return state
+
+
+def _mimo_account_id(extra: dict | None, requested: str | None = None) -> str:
+    if requested:
+        return requested
+    if isinstance(extra, dict):
+        existing = extra.get("_account_id") or extra.get("account_id")
+        if isinstance(existing, str) and existing:
+            return existing
+        user_id = extra.get("userId")
+        if user_id:
+            return f"mimo-{user_id}"
+    return f"mimo-{uuid.uuid4().hex[:12]}"
+
+
+def list_mimo_accounts() -> list[dict]:
+    """返回不含 Cookie/密码的 MiMo 账户摘要。"""
+    try:
+        state = _normalise_mimo_state(get_provider_state(MIMO_PROVIDER_ID, {}))
+    except VaultError:
+        return []
+    active = state["active_account_id"]
+    rows = []
+    for account_id, raw in state["accounts"].items():
+        if not isinstance(raw, dict):
+            continue
+        rows.append({
+            "id": account_id,
+            "label": str(raw.get("label") or raw.get("userId") or account_id),
+            "method": str(raw.get("method") or ""),
+            "saved_at": str(raw.get("saved_at") or ""),
+            "active": account_id == active,
+            "configured": bool(raw.get("cookie")),
+        })
+    return sorted(rows, key=lambda item: (not item["active"], item["label"].casefold(), item["id"]))
+
+
+def get_mimo_account(account_id: str | None = None) -> dict:
+    """读取指定或活动账户的完整加密记录，仅供 MiMo Provider/CLI 内部使用。"""
+    state = _normalise_mimo_state(get_provider_state(MIMO_PROVIDER_ID, {}))
+    resolved_id = account_id or state["active_account_id"]
+    account = state["accounts"].get(resolved_id)
+    if not isinstance(account, dict):
+        return {}
+    data = dict(account)
+    data["_account_id"] = resolved_id
+    return data
+
+
+def get_active_mimo_account() -> dict:
+    return get_mimo_account()
+
+
+def set_active_mimo_account(account_id: str) -> None:
+    def apply(raw: dict) -> dict:
+        state = _normalise_mimo_state(raw)
+        if account_id not in state["accounts"]:
+            raise KeyError("MiMo 账户不存在")
+        state["active_account_id"] = account_id
+        return state
+
+    update_provider_state(MIMO_PROVIDER_ID, apply)
+
+
+def delete_mimo_account(account_id: str) -> None:
+    def apply(raw: dict) -> dict:
+        state = _normalise_mimo_state(raw)
+        if account_id not in state["accounts"]:
+            raise KeyError("MiMo 账户不存在")
+        del state["accounts"][account_id]
+        if state["active_account_id"] == account_id:
+            state["active_account_id"] = next(iter(state["accounts"]), "")
+        return state
+
+    update_provider_state(MIMO_PROVIDER_ID, apply)
+
+
+def save_cookies(
+    cookie_str: str,
+    method: str = "",
+    extra: dict | None = None,
+    *,
+    account_id: str | None = None,
+    label: str | None = None,
+) -> str:
+    """将 Cookie 和登录信息保存到 DPAPI Vault 的 MiMo 活动账户。"""
+    safe_extra = dict(extra) if isinstance(extra, dict) else {}
+    resolved_id = _mimo_account_id(safe_extra, account_id)
+    saved_at = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    def apply(raw: dict) -> dict:
+        state = _normalise_mimo_state(raw)
+        previous = state["accounts"].get(resolved_id)
+        account = dict(previous) if isinstance(previous, dict) else {}
+        account.update({
+            key: value
+            for key, value in safe_extra.items()
+            if key not in {"cookie", "method", "saved_at", "_account_id", "account_id", "label"}
+        })
+        account.update({
+            "cookie": cookie_str,
+            "method": method,
+            "saved_at": saved_at,
+            "label": label or str(account.get("label") or account.get("userId") or resolved_id),
+        })
+        state["accounts"][resolved_id] = account
+        state["active_account_id"] = resolved_id
+        return state
+
+    update_provider_state(MIMO_PROVIDER_ID, apply)
+    print("Cookie 已保存到 Windows DPAPI 凭据 Vault")
+    return resolved_id
 
 
 def load_cookies() -> dict:
-    """从文件加载 Cookie 和登录信息"""
-    if not COOKIES_FILE.exists():
-        return {}
+    """从活动 MiMo Vault 账户读取 Cookie 和登录信息。"""
     try:
-        return json.loads(COOKIES_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, KeyError):
+        return get_active_mimo_account()
+    except VaultError:
         return {}
 
 
@@ -1202,10 +1311,10 @@ def main():
   python mimo_usage.py --login password   密码登录
   python mimo_usage.py --cookie FILE      从文件加载 Cookie
   python mimo_usage.py --json             JSON 格式输出
-  python mimo_usage.py --save             登录后保存 Cookie（支持自动刷新）
+  python mimo_usage.py --save             登录后将 Cookie 保存到 DPAPI Vault（支持自动刷新）
 
 Cookie 自动刷新:
-  使用 --save 保存 Cookie 后，脚本会同时保存登录方式。
+  登录成功后，脚本会将 Cookie 和登录方式保存到 DPAPI Vault。
   下次运行时如果 Cookie 过期:
     - browser 模式: 自动重新从浏览器读取 Cookie
     - password 模式: 自动用缓存的账号密码重新登录
@@ -1221,7 +1330,7 @@ Cookie 自动刷新:
                         help="登录方式: qr=扫码, browser=浏览器Cookie, password=密码")
     parser.add_argument("--cookie", "-c", help="从文件加载 Cookie")
     parser.add_argument("--json", "-j", action="store_true", help="JSON 格式输出")
-    parser.add_argument("--save", "-s", action="store_true", help="登录后保存 Cookie（支持自动刷新）")
+    parser.add_argument("--save", "-s", action="store_true", help="登录后保存 Cookie 到 DPAPI Vault（支持自动刷新）")
     parser.add_argument("--no-cache", action="store_true", help="不使用缓存的 Cookie")
     args = parser.parse_args()
 
@@ -1252,7 +1361,7 @@ Cookie 自动刷新:
         cookie_str = cache_info.get("cookie")
         if cookie_str:
             method = cache_info.get("method", "未知")
-            print(f"使用缓存的 Cookie (登录方式: {method})")
+            print(f"使用凭据 Vault 中的 Cookie (登录方式: {method})")
 
     # 3. 自动登录
     if not cookie_str:
@@ -1294,7 +1403,7 @@ Cookie 自动刷新:
             cookie_str, method, extra_save = get_cookie_interactively()
             cache_info = {"method": method}
 
-        # 默认保存 Cookie（支持自动刷新）
+        # 默认保存 Cookie 到凭据 Vault（支持自动刷新）
         if cookie_str:
             save_data = {**cache_info, **extra_save}
             save_cookies(cookie_str, cache_info.get("method", ""), save_data)

@@ -616,8 +616,6 @@ async function refreshSys() {
 
 /* ── 歌词 ── */
 var _mediaLyrics = [];       // 逐行 lrc: [[sec, text], ...]
-var _mediaLyricsYrc = [];    // 逐字 yrc: [{start:ms, chars:[{start,dur,text}]}, ...]
-var _mediaHasYrc = false;    // 当前是否走 yrc 渲染路径
 var _mediaTitle = '';
 var _mediaTrackKey = '';
 var _mediaLyricsKey = '';
@@ -636,6 +634,7 @@ var _dashboardLyricLineElapsedAtSync = 0;
 var _dashboardLyricLineSyncAt = 0;
 var _dashboardLyricLineActive = false;
 var _dashboardLyricMarqueeActive = false;
+var _dashboardLyricMarqueeRaf = 0;
 var LYRIC_OFFSET = 1.5;  // 默认值，启动时从后端加载
 secureFetch('/api/media/offset').then(r=>r.json()).then(d=>{
     LYRIC_OFFSET = d.offset;
@@ -698,7 +697,6 @@ function dashboardEffectiveLyricChars(text) {
 }
 
 function dashboardLyricTextForIndex(idx) {
-    if (_mediaHasYrc) return '';
     if (idx < 0 || idx >= _mediaLyrics.length) return '';
     return String((_mediaLyrics[idx] && _mediaLyrics[idx][1]) || '');
 }
@@ -717,6 +715,24 @@ function dashboardLyricDurationForIndex(idx, data) {
     return 3;
 }
 
+function stopDashboardLyricMarqueeLoop() {
+    if (_dashboardLyricMarqueeRaf) cancelAnimationFrame(_dashboardLyricMarqueeRaf);
+    _dashboardLyricMarqueeRaf = 0;
+}
+
+function dashboardLyricMarqueeLoop() {
+    _dashboardLyricMarqueeRaf = 0;
+    if (!_dashboardLyricMarqueeActive || !_mediaPlaying) return;
+    if (updateDashboardLyricMarquee()) {
+        _dashboardLyricMarqueeRaf = requestAnimationFrame(dashboardLyricMarqueeLoop);
+    }
+}
+
+function startDashboardLyricMarqueeLoop() {
+    if (_dashboardLyricMarqueeRaf || !_dashboardLyricMarqueeActive || !_mediaPlaying) return;
+    _dashboardLyricMarqueeRaf = requestAnimationFrame(dashboardLyricMarqueeLoop);
+}
+
 function resetDashboardLyricMarquee() {
     _dashboardLyricLineIndex = -1;
     _dashboardLyricLineText = '';
@@ -725,6 +741,7 @@ function resetDashboardLyricMarquee() {
     _dashboardLyricLineSyncAt = 0;
     _dashboardLyricLineActive = false;
     _dashboardLyricMarqueeActive = false;
+    stopDashboardLyricMarqueeLoop();
 }
 
 function setDashboardMediaPlaying(playing) {
@@ -735,10 +752,12 @@ function setDashboardMediaPlaying(playing) {
         _dashboardLyricLineSyncAt = performance.now();
     }
     _mediaPlaying = next;
+    if (!_dashboardLyricMarqueeActive) return;
+    if (_mediaPlaying) startDashboardLyricMarqueeLoop();
+    else stopDashboardLyricMarqueeLoop();
 }
 
 function bindDashboardLyricTiming(data, opts) {
-    if (_mediaHasYrc) { resetDashboardLyricMarquee(); return false; }
     data = data || {};
     opts = opts || {};
     var idx = (typeof data.lyric_index === 'number') ? data.lyric_index : _mediaLyricIndex;
@@ -812,8 +831,6 @@ function applyDashboardLyricFrame(data) {
         _mediaTrackKey = incomingTrackKey;
         _mediaTitle = data.title || '';
         _mediaLyrics = [];
-        _mediaLyricsYrc = [];
-        _mediaHasYrc = false;
         _mediaLyricsKey = '';
         resetLyricState();
         renderLyricLines();
@@ -858,8 +875,6 @@ function drawLyric(data) {
         _mediaTrackKey = '';
         _mediaLyricsKey = '';
         _mediaLyrics = [];
-        _mediaLyricsYrc = [];
-        _mediaHasYrc = false;
         _mediaLyricIndex = -1;
         resetLyricState();
         return;
@@ -879,10 +894,8 @@ function drawLyric(data) {
     if (!isNewSong) _mediaTitle = data.title;
     var didRenderLyrics = false;
     var isSlimMedia = !!data.media_slim;
-    var incomingYrc = Array.isArray(data.lyrics_yrc) ? data.lyrics_yrc : [];
     var incomingLyrics = Array.isArray(data.lyrics) ? data.lyrics : [];
-    var incomingHasYrc = incomingYrc.length > 0;
-    var incomingLyricsKey = dashboardLyricsKey(incomingHasYrc ? incomingYrc : incomingLyrics);
+    var incomingLyricsKey = dashboardLyricsKey(incomingLyrics);
 
     if (isNewSong) {
         _mediaTitle = data.title;
@@ -892,8 +905,6 @@ function drawLyric(data) {
         didRenderLyrics = true;
         if (isSlimMedia && !incomingLyricsKey) {
             _mediaLyrics = [];
-            _mediaLyricsYrc = [];
-            _mediaHasYrc = false;
             _mediaLyricsKey = '';
             idleEl.style.display = 'block';
             idleEl.textContent = '歌词加载中…';
@@ -901,24 +912,20 @@ function drawLyric(data) {
             requestDashboardMediaHydration();
         } else {
             _mediaLyrics = incomingLyrics;
-            _mediaLyricsYrc = incomingYrc;
-            _mediaHasYrc = incomingHasYrc;
             _mediaLyricsKey = incomingLyricsKey;
-            var hasAny = _mediaHasYrc || _mediaLyrics.length > 0;
+            var hasAny = _mediaLyrics.length > 0;
             idleEl.style.display = hasAny ? 'none' : 'block';
             idleEl.textContent = '暂无歌词';
             renderLyricLines();
         }
     } else if (incomingLyricsKey && incomingLyricsKey !== _mediaLyricsKey) {
         _mediaLyrics = incomingLyrics;
-        _mediaLyricsYrc = incomingYrc;
-        _mediaHasYrc = incomingHasYrc;
         _mediaLyricsKey = incomingLyricsKey;
         didRenderLyrics = true;
         idleEl.style.display = 'none';
         idleEl.textContent = '暂无歌词';
         renderLyricLines();
-    } else if (!isSlimMedia && !incomingLyricsKey && !_mediaLyricsKey && !_mediaLyrics.length && !_mediaHasYrc) {
+    } else if (!isSlimMedia && !incomingLyricsKey && !_mediaLyricsKey && !_mediaLyrics.length) {
         _mediaLyricsKey = '__empty__';
         idleEl.style.display = 'block';
         idleEl.textContent = '暂无歌词';
@@ -929,7 +936,7 @@ function drawLyric(data) {
     syncDashboardMediaClock(data);
     if (prevPos - Number(data.position || 0) > 5) resetLyricState();
 
-    // Prefer backend-authored index when available; YRC highlight still needs local clock.
+    // Prefer backend-authored index when available.
     _mediaLyricIndex = (typeof data.lyric_index === 'number') ? data.lyric_index : _mediaLyricIndex;
     bindDashboardLyricTiming(data, {force: isNewSong || didRenderLyrics});
     updateLyricLine(isNewSong || didRenderLyrics);
@@ -942,27 +949,13 @@ function resetLyricState() {
     resetDashboardLyricMarquee();
 }
 
-/* 渲染全部歌词行到滚动容器（仅在歌曲切换或歌词内容变化时调用）。
-   有 yrc 时按字符渲染；否则按整行渲染（旧行为）。 */
+/* 渲染全部歌词行到滚动容器（仅在歌曲切换或歌词内容变化时调用）。 */
 function renderLyricLines() {
     var scrollEl = document.getElementById('lyricScroll');
     if (!scrollEl) return;
-
-    if (_mediaHasYrc) {
-        var html = _mediaLyricsYrc.map(function(line, i){
-            var chars = line.chars.map(function(c){
-                var text = (c.text === ' ' ? '&nbsp;' : escHtml(c.text || ' '));
-                return '<span class="lyric-char">'+text+'</span>';
-            }).join('');
-            return '<div class="lyric-line" data-idx="'+i+'"><span class="lyric-line-inner">'+chars+'</span></div>';
-        }).join('');
-        scrollEl.innerHTML = html;
-    } else {
-        var html2 = _mediaLyrics.map(function(item, i){
-            return '<div class="lyric-line" data-idx="'+i+'"><span class="lyric-line-inner">'+escHtml(item[1] || ' ')+'</span></div>';
-        }).join('');
-        scrollEl.innerHTML = html2;
-    }
+    scrollEl.innerHTML = _mediaLyrics.map(function(item, i){
+        return '<div class="lyric-line" data-idx="'+i+'"><span class="lyric-line-inner">'+escHtml(item[1] || ' ')+'</span></div>';
+    }).join('');
 }
 
 function dashboardLineInner(lineEl) {
@@ -977,11 +970,9 @@ function resetDashboardLineMarquee(lineEl) {
     delete lineEl.dataset.rawLyric;
     delete lineEl.dataset.measureToken;
     if (!inner) return;
-    if (!_mediaHasYrc) {
-        var lineIdx = Number(lineEl.dataset.idx || -1);
-        var raw = dashboardLyricTextForIndex(lineIdx);
-        if (raw && inner.textContent !== raw) inner.textContent = raw;
-    }
+    var lineIdx = Number(lineEl.dataset.idx || -1);
+    var raw = dashboardLyricTextForIndex(lineIdx);
+    if (raw && inner.textContent !== raw) inner.textContent = raw;
     inner.style.transition = 'none';
     inner.style.transform = 'translate3d(0,0,0)';
     requestAnimationFrame(function(){
@@ -997,7 +988,7 @@ function measureDashboardLineScroll(lineEl, inner) {
 
 function prepareDashboardCurrentMarquee(idx) {
     _dashboardLyricMarqueeActive = false;
-    if (_mediaHasYrc || idx < 0) return false;
+    if (idx < 0) return false;
     var scrollEl = document.getElementById('lyricScroll');
     if (!scrollEl) return false;
     var lineEl = scrollEl.children[idx];
@@ -1034,11 +1025,13 @@ function prepareDashboardCurrentMarquee(idx) {
             _dashboardLyricMarqueeActive = true;
             if (lineEl.classList.contains('marquee')) inner.style.transition = '';
             updateDashboardLyricMarquee();
+            startDashboardLyricMarqueeLoop();
         });
     }
     if (distance <= 1) return false;
     _dashboardLyricMarqueeActive = true;
     updateDashboardLyricMarquee();
+    startDashboardLyricMarqueeLoop();
     return true;
 }
 
@@ -1061,8 +1054,10 @@ function updateDashboardLyricMarquee() {
     }
     var progress = dashboardLyricScrollProgress();
     inner.style.transform = 'translate3d(' + (-distance * progress).toFixed(1) + 'px,0,0)';
-    lineEl.classList.toggle('marquee-done', progress >= 0.995);
-    return true;
+    var done = progress >= 0.995;
+    lineEl.classList.toggle('marquee-done', done);
+    if (done) _dashboardLyricMarqueeActive = false;
+    return !done;
 }
 
 /* 将指定索引的歌词行滚动到容器中央，并更新高亮样式 */
@@ -1085,60 +1080,20 @@ function scrollToLyricIdx(idx) {
     prepareDashboardCurrentMarquee(idx);
 }
 
-/* 更新逐字高亮：对当前行的每个字符按时间进度控制 CSS 变量。
-   已过 = 完全高亮；正在唱 = 从 0% 渐变到某比例；未到 = 暗色。 */
-function updateYrcHighlight(idx, posMs) {
-    if (!_mediaHasYrc || idx < 0 || idx >= _mediaLyricsYrc.length) return;
-    var scrollEl = document.getElementById('lyricScroll');
-    if (!scrollEl) return;
-    var lineEl = scrollEl.children[idx];
-    if (!lineEl) return;
-    var chars = _mediaLyricsYrc[idx].chars;
-    var spans = lineEl.querySelectorAll('.lyric-char');
-    for (var i = 0; i < chars.length && i < spans.length; i++) {
-        var c = chars[i];
-        var endMs = c.start + c.dur;
-        var span = spans[i];
-        if (posMs >= endMs) {
-            if (span.dataset.state !== 'done') {
-                span.dataset.state = 'done';
-                span.style.setProperty('--p', '100%');
-            }
-        } else if (posMs >= c.start) {
-            var p = (posMs - c.start) / c.dur;
-            if (p < 0) p = 0; else if (p > 1) p = 1;
-            span.dataset.state = 'active';
-            span.style.setProperty('--p', (p * 100).toFixed(1) + '%');
-        } else {
-            if (span.dataset.state !== 'idle') {
-                span.dataset.state = 'idle';
-                span.style.setProperty('--p', '0%');
-            }
-        }
-    }
-}
-
 function updateLyricLine(force) {
-    // 暂停时冻结歌词：不更新位置、不滚动、不刷逐字高亮
+    // 暂停时冻结歌词：不更新位置、不滚动
     if (!_mediaPlaying && !force) return;
-    var lyricsForLine = _mediaHasYrc ? _mediaLyricsYrc : _mediaLyrics;
-    if (!lyricsForLine.length && (typeof _mediaLyricIndex !== 'number' || _mediaLyricIndex < 0)) return;
+    if (!_mediaLyrics.length && (typeof _mediaLyricIndex !== 'number' || _mediaLyricIndex < 0)) return;
 
     var posSec = (_mediaPlaying ? (Date.now() / 1000 - _mediaStartTime) : _mediaPosition) + LYRIC_OFFSET;
-    var posMs = posSec * 1000;
 
-    // Non-YRC lines are backend-authoritative. YRC (if re-enabled) still scans locally.
+    // LRC lines are backend-authoritative when lyric_index is present.
     var idx = -1;
-    if (_mediaHasYrc) {
-        for (var i = 0; i < _mediaLyricsYrc.length; i++) {
-            if (_mediaLyricsYrc[i].start <= posMs) idx = i;
-            else break;
-        }
-    } else if (typeof _mediaLyricIndex === 'number') {
+    if (typeof _mediaLyricIndex === 'number') {
         idx = _mediaLyricIndex;
     } else {
-        for (var i2 = 0; i2 < _mediaLyrics.length; i2++) {
-            if (_mediaLyrics[i2][0] <= posSec) idx = i2;
+        for (var i = 0; i < _mediaLyrics.length; i++) {
+            if (_mediaLyrics[i][0] <= posSec) idx = i;
             else break;
         }
     }
@@ -1155,10 +1110,9 @@ function updateLyricLine(force) {
         // 大跳（idx 差 > 1，比如切歌或 seek）立即生效，不做防抖；
         // 相邻行切换（正常推进）才走时间稳定检查
         var bigJump = Math.abs(idx - _lastLyricIdx) > 1;
-        // Backend-authoritative index can take effect immediately for non-YRC.
-        var backendDriven = !_mediaHasYrc && typeof _mediaLyricIndex === 'number';
+        var backendDriven = typeof _mediaLyricIndex === 'number';
         if (settled || force || bigJump || backendDriven) {
-            if (!_mediaHasYrc && idx >= 0 && idx !== _dashboardLyricLineIndex) {
+            if (idx >= 0 && idx !== _dashboardLyricLineIndex) {
                 bindDashboardLyricTiming({lyric_index: idx, lyric: dashboardLyricTextForIndex(idx)}, {force: true});
             }
             _lastLyricIdx = idx;
@@ -1167,9 +1121,6 @@ function updateLyricLine(force) {
     } else if (force) {
         scrollToLyricIdx(_lastLyricIdx);
     }
-
-    // yrc 每次都要刷字符高亮（不受防抖影响，保证平滑）
-    if (_mediaHasYrc) updateYrcHighlight(_lastLyricIdx, posMs);
 }
 
 async function refreshMedia() {
@@ -1180,12 +1131,7 @@ async function refreshMedia() {
     } catch(e) { console.error('Media error:', e); }
 
 }
-// Backend lyric frames drive LRC line changes. Local ticks are only for
-// YRC character highlights and current-line marquee progress.
-setInterval(function () {
-    if (_mediaHasYrc) updateLyricLine();
-    else if (_dashboardLyricMarqueeActive) updateDashboardLyricMarquee();
-}, 60);
+// Backend lyric frames drive LRC line changes; long-line marquee is requestAnimationFrame-driven on demand.
 window.addEventListener('resize', function(){ updateLyricLine(true); });
 
 tickClock(); setInterval(tickClock,1000);

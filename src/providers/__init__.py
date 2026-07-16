@@ -18,6 +18,9 @@ from types import ModuleType
 
 logger = logging.getLogger("cuckoo.providers")
 
+# 认证刷新调度器独立于 capability 聚合；Provider 可选地用 @auto_refresh 注册任务。
+from providers.auth import refresh_scheduler
+
 _PROVIDERS_DIR = Path(__file__).parent
 _registry: dict[str, ModuleType] = {}  # {插件名: 模块}
 _discovered = False
@@ -68,6 +71,7 @@ def _discover() -> None:
             mod = importlib.import_module(f"providers.{name}")
             if hasattr(mod, "CAPABILITIES"):
                 _registry[name] = mod
+                refresh_scheduler.register_provider(name, mod)
                 logger.info(f"[providers] 已加载插件: {name} -> {mod.CAPABILITIES}")
             else:
                 logger.warning(f"[providers] 插件 {name} 缺少 CAPABILITIES 声明，已跳过")
@@ -111,6 +115,23 @@ def get_provider_config_schemas() -> list[dict]:
         schema["fields"] = fields
         schemas.append(schema)
     return sorted(schemas, key=lambda item: (item.get("order", 100), str(item.get("title", "")).casefold(), item["provider"].casefold()))
+
+
+def get_provider_config_schema(provider_name: str) -> dict | None:
+    """返回指定运行时 Provider 的已验证配置 Schema 副本。"""
+    for schema in get_provider_config_schemas():
+        if schema.get("provider") == provider_name:
+            return copy.deepcopy(schema)
+    return None
+
+
+def get_auth_providers() -> dict[str, ModuleType]:
+    """返回声明认证生命周期或自定义认证入口的 Provider。"""
+    return {
+        name: provider
+        for name, provider in get_providers().items()
+        if hasattr(provider, "AUTH_DESCRIPTOR") or callable(getattr(provider, "get_auth_status", None))
+    }
 
 
 def get_providers_by_capability(capability: str) -> dict[str, ModuleType]:

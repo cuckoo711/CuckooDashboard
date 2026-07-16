@@ -2,12 +2,13 @@
 
 配置文件：config/config.yaml
 UI 运行时状态（theme、lyric_offset、vibe_active）统一存储在配置文件中。
-cookies 由各插件自行管理。
+所有持久化认证凭据由 core.credentials 的 Windows DPAPI Vault 管理。
 """
 
 from __future__ import annotations
 
 import copy
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -28,8 +29,8 @@ CONFIG_DIR = PROJECT_ROOT / "config"
 DATA_DIR = PROJECT_ROOT / "data"
 
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
-CONFIG_VERSION = 2
-_MIGRATION_BACKUP = CONFIG_FILE.with_name(f"{CONFIG_FILE.name}.pre-providers.bak")
+CONFIG_VERSION = 3
+logger = logging.getLogger("cuckoo.config")
 _LEGACY_PROVIDER_KEYS = {
     "local_platforms": "local_platform",
     "nug": "nug",
@@ -64,7 +65,7 @@ def _normalize_local_platform_urls(section: dict[str, Any]) -> None:
 
 
 def migrate_config(config: dict[str, Any] | None) -> tuple[dict[str, Any], bool]:
-    """将旧版配置转换为 ``config_version=2`` 的 canonical 结构。
+    """将旧版配置转换为 ``config_version=3`` 的 canonical 结构。
 
     Provider 配置统一放在 ``providers.<provider_name>`` 下；其它全局配置保持
     原有顶层位置。函数不修改传入对象，并且可重复调用。
@@ -99,7 +100,7 @@ def migrate_config(config: dict[str, Any] | None) -> tuple[dict[str, Any], bool]
         if before_urls != local_config.get("urls"):
             changed = True
 
-    # MiMo 的认证凭据仍由 cookies.json 管理，但启用状态属于 Provider 配置。
+    # MiMo 的认证凭据由 DPAPI Vault 管理；YAML 仅保留 Provider 启用状态。
     if "mimo" not in providers:
         providers["mimo"] = {"enabled": True}
         changed = True
@@ -116,17 +117,6 @@ def migrate_config(config: dict[str, Any] | None) -> tuple[dict[str, Any], bool]
     return migrated, changed
 
 
-def _backup_before_migration(text: str) -> None:
-    """首次自动迁移前保留原始配置副本，不覆盖已有备份。"""
-    if _MIGRATION_BACKUP.exists():
-        return
-    try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        _MIGRATION_BACKUP.write_text(text, encoding="utf-8")
-    except OSError:
-        pass
-
-
 def load_config() -> dict[str, Any]:
     """加载 YAML 配置（带文件修改时间缓存）。"""
     global _config_cache, _config_mtime
@@ -141,18 +131,36 @@ def load_config() -> dict[str, Any]:
 
     if CONFIG_FILE.exists():
         try:
-            text = CONFIG_FILE.read_text(encoding="utf-8")
-            data = yaml.safe_load(text)
+            data = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8"))
             if isinstance(data, dict):
-                _config_cache, migrated = migrate_config(data)
-                if migrated:
-                    _backup_before_migration(text)
+                canonical, changed = migrate_config(data)
+                cleanup_paths: list[Path] = []
+                try:
+                    # 凭据迁移先写入并校验 DPAPI Vault；只有成功后才清理 YAML/旧文件。
+                    from core.credential_migration import migrate_legacy_credentials
+
+                    canonical, credential_changed, cleanup_paths = migrate_legacy_credentials(canonical)
+                    changed = changed or credential_changed
+                except Exception as exc:
+                    # 绝不因 Vault 不可用而删除唯一的旧明文来源；Provider 会报告 needs_login。
+                    logger.error("凭据迁移未完成，保留旧来源: %s", exc)
+                    cleanup_paths = []
+
+                _config_cache = canonical
+                saved = True
+                if changed:
                     try:
-                        save_config(_config_cache)
+                        save_config(canonical)
                         mtime = CONFIG_FILE.stat().st_mtime
                     except OSError:
+                        saved = False
                         # 内存中仍使用 canonical 配置；下次加载会再次尝试落盘。
-                        pass
+                if saved:
+                    for legacy_path in cleanup_paths:
+                        try:
+                            legacy_path.unlink(missing_ok=True)
+                        except OSError:
+                            logger.warning("无法清理已迁移的旧凭据文件: %s", legacy_path)
             else:
                 _config_cache = {}
         except (yaml.YAMLError, OSError):
@@ -165,11 +173,13 @@ def load_config() -> dict[str, Any]:
 
 
 def save_config(config: dict) -> None:
-    """将配置写回磁盘（YAML 格式）。"""
+    """将配置写回磁盘（YAML 格式），并始终写入当前 schema 版本。"""
     global _config_cache, _config_mtime
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    canonical = copy.deepcopy(config)
+    canonical["config_version"] = CONFIG_VERSION
     text = yaml.dump(
-        config,
+        canonical,
         default_flow_style=False,
         allow_unicode=True,
         sort_keys=False,
@@ -198,7 +208,7 @@ def save_config(config: dict) -> None:
             except OSError:
                 pass
 
-    _config_cache = config
+    _config_cache = canonical
     try:
         _config_mtime = CONFIG_FILE.stat().st_mtime
     except OSError:
@@ -212,13 +222,67 @@ def get_config_section(name: str, default: Any = None) -> Any:
     return default if value is None else value
 
 
+def _merge_provider_vault_secrets(provider_name: str, config: dict[str, Any]) -> dict[str, Any]:
+    """将 Schema 声明的通用 secret 从 Vault 合并到运行时配置副本。"""
+    try:
+        from core.credentials import VaultError, get_provider_state
+        from providers import get_provider_config_schema
+
+        schema = get_provider_config_schema(provider_name)
+        state = get_provider_state(provider_name, {})
+    except Exception:
+        return config
+    if not isinstance(schema, dict) or not isinstance(state, dict):
+        return config
+    secret_state = state.get("config_secrets")
+    if not isinstance(secret_state, dict):
+        return config
+    fields = secret_state.get("fields") if isinstance(secret_state.get("fields"), dict) else {}
+    objects = secret_state.get("objects") if isinstance(secret_state.get("objects"), dict) else {}
+    merged = copy.deepcopy(config)
+    for spec in schema.get("fields", []):
+        if not isinstance(spec, dict) or not isinstance(spec.get("key"), str):
+            continue
+        key = spec["key"]
+        if spec.get("type") == "secret":
+            if key in fields:
+                merged[key] = fields[key]
+            continue
+        if spec.get("type") != "object_list":
+            continue
+        identity_key = spec.get("identity_key")
+        rows = merged.get(key)
+        scoped = objects.get(key) if isinstance(objects.get(key), dict) else {}
+        if not isinstance(identity_key, str) or not isinstance(rows, list):
+            continue
+        item_fields = spec.get("item_fields", [])
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            identity = row.get(identity_key)
+            saved = scoped.get(identity) if isinstance(identity, str) else None
+            if not isinstance(saved, dict):
+                continue
+            for item_spec in item_fields if isinstance(item_fields, list) else []:
+                if not isinstance(item_spec, dict) or item_spec.get("type") != "secret":
+                    continue
+                item_key = item_spec.get("key")
+                if isinstance(item_key, str) and item_key in saved:
+                    row[item_key] = saved[item_key]
+    return merged
+
+
 def get_provider_config(name: str, default: Any = None) -> Any:
-    """读取 canonical 配置中的 ``providers.<name>``。"""
+    """读取运行时 Provider 配置，并合并 Schema 管理的 Vault secret。"""
     providers = load_config().get("providers", {})
     if not isinstance(providers, dict):
         return default
     value = providers.get(name, default)
-    return default if value is None else value
+    if value is None:
+        return default
+    if not isinstance(value, dict):
+        return value
+    return _merge_provider_vault_secrets(name, value)
 
 
 def set_provider_config(name: str, value: Any) -> None:

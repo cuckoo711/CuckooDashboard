@@ -9,7 +9,8 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
 
-from core.config import CONFIG_VERSION, load_config, migrate_config, save_config
+from core.config import CONFIG_VERSION, get_provider_config, load_config, migrate_config, save_config
+from core.credentials import VaultConflict, VaultError, get_global_secret, get_provider_state, vault
 from providers import get_provider_config_schemas, get_providers
 from services.font_service import font_exists, list_fonts
 from services.spectrum_service import list_capture_devices, load_music_offsets, request_capture_restart, save_music_offsets
@@ -44,6 +45,14 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 def _secret_view(value: Any) -> dict[str, Any]:
     configured = isinstance(value, str) and bool(value)
     return {"configured": configured, "masked": SECRET_MASK if configured else ""}
+
+
+def _global_vault_secret(key: str) -> str:
+    try:
+        value = get_global_secret(key, "")
+    except VaultError:
+        return ""
+    return value if isinstance(value, str) else ""
 
 
 def _optional_string(value: Any, field: str) -> str | None:
@@ -365,10 +374,19 @@ def _provider_panels(config: Mapping[str, Any]) -> list[dict[str, Any]]:
             "order": schema.get("order", 100),
             "fields": copy.deepcopy(schema.get("fields", [])),
             "status_only_auth": bool(schema.get("status_only_auth")),
-            "values": _schema_provider_values(schema, raw_provider_config.get(config_key, {})),
+            "values": _schema_provider_values(schema, get_provider_config(provider_name, raw_provider_config.get(config_key, {}))),
         }
         if provider is not None:
             panel["status"] = _provider_status(provider)
+            auth_status = getattr(provider, "get_auth_status", None)
+            if callable(auth_status):
+                try:
+                    panel["auth"] = dict(auth_status())
+                except Exception:
+                    panel["auth"] = {"status": "unknown", "authenticated": False}
+            descriptor = getattr(provider, "AUTH_DESCRIPTOR", None)
+            if isinstance(descriptor, Mapping):
+                panel["auth_descriptor"] = copy.deepcopy(dict(descriptor))
         panels.append(panel)
     return panels
 
@@ -423,7 +441,7 @@ def _public_global_config(config: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "config_version": active.get("config_version", CONFIG_VERSION),
         "dashboard": {
-            "token": _secret_view(dashboard.get("token")),
+            "token": _secret_view(_global_vault_secret("dashboard_token")),
             "off_peak_badge": {
                 "enabled": off_peak.get("enabled", True),
                 "ranges": copy.deepcopy(off_peak.get("ranges", [{"start": "00:00", "end": "08:00"}])),
@@ -448,7 +466,7 @@ def _public_global_config(config: Mapping[str, Any]) -> dict[str, Any]:
                 "offset": int(font_size.get("offset", 0)),
             },
         },
-        "github_token": _secret_view(active.get("github_token")),
+        "github_token": _secret_view(_global_vault_secret("github_token")),
         "hardware_overrides": {
             "cpu_model": hardware.get("cpu_model"),
             "mem_installed_gb": hardware.get("mem_installed_gb"),
@@ -475,10 +493,15 @@ def _public_global_config(config: Mapping[str, Any]) -> dict[str, Any]:
 
 def get_settings_payload() -> dict[str, Any]:
     config = load_config()
+    try:
+        credential_revision = vault.get_revision()
+    except VaultError:
+        credential_revision = None
     return {
         "config": _public_global_config(config),
         "providers": _provider_panels(config),
         "options": get_settings_options(),
+        "credential_revision": credential_revision,
     }
 
 
@@ -712,6 +735,101 @@ def _global_secret_update(secrets: Mapping[str, Any], path: str, current: Any) -
     return _apply_secret_update(secrets.get(path), current, f"secrets.{path}")
 
 
+def _extract_provider_secret_state(schema: Mapping[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    """从完整运行时 Provider 配置取出 Schema secret，并从 YAML 副本移除。"""
+    result: dict[str, Any] = {"fields": {}, "objects": {}}
+    for spec in schema.get("fields", []):
+        if not isinstance(spec, Mapping) or not isinstance(spec.get("key"), str):
+            continue
+        key = spec["key"]
+        if spec.get("type") == "secret":
+            result["fields"][key] = str(config.pop(key, "") or "")
+            continue
+        if spec.get("type") != "object_list":
+            continue
+        identity_key = spec.get("identity_key")
+        rows = config.get(key)
+        if not isinstance(identity_key, str) or not isinstance(rows, list):
+            continue
+        item_specs = spec.get("item_fields", [])
+        object_values: dict[str, dict[str, str]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            identity = row.get(identity_key)
+            if not isinstance(identity, str) or not identity:
+                continue
+            values: dict[str, str] = {}
+            for item_spec in item_specs if isinstance(item_specs, list) else []:
+                if not isinstance(item_spec, Mapping) or item_spec.get("type") != "secret":
+                    continue
+                item_key = item_spec.get("key")
+                if isinstance(item_key, str):
+                    values[item_key] = str(row.pop(item_key, "") or "")
+            if values:
+                object_values[identity] = values
+        if object_values:
+            result["objects"][key] = object_values
+    return result
+
+
+def _persist_provider_secret_states(
+    values: Mapping[str, dict[str, Any]], *, expected_revision: int | None = None
+) -> None:
+    if not values:
+        return
+
+    def apply(root: dict[str, Any]) -> None:
+        providers = root.setdefault("providers", {})
+        if not isinstance(providers, dict):
+            providers = {}
+            root["providers"] = providers
+        for provider_name, secret_state in values.items():
+            provider_state = providers.get(provider_name)
+            if not isinstance(provider_state, dict):
+                provider_state = {}
+                providers[provider_name] = provider_state
+            provider_state["config_secrets"] = copy.deepcopy(secret_state)
+        return None
+
+    vault.update(apply, expected_revision=expected_revision)
+
+
+def _persist_vault_changes(
+    global_values: Mapping[str, str],
+    provider_values: Mapping[str, dict[str, Any]],
+    *,
+    expected_revision: int | None = None,
+) -> None:
+    if not global_values and not provider_values:
+        return
+
+    def apply(root: dict[str, Any]) -> None:
+        global_state = root.setdefault("global", {})
+        if not isinstance(global_state, dict):
+            global_state = {}
+            root["global"] = global_state
+        for key, value in global_values.items():
+            if value:
+                global_state[key] = value
+            else:
+                global_state.pop(key, None)
+
+        providers = root.setdefault("providers", {})
+        if not isinstance(providers, dict):
+            providers = {}
+            root["providers"] = providers
+        for provider_name, secret_state in provider_values.items():
+            provider_state = providers.get(provider_name)
+            if not isinstance(provider_state, dict):
+                provider_state = {}
+                providers[provider_name] = provider_state
+            provider_state["config_secrets"] = copy.deepcopy(secret_state)
+        return None
+
+    vault.update(apply, expected_revision=expected_revision)
+
+
 def _validate_music(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise SettingsValidationError("必须是对象", "music")
@@ -747,7 +865,7 @@ def _validate_music(value: Any) -> dict[str, Any]:
 
 
 def save_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """校验并保存全局配置与 Provider 配置。"""
+    """校验并保存无秘密 YAML 配置与 DPAPI Vault 凭据。"""
     if not isinstance(payload, Mapping):
         raise SettingsValidationError("请求体必须是对象")
     incoming = payload.get("config", {})
@@ -756,9 +874,15 @@ def save_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise SettingsValidationError("config 必须是对象")
     if not isinstance(secrets, Mapping):
         raise SettingsValidationError("secrets 必须是对象")
+    raw_revision = payload.get("credential_revision")
+    if raw_revision is not None and (isinstance(raw_revision, bool) or not isinstance(raw_revision, int) or raw_revision < 0):
+        raise SettingsValidationError("credential_revision 必须是非负整数")
 
     current, _ = migrate_config(load_config())
     next_config = copy.deepcopy(current)
+    vault_globals: dict[str, str] = {}
+    vault_provider_secrets: dict[str, dict[str, Any]] = {}
+
     dashboard_input = incoming.get("dashboard")
     if dashboard_input is not None:
         if not isinstance(dashboard_input, Mapping):
@@ -775,12 +899,18 @@ def save_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             dashboard["font"] = _validate_font(dashboard_input["font"])
         if "font_size" in dashboard_input:
             dashboard["font_size"] = _validate_font_size(dashboard_input["font_size"])
-        dashboard["token"] = _global_secret_update(
-            secrets, "dashboard.token", _mapping(current.get("dashboard")).get("token", "")
-        )
+        if "dashboard.token" in secrets:
+            vault_globals["dashboard_token"] = _global_secret_update(
+                secrets, "dashboard.token", _global_vault_secret("dashboard_token")
+            )
+        # 防止旧配置残留在本次保存后重新进入 YAML。
+        dashboard.pop("token", None)
 
     if "github_token" in secrets:
-        next_config["github_token"] = _global_secret_update(secrets, "github_token", current.get("github_token", ""))
+        vault_globals["github_token"] = _global_secret_update(
+            secrets, "github_token", _global_vault_secret("github_token")
+        )
+    next_config.pop("github_token", None)
 
     if "hardware_overrides" in incoming:
         next_config["hardware_overrides"] = _validate_hardware(incoming["hardware_overrides"])
@@ -804,15 +934,11 @@ def save_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     if "music" in incoming:
         validated_music = _validate_music(incoming["music"])
         old_music = load_music_offsets()
-        # Persist via spectrum helper so device switch restarts capture cleanly.
-        save_music_offsets(validated_music)
-        next_config["music"] = dict(load_config().get("music") or validated_music)
+        next_config["music"] = validated_music
         music_changed = (
             old_music.get("capture_device") != validated_music.get("capture_device")
             or old_music.get("spectrum_enabled") != validated_music.get("spectrum_enabled")
         )
-        if music_changed:
-            request_capture_restart("settings save")
 
     incoming_providers = incoming.get("providers", {})
     if not isinstance(incoming_providers, Mapping):
@@ -826,16 +952,26 @@ def save_settings_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         if config_key not in schema_map:
             raise SettingsValidationError("未注册或未声明配置 Schema 的 Provider", f"providers.{config_key}")
         provider_name, schema = schema_map[config_key]
-        providers_config[config_key] = _build_provider_config(
-            provider_name,
-            schema,
-            raw_provider,
-            providers_config.get(config_key, {}),
-            secrets,
-        )
+        # 运行时完整配置含 Vault secret；构建后再剥离到 Provider state。
+        current_provider = get_provider_config(provider_name, providers_config.get(config_key, {}))
+        built = _build_provider_config(provider_name, schema, raw_provider, current_provider, secrets)
+        secret_state = _extract_provider_secret_state(schema, built)
+        if secret_state["fields"] or secret_state["objects"]:
+            vault_provider_secrets[provider_name] = secret_state
+        providers_config[config_key] = built
 
     next_config["config_version"] = CONFIG_VERSION
+    try:
+        _persist_vault_changes(vault_globals, vault_provider_secrets, expected_revision=raw_revision)
+    except VaultConflict as exc:
+        raise SettingsValidationError("凭据已被其他认证页面或刷新任务更新，请刷新设置页后重试") from exc
+    except VaultError as exc:
+        raise SettingsValidationError("无法写入 Windows 凭据 Vault，请重新认证或检查当前用户权限") from exc
+
+    # Vault 先成功，再落盘不含秘密的 YAML；若 YAML 写失败，唯一凭据仍在 Vault 中。
     save_config(next_config)
+    if music_changed:
+        request_capture_restart("settings save")
     applied, errors = apply_runtime_config()
     return {
         "ok": True,
@@ -853,9 +989,9 @@ def reveal_secret(path: str, *, identity: str | None = None, field: str | None =
     """按 Schema 白名单读取单个敏感字段。"""
     config = load_config()
     if path == "dashboard.token":
-        return str(_mapping(config.get("dashboard")).get("token", "") or "")
+        return _global_vault_secret("dashboard_token")
     if path == "github_token":
-        return str(config.get("github_token", "") or "")
+        return _global_vault_secret("github_token")
     if not isinstance(path, str) or not path.startswith("providers."):
         raise SettingsValidationError("不允许查看该敏感字段", path)
 
@@ -866,8 +1002,8 @@ def reveal_secret(path: str, *, identity: str | None = None, field: str | None =
     schema_info = _schema_for_config_key(config_key)
     if schema_info is None:
         raise SettingsValidationError("Provider 未声明配置 Schema", path)
-    _, schema = schema_info
-    provider_config = _mapping(_mapping(config).get("providers")).get(config_key, {})
+    provider_name, schema = schema_info
+    provider_config = get_provider_config(provider_name, _mapping(_mapping(config).get("providers")).get(config_key, {}))
     field_spec = _field_by_key(schema.get("fields"), field_key)
     if field_spec is None:
         raise SettingsValidationError("字段不存在", path)

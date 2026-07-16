@@ -46,8 +46,6 @@
             --gh-l2: rgba(138,124,196,0.7);
             --gh-l3: rgba(138,124,196,0.88);
             --gh-l4: #c2a8e0;
-            --lyric-fill: #e8c98f;
-            --lyric-rest: rgba(255,255,255,0.22);
             --ts: 0 1px 4px rgba(0,0,0,0.8), 0 0 12px rgba(0,0,0,0.5);
             --ts2: 0 1px 3px rgba(0,0,0,0.7);
             --backdrop-filter: blur(2px);
@@ -108,8 +106,6 @@
             --gh-l2: #a898d8;
             --gh-l3: #8878c0;
             --gh-l4: #6858a8;
-            --lyric-fill: #4a3d8a;
-            --lyric-rest: rgba(0,0,0,0.18);
             --ts: none;
             --ts2: none;
             --backdrop-filter: none;
@@ -473,26 +469,6 @@
         }
         .lyric-idle { font-size:calc(var(--fs-body) * 1.1); color:var(--text2); text-shadow:var(--ts2); text-align:center; position:absolute; top:50%; left:0; right:0; transform:translateY(-50%); }
 
-        /* 逐字歌词：卡拉 OK 从左到右填充。
-           --p 是 0%-100% 的进度，用 linear-gradient 硬边分割"已唱/未唱"。
-           只在 .current 行显示这个效果，其它行不做逐字动画。 */
-        .lyric-char {
-            display: inline-block;
-            --p: 0%;
-            color: inherit;
-        }
-        .lyric-line.current .lyric-char {
-            background-image: linear-gradient(
-                90deg,
-                var(--lyric-fill) 0%, var(--lyric-fill) var(--p),
-                var(--lyric-rest) var(--p), var(--lyric-rest) 100%
-            );
-            -webkit-background-clip: text;
-            background-clip: text;
-            -webkit-text-fill-color: transparent;
-            text-shadow: none;
-            transition: none;
-        }
         .lyric-offset-wrap { display:flex; align-items:center; justify-content:center; gap:4px; }
         .lyric-offset-btn { width:20px; height:20px; border-radius:50%; border:1px solid var(--border); background:var(--button-bg); color:var(--text2); font-size:calc(var(--fs-body) * 1.2); display:flex; align-items:center; justify-content:center; line-height:1; cursor:pointer; padding:0; }
         .lyric-offset-btn:hover { background:var(--button-hover-bg); color:var(--text); }

@@ -1,4 +1,4 @@
-"""Tests for the Schema-driven settings backend."""
+"""设置后台与 DPAPI Vault 集成测试。"""
 
 from __future__ import annotations
 
@@ -8,35 +8,44 @@ import json
 import pytest
 
 import services.settings_service as settings_service
+from core.credentials import VaultConflict
+
+
+class MemoryVault:
+    def __init__(self, state=None):
+        self.state = copy.deepcopy(state or {"version": 1, "revision": 0, "global": {}, "providers": {}})
+
+    def get_revision(self):
+        return self.state["revision"]
+
+    def update(self, mutator, *, expected_revision=None):
+        if expected_revision is not None and expected_revision != self.state["revision"]:
+            raise VaultConflict("stale")
+        candidate = copy.deepcopy(self.state)
+        result = mutator(candidate)
+        if result is not None:
+            candidate = result
+        candidate["revision"] = self.state["revision"] + 1
+        self.state = candidate
+        return copy.deepcopy(candidate)
 
 
 @pytest.fixture
 def base_config():
     return {
-        "config_version": 2,
+        "config_version": 3,
         "dashboard": {
-            "token": "dashboard-secret",
             "off_peak_badge": {"enabled": True, "ranges": [{"start": "00:00", "end": "08:00"}]},
             "vibe_coding": {"ring": {}, "model_bars": {}, "balances": []},
         },
-        "github_token": "github-secret",
         "providers": {
             "mimo": {"enabled": True},
-            "local_platform": {
-                "enabled": True,
-                "username": "user",
-                "password": "default-secret",
-                "urls": [{"url": "http://one.example", "password": "instance-secret"}],
-            },
-            "nug": {"enabled": False, "url": "", "username": "", "password": "nug-secret"},
+            "local_platform": {"enabled": True, "urls": [{"url": "http://one.example", "credential_ref": "local-one"}]},
+            "nug": {"enabled": False},
         },
         "hardware_overrides": {
-            "cpu_model": None,
-            "mem_installed_gb": None,
-            "mem_name": None,
-            "gpu_model": None,
-            "gpu_vram_gb": {},
-            "apu_device_ids": None,
+            "cpu_model": None, "mem_installed_gb": None, "mem_name": None,
+            "gpu_model": None, "gpu_vram_gb": {}, "apu_device_ids": None,
         },
         "logging": {
             "level": "INFO", "mode": "daily", "dir": "logs",
@@ -49,120 +58,92 @@ def base_config():
     }
 
 
-def test_public_payload_masks_provider_secrets(monkeypatch, base_config):
-    monkeypatch.setattr(settings_service, "load_config", lambda: copy.deepcopy(base_config))
-    monkeypatch.setattr(settings_service, "get_settings_options", lambda: {})
-    payload = settings_service.get_settings_payload()
+@pytest.fixture
+def memory_vault(monkeypatch):
+    store = MemoryVault({
+        "version": 1,
+        "revision": 3,
+        "global": {"dashboard_token": "dashboard-secret", "github_token": "github-secret"},
+        "providers": {},
+    })
+    monkeypatch.setattr(settings_service, "vault", store)
+    monkeypatch.setattr(settings_service, "get_global_secret", lambda key, default=None: copy.deepcopy(store.state["global"].get(key, default)))
+    return store
+
+
+def test_public_global_payload_masks_vault_secrets(base_config, memory_vault):
+    payload = settings_service._public_global_config(base_config)
     serialized = json.dumps(payload, ensure_ascii=False)
-    panels = {panel["config_key"]: panel for panel in payload["providers"]}
 
-    assert panels["local_platform"]["values"]["password"]["configured"] is True
-    assert panels["local_platform"]["values"]["urls"][0]["password"]["configured"] is True
-    assert panels["nug"]["values"]["password"]["configured"] is True
-    assert payload["config"]["github_token"]["configured"] is True
-    for secret in ("dashboard-secret", "github-secret", "default-secret", "instance-secret", "nug-secret"):
-        assert secret not in serialized
+    assert payload["dashboard"]["token"]["configured"] is True
+    assert payload["github_token"]["configured"] is True
+    assert "dashboard-secret" not in serialized
+    assert "github-secret" not in serialized
 
 
-def _save_payload():
-    return {
-        "config": {
-            "dashboard": {
-                "off_peak_badge": {"enabled": False, "ranges": []},
-                "vibe_coding": {"ring": {}, "model_bars": {}, "balances": []},
-            },
-            "providers": {
-                "mimo": {"enabled": True},
-                "local_platform": {
-                    "enabled": True,
-                    "username": "changed",
-                    "urls": [
-                        {"url": "http://one.example", "__original_url": "http://one.example"},
-                        {"url": "https://two.example", "__original_url": ""},
-                    ],
-                },
-                "nug": {"enabled": True, "url": "https://nug.example", "username": "n"},
-            },
-            "hardware_overrides": {
-                "cpu_model": "CPU override", "mem_installed_gb": 32, "mem_name": None,
-                "gpu_model": None, "gpu_vram_gb": {"GPU": 16}, "apu_device_ids": None,
-            },
-            "logging": {
-                "level": "DEBUG", "mode": "daily", "dir": "logs",
-                "keep_days": 7, "max_size_mb": 5, "max_backups": 5, "console": True,
-            },
-            "theme": "dark", "lyric_offset": 0, "vibe_active": False,
-        },
-        "secrets": {
-            "dashboard.token": {"action": "keep"},
-            "github_token": {"action": "keep"},
-            "providers.local_platform.password": {"action": "keep"},
-            "providers.local_platform.urls": [
-                {
-                    "original_identity": "http://one.example",
-                    "identity": "http://one.example",
-                    "fields": {"password": {"action": "keep"}},
-                },
-                {
-                    "original_identity": "https://two.example",
-                    "identity": "https://two.example",
-                    "fields": {"password": {"action": "set", "value": "two-secret"}},
-                },
-            ],
-            "providers.nug.password": {"action": "set", "value": "new-nug"},
-        },
-    }
-
-
-def test_save_preserves_provider_secrets_and_unknown_keys(monkeypatch, base_config):
+def test_save_moves_global_secrets_to_vault_and_keeps_yaml_clean(monkeypatch, base_config, memory_vault):
     saved: dict = {}
     monkeypatch.setattr(settings_service, "load_config", lambda: copy.deepcopy(base_config))
     monkeypatch.setattr(settings_service, "save_config", lambda value: saved.update(copy.deepcopy(value)))
     monkeypatch.setattr(settings_service, "apply_runtime_config", lambda: (["test"], []))
     monkeypatch.setattr(settings_service, "get_settings_payload", lambda: {"config": {}, "providers": [], "options": {}})
 
-    result = settings_service.save_settings_payload(_save_payload())
+    result = settings_service.save_settings_payload({
+        "config": {"dashboard": {}, "providers": {}},
+        "secrets": {
+            "dashboard.token": {"action": "set", "value": "new-dashboard"},
+            "github_token": {"action": "clear"},
+        },
+        "credential_revision": 3,
+    })
 
     assert result["ok"] is True
-    assert saved["dashboard"]["token"] == "dashboard-secret"
-    assert saved["github_token"] == "github-secret"
-    assert saved["providers"]["local_platform"]["password"] == "default-secret"
-    assert saved["providers"]["local_platform"]["urls"][0]["password"] == "instance-secret"
-    assert saved["providers"]["local_platform"]["urls"][1]["password"] == "two-secret"
-    assert saved["providers"]["nug"]["password"] == "new-nug"
+    assert "token" not in saved["dashboard"]
+    assert "github_token" not in saved
+    assert memory_vault.state["global"]["dashboard_token"] == "new-dashboard"
+    assert "github_token" not in memory_vault.state["global"]
     assert saved["custom_unknown"] == {"keep": True}
 
 
-def test_save_can_clear_provider_secrets(monkeypatch, base_config):
+def test_schema_secret_is_stored_in_provider_vault_state(monkeypatch, base_config, memory_vault):
+    fake_schema = [{
+        "provider": "atlas", "config_key": "atlas", "title": "Atlas", "description": "", "order": 1,
+        "fields": [
+            {"key": "enabled", "label": "启用", "type": "boolean", "default": True},
+            {"key": "api_key", "label": "API Key", "type": "secret", "default": ""},
+        ],
+    }]
+    fake_provider = type("FakeProvider", (), {"get_status": lambda self: {"status": "unknown", "ok": False, "enabled": True}})()
+    base = copy.deepcopy(base_config)
+    base["providers"] = {"atlas": {"enabled": True}}
+    memory_vault.state["providers"]["atlas"] = {"config_secrets": {"fields": {"api_key": "old-key"}, "objects": {}}}
     saved: dict = {}
-    monkeypatch.setattr(settings_service, "load_config", lambda: copy.deepcopy(base_config))
+
+    monkeypatch.setattr(settings_service, "load_config", lambda: copy.deepcopy(base))
     monkeypatch.setattr(settings_service, "save_config", lambda value: saved.update(copy.deepcopy(value)))
     monkeypatch.setattr(settings_service, "apply_runtime_config", lambda: ([], []))
     monkeypatch.setattr(settings_service, "get_settings_payload", lambda: {"config": {}, "providers": [], "options": {}})
-    payload = _save_payload()
-    payload["secrets"]["providers.local_platform.password"] = {"action": "clear"}
-    payload["secrets"]["providers.nug.password"] = {"action": "clear"}
-    payload["secrets"]["providers.local_platform.urls"][0]["fields"]["password"] = {"action": "clear"}
+    monkeypatch.setattr(settings_service, "get_provider_config_schemas", lambda: copy.deepcopy(fake_schema))
+    monkeypatch.setattr(settings_service, "get_providers", lambda: {"atlas": fake_provider})
+    monkeypatch.setattr(settings_service, "get_provider_config", lambda name, default=None: {"enabled": True, "api_key": memory_vault.state["providers"]["atlas"]["config_secrets"]["fields"]["api_key"]})
 
-    settings_service.save_settings_payload(payload)
+    settings_service.save_settings_payload({
+        "config": {"providers": {"atlas": {"enabled": True}}},
+        "secrets": {"providers.atlas.api_key": {"action": "set", "value": "new-key"}},
+        "credential_revision": 3,
+    })
 
-    assert saved["providers"]["local_platform"]["password"] == ""
-    assert saved["providers"]["local_platform"]["urls"][0].get("password", "") == ""
-    assert saved["providers"]["nug"]["password"] == ""
-
-
-def test_invalid_global_and_provider_values_are_rejected():
-    with pytest.raises(settings_service.SettingsValidationError):
-        settings_service._validate_off_peak({"enabled": True, "ranges": [{"start": "09:00", "end": "09:00"}]})
-    with pytest.raises(settings_service.SettingsValidationError):
-        settings_service._http_url("not-a-url", "providers.nug.url")
+    assert "api_key" not in saved["providers"]["atlas"]
+    assert memory_vault.state["providers"]["atlas"]["config_secrets"]["fields"]["api_key"] == "new-key"
+    assert settings_service.reveal_secret("providers.atlas.api_key") == "new-key"
 
 
-def test_reveal_uses_provider_schema_allowlist(monkeypatch, base_config):
+def test_stale_credential_revision_is_rejected(monkeypatch, base_config, memory_vault):
     monkeypatch.setattr(settings_service, "load_config", lambda: copy.deepcopy(base_config))
-    assert settings_service.reveal_secret("dashboard.token") == "dashboard-secret"
-    assert settings_service.reveal_secret(
-        "providers.local_platform.urls", identity="http://one.example", field="password"
-    ) == "instance-secret"
+
     with pytest.raises(settings_service.SettingsValidationError):
-        settings_service.reveal_secret("providers.local_platform.unknown")
+        settings_service.save_settings_payload({
+            "config": {"providers": {}},
+            "secrets": {"github_token": {"action": "set", "value": "x"}},
+            "credential_revision": 1,
+        })

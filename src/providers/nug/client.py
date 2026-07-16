@@ -1,9 +1,11 @@
-"""NUG (NarraFork) 平台 provider — 会话管理与 API 客户端。"""
+"""NUG Provider 的会话客户端；session cookie 由 Provider Vault state 持久化。"""
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import requests
 
@@ -11,9 +13,17 @@ logger = logging.getLogger("cuckoo.providers.nug")
 
 
 class NUGClient:
-    """NUG 平台 API 客户端，使用 session cookie 认证。"""
+    """NUG API 客户端，支持从 Vault 恢复并回写 session cookie。"""
 
-    def __init__(self, base_url: str, username: str, password: str):
+    def __init__(
+        self,
+        base_url: str,
+        username: str,
+        password: str,
+        *,
+        session_cookies: Mapping[str, str] | None = None,
+        on_session_update: Callable[[dict[str, str]], None] | None = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self.username = username
         self.password = password
@@ -22,10 +32,20 @@ class NUGClient:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Dashboard",
             "Content-Type": "application/json",
         })
-        self._logged_in = False
+        if isinstance(session_cookies, Mapping):
+            self.session.cookies.update({str(key): str(value) for key, value in session_cookies.items() if value})
+        self._on_session_update = on_session_update
+        self._logged_in = bool(session_cookies)
+
+    def _persist_session(self) -> None:
+        if self._on_session_update is None:
+            return
+        try:
+            self._on_session_update(dict(self.session.cookies.get_dict()))
+        except Exception:
+            logger.warning("[nug] 无法持久化会话状态")
 
     def _login(self) -> bool:
-        """登录获取 session cookie。"""
         try:
             resp = self.session.post(
                 f"{self.base_url}/api/auth/login",
@@ -34,11 +54,12 @@ class NUGClient:
             )
             if resp.status_code == 200:
                 self._logged_in = True
-                logger.info(f"[nug] 登录成功: {self.base_url}")
+                self._persist_session()
+                logger.info("[nug] 登录成功: %s", self.base_url)
                 return True
-            logger.error(f"[nug] 登录失败 {self.base_url}: HTTP {resp.status_code}")
-        except Exception as e:
-            logger.error(f"[nug] 登录异常 {self.base_url}: {e}")
+            logger.error("[nug] 登录失败 %s: HTTP %s", self.base_url, resp.status_code)
+        except Exception as exc:
+            logger.error("[nug] 登录异常 %s: %s", self.base_url, exc)
         return False
 
     def _ensure_login(self) -> bool:
@@ -46,34 +67,42 @@ class NUGClient:
             return self._login()
         return True
 
-    def _request_with_retry(self, method: str, url: str, **kwargs):
-        """带 401 自动重登的请求。"""
+    def _request_with_retry(self, method: str, url: str, **kwargs: Any):
+        """带 401 自动重登的请求；成功请求后回写服务端可能轮换的 session。"""
         if not self._ensure_login():
             return None
-        resp = getattr(self.session, method)(url, **kwargs)
+        try:
+            resp = getattr(self.session, method)(url, **kwargs)
+        except Exception as exc:
+            logger.error("[nug] 请求异常: %s", exc)
+            return None
         if resp.status_code == 401:
+            self._logged_in = False
             if self._login():
-                resp = getattr(self.session, method)(url, **kwargs)
+                try:
+                    resp = getattr(self.session, method)(url, **kwargs)
+                except Exception as exc:
+                    logger.error("[nug] 重登后请求异常: %s", exc)
+                    return None
             else:
                 return None
-        return resp if resp.status_code == 200 else None
+        if resp.status_code == 200:
+            self._persist_session()
+            return resp
+        return None
 
     def get_balance(self) -> dict | None:
-        """获取 quotaBalance。"""
         try:
-            resp = self._request_with_retry(
-                "get", f"{self.base_url}/api/auth/me", timeout=10
-            )
+            resp = self._request_with_retry("get", f"{self.base_url}/api/auth/me", timeout=10)
             if resp is None:
                 return None
             me = resp.json()
             return {"balance": me.get("quotaBalance", 0)}
-        except Exception as e:
-            logger.error(f"[nug] 获取余额异常: {e}")
+        except Exception as exc:
+            logger.error("[nug] 获取余额异常: %s", exc)
             return None
 
     def get_channel_breakdown(self, days: int = 7) -> list | None:
-        """获取按 channel 分组的用量明细（最近 N 天）。"""
         try:
             end = datetime.now(timezone.utc)
             start = end - timedelta(days=days)
@@ -91,8 +120,7 @@ class NUGClient:
             )
             if resp is None:
                 return None
-            data = resp.json()
-            return data.get("rows", [])
-        except Exception as e:
-            logger.error(f"[nug] 获取 channel breakdown 异常: {e}")
+            return resp.json().get("rows", [])
+        except Exception as exc:
+            logger.error("[nug] 获取 channel breakdown 异常: %s", exc)
             return None

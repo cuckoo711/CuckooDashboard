@@ -12,7 +12,8 @@ from pathlib import Path
 import requests
 
 from core.cache import TTLCache
-from core.config import DATA_DIR, load_config
+from core.config import DATA_DIR
+from core.credentials import VaultError, get_global_secret
 
 logger = logging.getLogger("cuckoo.github")
 
@@ -28,8 +29,11 @@ _use_api: bool = False  # True 当 token 可用时
 
 
 def _get_token() -> str | None:
-    """从热重载配置读取 GitHub Personal Access Token。"""
-    token = load_config().get("github_token")
+    """从 DPAPI Vault 读取 GitHub Personal Access Token。"""
+    try:
+        token = get_global_secret("github_token")
+    except VaultError:
+        return None
     return token if isinstance(token, str) and token else None
 
 

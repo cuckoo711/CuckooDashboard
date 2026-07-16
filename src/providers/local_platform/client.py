@@ -16,10 +16,11 @@ logger = logging.getLogger("cuckoo.providers.local_platform")
 class LocalMimoAPI:
     """本地 MiMo 兼容平台 API 客户端（JWT 认证，token 持久化）"""
 
-    def __init__(self, base_url: str, username: str, password: str):
+    def __init__(self, base_url: str, username: str, password: str, *, account_id: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.username = username
         self.password = password
+        self.account_id = account_id or ""
         self._token = ""
         self._token_ts: float = 0
         # 内网 HTTPS 自签证书跳过验证
@@ -46,7 +47,7 @@ class LocalMimoAPI:
                 self._token = data.get("token", "")
                 self._token_ts = time.time()
                 if self._token:
-                    save_cached_token(self._cache_key, self._token)
+                    save_cached_token(self._cache_key, self._token, self.account_id)
                     return True
             logger.error(f"[local] 登录失败 {self.base_url}: HTTP {resp.status_code}")
         except Exception as e:
@@ -57,7 +58,7 @@ class LocalMimoAPI:
         """确保 token 有效（5天刷新，磁盘缓存）。"""
         if self._token and (time.time() - self._token_ts) < 5 * 86400:
             return True
-        cached = load_cached_token(self._cache_key)
+        cached = load_cached_token(self._cache_key, self.account_id)
         if cached:
             self._token = cached
             self._token_ts = time.time()
