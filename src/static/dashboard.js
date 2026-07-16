@@ -878,6 +878,7 @@ function drawLyric(data) {
     var isNewSong = !_mediaTrackKey || (trackKey && trackKey !== _mediaTrackKey);
     if (!isNewSong) _mediaTitle = data.title;
     var didRenderLyrics = false;
+    var isSlimMedia = !!data.media_slim;
     var incomingYrc = Array.isArray(data.lyrics_yrc) ? data.lyrics_yrc : [];
     var incomingLyrics = Array.isArray(data.lyrics) ? data.lyrics : [];
     var incomingHasYrc = incomingYrc.length > 0;
@@ -886,17 +887,28 @@ function drawLyric(data) {
     if (isNewSong) {
         _mediaTitle = data.title;
         _mediaTrackKey = trackKey;
-        _mediaLyrics = incomingLyrics;
-        _mediaLyricsYrc = incomingYrc;
-        _mediaHasYrc = incomingHasYrc;
-        _mediaLyricsKey = incomingLyricsKey;
         _mediaDuration = data.duration || 0;
         resetLyricState();
         didRenderLyrics = true;
-        var hasAny = _mediaHasYrc || _mediaLyrics.length > 0;
-        idleEl.style.display = hasAny ? 'none' : 'block';
-        idleEl.textContent = '暂无歌词';
-        renderLyricLines();
+        if (isSlimMedia && !incomingLyricsKey) {
+            _mediaLyrics = [];
+            _mediaLyricsYrc = [];
+            _mediaHasYrc = false;
+            _mediaLyricsKey = '';
+            idleEl.style.display = 'block';
+            idleEl.textContent = '歌词加载中…';
+            renderLyricLines();
+            requestDashboardMediaHydration();
+        } else {
+            _mediaLyrics = incomingLyrics;
+            _mediaLyricsYrc = incomingYrc;
+            _mediaHasYrc = incomingHasYrc;
+            _mediaLyricsKey = incomingLyricsKey;
+            var hasAny = _mediaHasYrc || _mediaLyrics.length > 0;
+            idleEl.style.display = hasAny ? 'none' : 'block';
+            idleEl.textContent = '暂无歌词';
+            renderLyricLines();
+        }
     } else if (incomingLyricsKey && incomingLyricsKey !== _mediaLyricsKey) {
         _mediaLyrics = incomingLyrics;
         _mediaLyricsYrc = incomingYrc;
@@ -906,7 +918,7 @@ function drawLyric(data) {
         idleEl.style.display = 'none';
         idleEl.textContent = '暂无歌词';
         renderLyricLines();
-    } else if (!incomingLyricsKey && !_mediaLyricsKey && !_mediaLyrics.length && !_mediaHasYrc) {
+    } else if (!isSlimMedia && !incomingLyricsKey && !_mediaLyricsKey && !_mediaLyrics.length && !_mediaHasYrc) {
         _mediaLyricsKey = '__empty__';
         idleEl.style.display = 'block';
         idleEl.textContent = '暂无歌词';

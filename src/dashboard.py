@@ -266,6 +266,46 @@ def _ws_broadcast(msg: dict):
             _ws_recalc_vibe_locked()
 
 
+def _dashboard_media_payload(frame: dict) -> dict:
+    """Dashboard 每秒 media 推送的瘦身版本：不带完整歌词/封面调色大字段。"""
+    keep = {
+        "status", "title", "artist", "album", "song_id",
+        "lyric", "next_lyric", "lyric_index", "next_lyric_index",
+        "position", "position_effective", "duration", "progress_ratio", "position_source",
+        "lyric_offset", "lyric_start", "lyric_end", "lyric_duration", "lyric_elapsed",
+        "lyric_scroll", "lyric_line_progress", "server_ts",
+    }
+    slim = {k: frame.get(k) for k in keep if k in frame}
+    # Keep compatibility with existing drawLyric() shape, but make it explicit
+    # that the full lyric list must be hydrated via /api/media when needed.
+    slim["media_slim"] = True
+    slim["lyrics"] = []
+    slim["lyrics_yrc"] = []
+    return slim
+
+
+def _ws_broadcast_media(frame: dict):
+    """按页面分发 media：Dashboard 收轻量帧，其它页面保持完整帧。"""
+    full_data = json.dumps({"type": "media", "data": frame}, ensure_ascii=False)
+    slim_data = json.dumps({"type": "media", "data": _dashboard_media_payload(frame)}, ensure_ascii=False)
+    dead = []
+    for ws in _ws_clients_snapshot():
+        with _ws_clients_lock:
+            state = _ws_client_states.get(ws) or {}
+            page = state.get("page") or "unknown"
+        try:
+            ws.send(slim_data if page == "dashboard" else full_data)
+        except Exception:
+            dead.append(ws)
+    if dead:
+        with _ws_clients_lock:
+            for ws in dead:
+                if ws in _ws_clients:
+                    _ws_clients.remove(ws)
+                _ws_client_states.pop(ws, None)
+            _ws_recalc_vibe_locked()
+
+
 _SPECTRUM_FPS_MIN = 12
 _SPECTRUM_FPS_MAX = 60
 _SPECTRUM_FPS_DEFAULT = 24
@@ -491,7 +531,11 @@ def _ws_broadcaster():
                 for fut in as_completed(futs):
                     msg_type = futs[fut]
                     try:
-                        _ws_broadcast({"type": msg_type, "data": fut.result()})
+                        data = fut.result()
+                        if msg_type == "media":
+                            _ws_broadcast_media(data)
+                        else:
+                            _ws_broadcast({"type": msg_type, "data": data})
                     except Exception as e:
                         logger.error(f"[ws] {msg_type} broadcast error: {e}")
 
@@ -974,7 +1018,7 @@ def api_media_offset():
     # without waiting for the 1s broadcaster tick.
     try:
         frame = get_media_info()
-        _ws_broadcast({"type": "media", "data": frame})
+        _ws_broadcast_media(frame)
         # Offset changes must force a lyric-line re-sync even if the index key
         # happens to match the previous emit for a brief moment.
         lyric = get_lyric_frame()
