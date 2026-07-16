@@ -255,75 +255,108 @@ dashboard:
 
 ```
 .
-├── run_dashboard.py          # Entry point: start web dashboard
-├── run_desktop.py            # Entry point: start native desktop app
-├── requirements.txt          # Python dependencies
-├── config/                   # User configuration and secrets (git-ignored except example)
+├── run_dashboard.py              # Web launcher
+├── run_desktop.py                # Native PyWebView launcher
+├── requirements.txt
+├── config/
 │   ├── config.example.yaml       # Provider-agnostic schema-v4 template
 │   ├── config.yaml               # Private non-secret configuration
-│   └── credentials.vault         # DPAPI-encrypted credential Vault (never edit or share)
+│   └── credentials.vault         # DPAPI-encrypted Vault; never edit or share
 ├── src/
-│   ├── dashboard.py          # Flask app, generic Provider routes and background tasks
-│   ├── desktop.py            # PyWebView native window wrapper with monitor detection
-│   ├── smtc_worker.py        # Standalone subprocess: SMTC + UIA + YesPlayMusic listener
-│   ├── core/                 # Core infrastructure
-│   │   ├── config.py             # Provider-agnostic YAML load/save and schema-v4 storage
-│   │   ├── credentials.py        # DPAPI Vault, account state, revisions and locking
-│   │   ├── cache.py              # TTLCache utility
-│   │   ├── proc.py               # PowerShell/subprocess execution (hidden window)
-│   │   ├── perfcounters.py       # PDH/WMI performance counter sampling
-│   │   └── monitor.py            # Windows display enumeration
-│   ├── providers/            # Fully decoupled plugin system
-│   │   ├── __init__.py           # Auto-discovery, Registry, schemas and capability calls
-│   │   ├── runtime_config.py     # Provider-side YAML defaults + Vault-secret resolution
-│   │   ├── auth.py               # AuthResult, refresh decorator, scheduler
-│   │   ├── auth_routes.py        # Generic auth/public Provider route containers
-│   │   ├── base.py               # Provider capability contracts
-│   │   ├── mimo/                 # MiMo Provider implementation
-│   │   │   ├── __main__.py           # `python -m providers.mimo` CLI entry
-│   │   │   ├── implementation.py     # Provider-owned QR/browser/password CLI implementation
-│   │   │   └── ...
-│   │   ├── nug/                  # NUG Provider implementation
-│   │   │   └── ...
-│   │   └── local_platform/       # Local-platform Provider implementation
-│   │       └── ...
-│   ├── services/             # Business logic services
-│   │   ├── github_service.py     # GitHub heatmap fetch/cache (GraphQL + scraping)
-│   │   ├── media_service.py      # SMTC media state, Netease + QQ Music lyrics
-│   │   ├── system_service.py     # System hardware and runtime metrics
-│   │   ├── player_service.py     # Windows SMTC playback controls
-│   │   ├── off_peak_service.py   # Off-peak time range badge config
-│   │   ├── health_service.py     # Service health aggregation
-│   │   ├── dashboard_data_service.py # Capability-based daily-usage aggregation
-│   │   ├── theme.py              # Theme metadata and persistence
-│   │   └── config.py             # Provider-agnostic config storage exports
+│   ├── dashboard.py              # Compatibility `app` export and web CLI only
+│   ├── desktop.py                # PyWebView + managed Werkzeug server lifecycle
+│   ├── smtc_worker.py            # Standalone SMTC/UIA media subprocess
+│   ├── app/
+│   │   ├── factory.py            # Side-effect-free `create_app()` composition root
+│   │   └── security.py           # Loopback, same-origin/token and cache guards
+│   ├── features/                 # Feature-oriented HTTP and application boundaries
+│   │   ├── dashboard/            # Main page, aggregate payload and Vibe APIs
+│   │   ├── settings/             # Routes, Schema, persistence, runtime refresh, service
+│   │   ├── media/                # Media/cover/player routes
+│   │   ├── music/                # Music stage, spectrum and calibration routes
+│   │   ├── system/               # System-monitoring routes
+│   │   ├── providers/            # Generic and Provider-owned route registration
+│   │   └── appearance/           # Theme/font routes and payload service
+│   ├── runtime/
+│   │   ├── lifecycle.py          # Idempotent start/stop for managed workers
+│   │   └── websocket.py          # WebSocketHub, clients, subscriptions and broadcasters
+│   ├── contracts/                # Standard-library dataclass/TypedDict wire contracts
+│   │   ├── provider.py
+│   │   ├── dashboard.py
+│   │   ├── health.py
+│   │   └── settings.py
+│   ├── core/                     # Config, Vault, caching, subprocess and Windows infra
+│   ├── providers/                # Auto-discovered, capability-based plugins
+│   │   ├── __init__.py           # Registry, typed invocation and Schema discovery
+│   │   ├── auth.py               # Credential refresh decorator and managed scheduler
+│   │   ├── auth_routes.py        # Restricted Provider route containers
+│   │   ├── base.py               # Plugin contract documentation/re-exports
+│   │   ├── runtime_config.py
+│   │   ├── mimo/
+│   │   ├── nug/
+│   │   └── local_platform/
+│   ├── services/                 # Domain collectors and external integrations
+│   │   ├── dashboard_data_service.py
+│   │   ├── health_service.py
+│   │   ├── github_service.py
+│   │   ├── media_service.py
+│   │   ├── spectrum_service.py
+│   │   ├── system_service.py
+│   │   └── ...
 │   ├── static/
-│   │   ├── dashboard.html
-│   │   ├── dashboard.css
-│   │   ├── dashboard.js
-│   │   └── bg/                   # Theme background images
-│   └── tests/
-│       ├── test_credentials_vault.py
-│       ├── test_config_storage.py
-│       ├── test_auth_lifecycle.py
-│       ├── test_auth_routes.py
-│       └── ...
-├── data/                         # Auto-generated non-secret caches/runtime files (git-ignored)
-│   ├── github_cache.json
-│   └── monitor.json              # Target display config for desktop mode
-└── venv/
+│   │   ├── dashboard.html/css/js # Root JS is a compatibility module entry
+│   │   ├── music.html/css/js
+│   │   ├── settings.html/css/js
+│   │   ├── modules/
+│   │   │   ├── shared/           # Fetch, player, font, WS and screenshot helpers
+│   │   │   ├── dashboard/        # Dashboard native ES Modules
+│   │   │   └── music/            # Music-stage native ES Modules
+│   │   └── settings/modules/     # Loopback-only Settings ES Modules
+│   └── tests/                    # Unit, contract, architecture, route and module tests
+└── data/                         # Non-secret generated caches/runtime files
 ```
 
 ## Architecture
 
+### App Factory and Feature Boundaries
+
+`app.factory.create_app()` is the composition root. It creates Flask/Sock, installs security hooks, registers feature Blueprints, mounts every discovered Provider route for that specific app, and stores a fresh `DashboardRuntime` in `app.extensions`. The factory does **not** start threads or subprocesses, so tests can safely create multiple isolated apps.
+
+`dashboard.py` remains a compatibility facade (`dashboard.app`) and CLI. HTTP handlers live under `features/*/routes.py`; routes adapt HTTP only, while payload composition, Settings Schema interpretation, Vault/YAML persistence and runtime refresh are separated into feature services.
+
+### Managed Runtime Lifecycle
+
+`DashboardRuntime` owns the WebSocket broadcasters and Provider credential-refresh scheduler. Startup and shutdown are idempotent. Shutdown closes clients, releases spectrum subscriptions, stops executors/schedulers, terminates the SMTC worker, and joins system/media/spectrum workers. The desktop launcher uses a managed Werkzeug server and performs the same cleanup when the PyWebView window exits.
+
+System and media collectors retain their existing lazy-start behavior: they start only when first consumed, but now expose explicit shutdown hooks and can restart after a clean stop.
+
+### Typed Contracts
+
+Stable cross-module structures are defined with standard-library dataclasses, Protocols and TypedDicts in `src/contracts/`:
+
+- Provider status, daily usage and typed call outcomes
+- Dashboard totals, usage sources and the internal aggregate/snapshot boundary
+- Normalized service health
+- Stable Settings request/response keys while Provider-specific values stay dynamic
+
+Provider functions continue returning their compatible dict/list payloads. Consumers normalize internally and serialize back to the existing API wire format, including `today.in/out/cache/total/inMiss` and all current Vibe/Settings keys.
+
+### Native ES Modules
+
+Dashboard, Music and Settings use browser-native ES Modules without a bundler or framework. Shared stateless helpers live in `static/modules/shared`; page state and controllers live in page-specific modules. HTML inline handlers were removed in favor of module-bound `data-action` events. Settings modules are served only through the loopback-protected `/settings-assets/modules/...` namespace.
+
 ### WebSocket Real-Time Push
 
-The dashboard uses a single WebSocket connection (`/ws`) for all real-time data:
+The dashboard uses a single WebSocket connection (`/ws`) managed by `WebSocketHub`:
 
-1. On connect: server asynchronously pushes state plus `dashboard_data`, github, media, system, and theme payloads
-2. Background broadcaster thread (1s interval): parallel fetch of system + media + github, broadcast to all clients
-3. Selected Vibe Providers refresh at dynamic intervals based on Vibe Coding mode (20s coding / 60s chilling)
-4. Client can send `{"type": "vibe", "active": true/false}` to toggle mode or `{"type": "init"}` to request full refresh
+1. On connect: asynchronously push `vibe_state`, `dashboard_data`, GitHub, media, system, theme and font data
+2. Main broadcaster (1s): fetch system + media + GitHub in parallel and broadcast cached/current results
+3. Spectrum broadcaster: honor each visible client's requested 12–60 FPS cadence
+4. Lyric broadcaster: poll at 120ms but send only when the active track/line changes
+5. Selected Vibe Providers refresh every 20s in Coding mode or 60s in Chilling mode
+6. Clients can report page type, subscribe to spectrum/lyrics, toggle Vibe, request initialization, ping and return screenshots
+
+All disconnect paths use one cleanup operation so spectrum references are released exactly once.
 
 ### Provider Plugin System
 
@@ -345,6 +378,20 @@ GPU and CPU metrics use a tiered approach:
 2. **Fallback**: PowerShell `Get-Counter` / `Get-CimInstance` — higher latency but always available
 
 GPU LUID mapping stabilizes across refresh cycles to prevent card assignment flicker.
+
+## Development and Tests
+
+```bash
+# Full Python regression suite
+python -m pytest -q
+
+# Syntax-check the three browser module entry graphs
+node --check src/static/modules/dashboard/main.js
+node --check src/static/modules/music/main.js
+node --check src/static/settings/modules/main.js
+```
+
+The test suite covers App Factory isolation, the complete route surface, managed runtime shutdown/restart, WebSocket subscription cleanup, Provider/Dashboard/Health/Settings contracts, AST dependency boundaries, ES Module import resolution/cycle detection, Node syntax checks, and loopback-only Settings module assets.
 
 ## Security
 

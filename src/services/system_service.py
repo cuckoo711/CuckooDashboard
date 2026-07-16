@@ -26,6 +26,11 @@ _last_error: str | None = None
 _snapshot_data: dict | None = None
 _snapshot_lock = threading.Lock()
 _snapshot_started = False
+_snapshot_thread: threading.Thread | None = None
+
+# Shared lifecycle for both permanent service loops.
+_service_thread_lock = threading.RLock()
+_service_stop_event = threading.Event()
 
 # Default hardware maps
 _DEFAULT_VRAM_MAP = {
@@ -39,6 +44,7 @@ _DEFAULT_APU_DEVS = {"13c0", "13e0", "15bf", "1681", "164f", "15e4"}
 _dynamic_refresh_lock = threading.Lock()
 _dynamic_cpu_freq_mhz: int = 0
 _dynamic_refresh_started = False
+_dynamic_refresh_thread: threading.Thread | None = None
 
 
 def _get_overrides() -> dict:
@@ -112,50 +118,78 @@ def _smbios_to_ddr_name(smbios_type: int) -> str:
 
 
 def _async_dynamic_loop():
-    """后台线程：每 2s 异步刷新 GPU 利用率/显存 + 磁盘用量 + CPU实时频率"""
-    global _dynamic_cpu_freq_mhz
-    while True:
-        try:
-            # 读取静态快照中的 gpus / disks 列表（共享引用，直接原地更新）
-            if not hasattr(_collect_system_info, "_static"):
-                time.sleep(2); continue
-            static = _collect_system_info._static
-            s = static.get("data")
+    """后台线程：每 2s 异步刷新 GPU 利用率/显存 + 磁盘用量 + CPU实时频率。"""
+    global _dynamic_cpu_freq_mhz, _dynamic_refresh_started, _dynamic_refresh_thread
+    try:
+        while not _service_stop_event.is_set():
+            try:
+                # 读取静态快照中的 gpus / disks 列表（共享引用，直接原地更新）
+                if not hasattr(_collect_system_info, "_static"):
+                    if _service_stop_event.wait(2):
+                        break
+                    continue
+                static = _collect_system_info._static
+                s = static.get("data")
 
-            # ── CPU 实时频率：优先使用常驻 PDH query，缺失时兼容旧 PS 路径 ──
-            freq_mhz = get_cpu_actual_frequency_mhz()
-            if freq_mhz is None:
-                try:
-                    out = run_ps(r"""
+                # ── CPU 实时频率：优先使用常驻 PDH query，缺失时兼容旧 PS 路径 ──
+                freq_mhz = get_cpu_actual_frequency_mhz()
+                if freq_mhz is None:
+                    try:
+                        out = run_ps(r"""
 $c = Get-Counter '\Processor Information(_Total)\Actual Frequency' -ErrorAction Stop
 [math]::Round($c.CounterSamples.CookedValue, 0)
 """, timeout=3)
-                    freq_mhz = int(out) if out else None
-                except Exception:
-                    freq_mhz = None
-            if freq_mhz is not None:
-                with _dynamic_refresh_lock:
-                    _dynamic_cpu_freq_mhz = freq_mhz
+                        freq_mhz = int(out) if out else None
+                    except Exception:
+                        freq_mhz = None
+                if freq_mhz is not None:
+                    with _dynamic_refresh_lock:
+                        _dynamic_cpu_freq_mhz = freq_mhz
 
-            if s and s.get("gpus") is not None:
-                _refresh_dynamic(s["gpus"], s["disks"])
-            # 磁盘插拔检测（每30秒）
-            if s and s.get("disks") is not None:
-                _check_disk_changes(s["disks"])
-        except Exception as e:
-            logger.error(f"[sys] async dynamic refresh error: {e}")
-        time.sleep(2)
+                if s and s.get("gpus") is not None:
+                    _refresh_dynamic(s["gpus"], s["disks"])
+                # 磁盘插拔检测（每30秒）
+                if s and s.get("disks") is not None:
+                    _check_disk_changes(s["disks"])
+            except Exception as e:
+                logger.error(f"[sys] async dynamic refresh error: {e}")
+            if _service_stop_event.wait(2):
+                break
+    finally:
+        with _service_thread_lock:
+            if _dynamic_refresh_thread is threading.current_thread():
+                _dynamic_refresh_thread = None
+                _dynamic_refresh_started = False
+
+
+
+def _service_threads_alive_locked() -> bool:
+    return bool(
+        (_snapshot_thread and _snapshot_thread.is_alive())
+        or (_dynamic_refresh_thread and _dynamic_refresh_thread.is_alive())
+    )
+
 
 
 def _ensure_dynamic_thread():
-    """启动异步动态刷新线程（仅一次）"""
-    global _dynamic_refresh_started
-    if _dynamic_refresh_started:
-        return
-    _dynamic_refresh_started = True
-    t = threading.Thread(target=_async_dynamic_loop, daemon=True, name="sys-dynamic")
-    t.start()
+    """懒启动异步动态刷新线程；停止完成后允许再次启动。"""
+    global _dynamic_refresh_started, _dynamic_refresh_thread
+    with _service_thread_lock:
+        if _dynamic_refresh_thread and _dynamic_refresh_thread.is_alive():
+            return
+        if _service_stop_event.is_set():
+            if _service_threads_alive_locked():
+                return
+            _service_stop_event.clear()
+        _dynamic_refresh_started = True
+        _dynamic_refresh_thread = threading.Thread(
+            target=_async_dynamic_loop,
+            daemon=True,
+            name="sys-dynamic",
+        )
+        _dynamic_refresh_thread.start()
     logger.info("[sys] async dynamic refresh thread started (2s interval)")
+
 
 
 def _collect_system_info() -> dict:
@@ -314,26 +348,67 @@ def get_system_info() -> dict:
 def _snapshot_loop():
     """Background thread: collect system metrics every 2 seconds."""
     global _snapshot_data, _last_success_at, _last_error
-    while True:
-        try:
-            data = _collect_system_info()
-            with _snapshot_lock:
-                _snapshot_data = data
-            _last_success_at = time.time()
-            _last_error = None
-        except Exception as e:
-            _last_error = str(e)
-        time.sleep(2)
+    global _snapshot_started, _snapshot_thread
+    try:
+        while not _service_stop_event.is_set():
+            try:
+                data = _collect_system_info()
+                with _snapshot_lock:
+                    _snapshot_data = data
+                _last_success_at = time.time()
+                _last_error = None
+            except Exception as e:
+                _last_error = str(e)
+            if _service_stop_event.wait(2):
+                break
+    finally:
+        with _service_thread_lock:
+            if _snapshot_thread is threading.current_thread():
+                _snapshot_thread = None
+                _snapshot_started = False
+
 
 
 def _ensure_snapshot_thread():
-    """Start the background snapshot thread if not already running."""
-    global _snapshot_started
-    if _snapshot_started:
-        return
-    _snapshot_started = True
-    t = threading.Thread(target=_snapshot_loop, daemon=True, name="sys-snapshot")
-    t.start()
+    """Lazily start the snapshot thread, including after a clean stop."""
+    global _snapshot_started, _snapshot_thread
+    with _service_thread_lock:
+        if _snapshot_thread and _snapshot_thread.is_alive():
+            return
+        if _service_stop_event.is_set():
+            if _service_threads_alive_locked():
+                return
+            _service_stop_event.clear()
+        _snapshot_started = True
+        _snapshot_thread = threading.Thread(
+            target=_snapshot_loop,
+            daemon=True,
+            name="sys-snapshot",
+        )
+        _snapshot_thread.start()
+
+
+
+def stop_system_service(timeout: float = 5) -> None:
+    """Stop and join both system collection loops; lazy access may restart them."""
+    global _snapshot_started, _dynamic_refresh_started
+    global _snapshot_thread, _dynamic_refresh_thread
+    _service_stop_event.set()
+    with _service_thread_lock:
+        threads = [_snapshot_thread, _dynamic_refresh_thread]
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    for thread in threads:
+        if thread is None or thread is threading.current_thread():
+            continue
+        thread.join(max(0.0, deadline - time.monotonic()))
+    with _service_thread_lock:
+        if _snapshot_thread is not None and not _snapshot_thread.is_alive():
+            _snapshot_thread = None
+            _snapshot_started = False
+        if _dynamic_refresh_thread is not None and not _dynamic_refresh_thread.is_alive():
+            _dynamic_refresh_thread = None
+            _dynamic_refresh_started = False
+
 
 
 def get_system_status() -> dict:

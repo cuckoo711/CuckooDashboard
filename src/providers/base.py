@@ -186,3 +186,17 @@ CONFIG_SCHEMA = {
 - ``validate_config(config)``：执行 Provider 专属的跨字段校验。
 - ``reload_config()``：配置保存后清理客户端和内存缓存。
 """
+
+# 契约类型从此历史文档模块重导出，兼容插件原有导入路径。
+from contracts.provider import (  # noqa: E402,F401
+    ApiUsageCapability,
+    BalanceCapability,
+    DailyUsage,
+    DailyUsageCapability,
+    DailyUsagePayload,
+    ProviderCallOutcome,
+    ProviderProtocol,
+    ProviderStatus,
+    ProviderStatusPayload,
+    TokenPlanCapability,
+)

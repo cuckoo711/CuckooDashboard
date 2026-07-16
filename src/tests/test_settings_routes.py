@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-import dashboard
-from services.settings_service import SettingsValidationError
+from app.factory import create_app
+from features.settings import routes as settings_routes
+from features.settings.schema import SettingsValidationError
 
 
-def _client():
-    return dashboard.app.test_client()
+def _app():
+    return create_app({"TESTING": True})
 
 
 def test_settings_page_and_assets_require_loopback():
-    client = _client()
+    client = _app().test_client()
     assert client.get("/settings", environ_base={"REMOTE_ADDR": "127.0.0.1"}).status_code == 200
     assert client.get("/settings-assets/settings.js", environ_base={"REMOTE_ADDR": "::1"}).status_code == 200
     assert client.get("/settings-assets/dashboard.js", environ_base={"REMOTE_ADDR": "127.0.0.1"}).status_code == 404
@@ -22,21 +23,22 @@ def test_settings_page_and_assets_require_loopback():
 
 def test_settings_get_response_is_no_store_and_uses_service(monkeypatch):
     monkeypatch.setattr(
-        dashboard,
+        settings_routes,
         "get_settings_payload",
         lambda: {"config": {"github_token": {"configured": True, "masked": "••••••"}}, "options": {}},
     )
-    response = _client().get("/api/settings", environ_base={"REMOTE_ADDR": "127.0.0.1"})
+    response = _app().test_client().get("/api/settings", environ_base={"REMOTE_ADDR": "127.0.0.1"})
     assert response.status_code == 200
     assert response.headers["Cache-Control"].startswith("no-store")
     assert response.get_json()["config"]["github_token"]["configured"] is True
 
 
 def test_settings_post_validates_and_broadcasts(monkeypatch):
+    app = _app()
     called = []
-    monkeypatch.setattr(dashboard, "save_settings_payload", lambda payload: {"ok": True, "config": {}, "options": {}})
-    monkeypatch.setattr(dashboard, "_broadcast_settings_update", lambda: called.append(True))
-    response = _client().post(
+    monkeypatch.setattr(settings_routes, "save_settings_payload", lambda payload: {"ok": True, "config": {}, "options": {}})
+    monkeypatch.setattr(app.extensions["dashboard_runtime"].hub, "broadcast_settings_update", lambda: called.append(True))
+    response = app.test_client().post(
         "/api/settings",
         json={"config": {}, "secrets": {}},
         headers={"Origin": "http://localhost"},
@@ -48,11 +50,11 @@ def test_settings_post_validates_and_broadcasts(monkeypatch):
 
 def test_settings_post_returns_structured_validation_error(monkeypatch):
     monkeypatch.setattr(
-        dashboard,
+        settings_routes,
         "save_settings_payload",
         lambda payload: (_ for _ in ()).throw(SettingsValidationError("时间无效", "dashboard.off_peak_badge")),
     )
-    response = _client().post(
+    response = _app().test_client().post(
         "/api/settings",
         json={"config": {}, "secrets": {}},
         headers={"Origin": "http://localhost"},
@@ -67,11 +69,11 @@ def test_settings_post_returns_structured_validation_error(monkeypatch):
 
 def test_reveal_requires_loopback_and_post_protection(monkeypatch):
     monkeypatch.setattr(
-        dashboard,
+        settings_routes,
         "reveal_secret",
         lambda path, **kwargs: "revealed" if path == "github_token" else "",
     )
-    client = _client()
+    client = _app().test_client()
     blocked = client.post(
         "/api/settings/reveal",
         json={"path": "github_token"},

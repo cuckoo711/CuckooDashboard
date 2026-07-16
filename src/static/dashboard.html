@@ -15,7 +15,7 @@
     <!-- Header -->
     <div class="hdr">
         <div class="hdr-l">
-            <div class="mark"></div>
+            <div class="mark" data-action="cycle-theme"></div>
             <h1>Cuckoo Dashboard</h1>
         </div>
         <div class="hdr-center">
@@ -94,7 +94,7 @@
         <div class="card-head">
             <span class="card-head-l"><span class="bar"></span>Vibe Coding<span class="svc-dot" id="dot-vibe"></span></span>
             <span class="card-head-r">
-                <span class="vibe-toggle" id="vibeToggle" onclick="toggleVibe()">
+                <span class="vibe-toggle" id="vibeToggle" data-action="toggle-vibe">
                     <span class="dot"></span><span id="vibeToggleLabel">Chilling</span>
                 </span>
             </span>
@@ -148,9 +148,9 @@
             <span class="card-head-r">
                 <a class="player-btn music-stage-link" href="/music" title="打开音乐舞台">🎛</a>
                 <span class="player-ctrl">
-                    <button class="player-btn" onclick="playerCtl('prev')" title="上一首">⏮</button>
-                    <button class="player-btn" onclick="playerCtl('toggle')" title="播放/暂停">⏯</button>
-                    <button class="player-btn" onclick="playerCtl('next')" title="下一首">⏭</button>
+                    <button class="player-btn" data-action="player-control" data-player-action="prev" title="上一首">⏮</button>
+                    <button class="player-btn" data-action="player-control" data-player-action="toggle" title="播放/暂停">⏯</button>
+                    <button class="player-btn" data-action="player-control" data-player-action="next" title="下一首">⏭</button>
                 </span>
             </span>
         </div>
@@ -161,9 +161,9 @@
         <div class="card-foot">
             <span class="card-foot-l" id="lyricTitle">--</span>
             <span class="lyric-offset-wrap">
-                <button class="lyric-offset-btn" onclick="adjOffset(-0.5)">−</button>
+                <button class="lyric-offset-btn" data-action="adjust-lyric-offset" data-delta="-0.5">−</button>
                 <span class="lyric-offset-val" id="lyricOffsetVal">0.0</span>
-                <button class="lyric-offset-btn" onclick="adjOffset(0.5)">+</button>
+                <button class="lyric-offset-btn" data-action="adjust-lyric-offset" data-delta="0.5">+</button>
             </span>
             <span class="card-foot-r" id="lyricArtist">--</span>
         </div>
@@ -185,6 +185,6 @@
 </div>
 
 <script src="/static/lib/html2canvas.min.js"></script>
-<script src="/static/dashboard.js?v=dashboard-lrc-1"></script>
+<script type="module" src="/static/modules/dashboard/main.js"></script>
 </body>
 </html>

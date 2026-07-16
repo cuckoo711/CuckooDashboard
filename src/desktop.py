@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
-"""
-Cuckoo Dashboard Desktop App
-原生桌面应用，无需打开浏览器。
+"""Cuckoo Dashboard native PyWebView launcher."""
 
-使用方式:
-    python desktop.py              # 默认端口 5000
-    python desktop.py --port 8080  # 指定端口
-    python desktop.py --dev        # 开发模式（显示控制台）
-    python desktop.py --install    # 注册开机自启
-    python desktop.py --uninstall  # 取消开机自启
-"""
+from __future__ import annotations
 
 import argparse
 import ctypes
@@ -21,17 +13,14 @@ import time
 from pathlib import Path
 
 import webview
+from werkzeug.serving import make_server
 
 from core.config import load_config
 from core.logging_config import setup_logging
-
-# 在 dashboard import 之前初始化日志（desktop 模式可能需要 console: false）
-setup_logging(load_config())
-
-# 导入Flask应用
-from dashboard import app, start_background_threads_once
 from core.monitor import load_target_monitor
 from providers import get_providers
+
+setup_logging(load_config())
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +29,10 @@ SCRIPT_PATH = Path(__file__).resolve().parent.parent / "run_desktop.py"
 PYTHONW = Path(__file__).resolve().parent.parent / "venv" / "Scripts" / "pythonw.exe"
 
 
-def enable_dpi_awareness():
-    """启用 Windows DPI 感知，避免缩放模糊"""
+def enable_dpi_awareness() -> None:
+    """启用 Windows DPI 感知，避免缩放模糊。"""
     try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-Monitor DPI Aware
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
         try:
             ctypes.windll.user32.SetProcessDPIAware()
@@ -52,7 +41,7 @@ def enable_dpi_awareness():
 
 
 def wait_for_server(host: str, port: int, timeout: float = 5.0) -> bool:
-    """等待Flask服务器就绪"""
+    """等待本地 Dashboard 服务器就绪。"""
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -63,17 +52,16 @@ def wait_for_server(host: str, port: int, timeout: float = 5.0) -> bool:
     return False
 
 
-def start_flask(port: int, debug: bool = False):
-    """在后台线程启动Flask服务器"""
-    app.run(host='0.0.0.0', port=port, debug=debug, use_reloader=False)
-
-
-def install_autostart():
-    """写入注册表实现开机自启"""
+def install_autostart() -> None:
+    """写入注册表实现开机自启。"""
     import winreg
-    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                         r"Software\Microsoft\Windows\CurrentVersion\Run",
-                         0, winreg.KEY_SET_VALUE)
+
+    key = winreg.OpenKey(
+        winreg.HKEY_CURRENT_USER,
+        r"Software\Microsoft\Windows\CurrentVersion\Run",
+        0,
+        winreg.KEY_SET_VALUE,
+    )
     cmd = f'"{PYTHONW}" "{SCRIPT_PATH}"'
     winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, cmd)
     winreg.CloseKey(key)
@@ -81,13 +69,17 @@ def install_autostart():
     print(f"     命令: {cmd}")
 
 
-def uninstall_autostart():
-    """删除注册表开机自启"""
+def uninstall_autostart() -> None:
+    """删除注册表开机自启。"""
     import winreg
+
     try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                             r"Software\Microsoft\Windows\CurrentVersion\Run",
-                             0, winreg.KEY_SET_VALUE)
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0,
+            winreg.KEY_SET_VALUE,
+        )
         winreg.DeleteValue(key, APP_NAME)
         winreg.CloseKey(key)
         print(f"[OK] 已取消开机自启: {APP_NAME}")
@@ -95,12 +87,24 @@ def uninstall_autostart():
         print(f"[INFO] 未找到自启项: {APP_NAME}")
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Cuckoo Dashboard Desktop App')
-    parser.add_argument('--port', type=int, default=5000, help='服务器端口 (默认: 5000)')
-    parser.add_argument('--dev', action='store_true', help='开发模式 (显示Flask日志)')
-    parser.add_argument('--install', action='store_true', help='注册开机自启后退出')
-    parser.add_argument('--uninstall', action='store_true', help='取消开机自启后退出')
+def _provider_status_summary() -> str:
+    values = []
+    for provider_id, provider in sorted(get_providers().items(), key=lambda item: item[0].casefold()):
+        get_status = getattr(provider, "get_status", None)
+        try:
+            status = get_status() if callable(get_status) else {"status": "unknown"}
+        except Exception as exc:
+            status = {"status": "error", "error": str(exc)}
+        values.append(f"{provider_id}:{status.get('status', 'unknown')}")
+    return ", ".join(values) or "无已发现 Provider"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Cuckoo Dashboard Desktop App")
+    parser.add_argument("--port", type=int, default=5000, help="服务器端口 (默认: 5000)")
+    parser.add_argument("--dev", action="store_true", help="开发模式 (显示调试工具)")
+    parser.add_argument("--install", action="store_true", help="注册开机自启后退出")
+    parser.add_argument("--uninstall", action="store_true", help="取消开机自启后退出")
     args = parser.parse_args()
 
     if args.install:
@@ -110,84 +114,80 @@ def main():
         uninstall_autostart()
         return
 
-    # Windows DPI 设置
+    # Import and construct the web app only for an actual desktop session.
+    from app.factory import create_app
+    from runtime.lifecycle import get_runtime
+
     enable_dpi_awareness()
-
-    # 非开发模式下静默Flask日志
     if not args.dev:
-        log = logging.getLogger('werkzeug')
-        log.setLevel(logging.ERROR)
+        logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
-    # 检测目标显示器
     monitor = load_target_monitor()
     if monitor is None:
         print("[EXIT] 目标显示器未找到，自动退出")
         sys.exit(0)
-    win_x, win_y = monitor['left'], monitor['top']
-    print(f"[OK] 找到目标显示器: {monitor['name']} ({monitor['width']}x{monitor['height']}) at ({win_x},{win_y})")
-
-    # Provider 认证/健康问题只影响对应插件，绝不阻塞桌面看板启动。
-    provider_statuses = []
-    for provider_id, provider in sorted(get_providers().items(), key=lambda item: item[0].casefold()):
-        get_status = getattr(provider, "get_status", None)
-        try:
-            status = get_status() if callable(get_status) else {"status": "unknown"}
-        except Exception as exc:
-            status = {"status": "error", "error": str(exc)}
-        provider_statuses.append(f"{provider_id}:{status.get('status', 'unknown')}")
-    print("[INFO] Provider 状态: " + (", ".join(provider_statuses) or "无已发现 Provider"))
-
-    # 启动 WebSocket 广播线程
-    start_background_threads_once()
-
-    # 在后台线程启动Flask
-    flask_thread = threading.Thread(
-        target=start_flask,
-        args=(args.port, args.dev),
-        daemon=True
+    win_x, win_y = monitor["left"], monitor["top"]
+    print(
+        f"[OK] 找到目标显示器: {monitor['name']} "
+        f"({monitor['width']}x{monitor['height']}) at ({win_x},{win_y})"
     )
-    flask_thread.start()
+    print("[INFO] Provider 状态: " + _provider_status_summary())
 
-    # 等待Flask真正就绪
-    print(f"Starting server on port {args.port}...")
-    if not wait_for_server('127.0.0.1', args.port, timeout=10):
-        print("[FAIL] Server failed to start within 10 seconds")
-        sys.exit(1)
-
-    # 创建原生窗口（加时间戳避免缓存旧页面）
-    url = f"http://127.0.0.1:{args.port}?_t={int(time.time())}"
-    print(f"[OK] Server ready: {url}")
-
-    window = webview.create_window(
-        title='Usage Dashboard',
-        url=url,
-        x=win_x,
-        y=win_y,
-        width=monitor['width'],
-        height=monitor['height'],
-        resizable=True,
-        frameless=True,
-        text_select=True,
-        on_top=True,
-        fullscreen=True,
+    app = create_app()
+    app.debug = bool(args.dev)
+    runtime = get_runtime(app)
+    server = make_server("0.0.0.0", args.port, app, threaded=True)
+    server_thread = threading.Thread(
+        target=server.serve_forever,
+        daemon=True,
+        name="dashboard-http",
     )
 
-    def on_loaded():
-        """页面加载完成后注入快捷键：Ctrl+R / F5 刷新"""
-        window.evaluate_js("""
-            document.addEventListener('keydown', function(e) {
-                if ((e.ctrlKey && e.key === 'r') || e.key === 'F5') {
-                    e.preventDefault();
-                    location.reload();
-                }
-            });
-        """)
+    runtime.start()
+    server_thread.start()
+    try:
+        print(f"Starting server on port {args.port}...")
+        if not wait_for_server("127.0.0.1", args.port, timeout=10):
+            print("[FAIL] Server failed to start within 10 seconds")
+            sys.exit(1)
 
-    window.events.loaded += on_loaded
+        url = f"http://127.0.0.1:{args.port}?_t={int(time.time())}"
+        print(f"[OK] Server ready: {url}")
+        window = webview.create_window(
+            title="Usage Dashboard",
+            url=url,
+            x=win_x,
+            y=win_y,
+            width=monitor["width"],
+            height=monitor["height"],
+            resizable=True,
+            frameless=True,
+            text_select=True,
+            on_top=True,
+            fullscreen=True,
+        )
 
-    print("[OK] Window created, opening...")
-    webview.start(debug=args.dev)
+        def on_loaded() -> None:
+            window.evaluate_js(
+                """
+                document.addEventListener('keydown', function(e) {
+                    if ((e.ctrlKey && e.key === 'r') || e.key === 'F5') {
+                        e.preventDefault();
+                        location.reload();
+                    }
+                });
+                """
+            )
+
+        window.events.loaded += on_loaded
+        print("[OK] Window created, opening...")
+        webview.start(debug=args.dev)
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
+        runtime.stop(timeout=5)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import copy
 import logging
+from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any
 
+from contracts.dashboard import DashboardAggregate, DashboardTotals, ProviderSnapshots, UsageSource
+from contracts.provider import DailyUsage, ProviderCallOutcome, ProviderStatus
 from core.cache import TTLCache
 from providers import get_provider, get_providers
 
@@ -14,39 +17,46 @@ logger = logging.getLogger("cuckoo.dashboard_data")
 
 _CACHE_TTL = 55
 _cache = TTLCache(_CACHE_TTL)
-_last_result: dict[str, Any] | None = None
+_last_result: DashboardAggregate | None = None
 
 
-def _count(value: Any) -> int:
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _provider_status(provider: Any) -> dict[str, Any]:
+def _provider_status(provider: Any) -> ProviderStatus:
     getter = getattr(provider, "get_status", None)
     if not callable(getter):
-        return {"status": "unknown", "ok": False, "enabled": True, "error": None}
+        return ProviderStatus.from_value({
+            "status": "unknown", "ok": False, "enabled": True, "error": None,
+        })
     try:
         value = getter()
-        return dict(value) if isinstance(value, Mapping) else {"status": "unknown", "ok": False, "enabled": True, "error": None}
+        if isinstance(value, Mapping):
+            return ProviderStatus.from_value(value)
+        return ProviderStatus.from_value({
+            "status": "unknown", "ok": False, "enabled": True, "error": None,
+        })
     except Exception as exc:
-        return {"status": "error", "ok": False, "enabled": True, "error": str(exc)}
+        return ProviderStatus.from_value({
+            "status": "error", "ok": False, "enabled": True, "error": str(exc),
+        })
 
 
-def _call(provider_id: str, provider: Any, method: str, *args: Any, **kwargs: Any) -> tuple[Any, str | None]:
+def _call(
+    provider_id: str,
+    provider: Any,
+    method: str,
+    *args: Any,
+    **kwargs: Any,
+) -> ProviderCallOutcome[Any]:
     fn = getattr(provider, method, None)
     if not callable(fn):
-        return None, None
+        return ProviderCallOutcome(provider=provider_id, called=False)
     try:
-        return fn(*args, **kwargs), None
+        return ProviderCallOutcome(provider=provider_id, data=fn(*args, **kwargs))
     except Exception as exc:
         logger.warning("[dashboard_data] %s.%s() 失败: %s", provider_id, method, exc)
-        return None, str(exc)
+        return ProviderCallOutcome(provider=provider_id, error=str(exc))
 
 
-def _snapshot_vibe_methods(provider_id: str, provider: Any, snapshots: dict[str, dict[str, Any]]) -> None:
+def _snapshot_vibe_methods(provider_id: str, provider: Any, snapshots: ProviderSnapshots) -> None:
     """按 capability 预取 Vibe 可能消费的方法，不理解任何 Provider 专属数据。"""
     capabilities = set(getattr(provider, "CAPABILITIES", ()) or ())
     methods: list[tuple[str, tuple[Any, ...]]] = []
@@ -63,77 +73,78 @@ def _snapshot_vibe_methods(provider_id: str, provider: Any, snapshots: dict[str,
 
     provider_snapshot = snapshots.setdefault(provider_id, {})
     for method, args in methods:
-        value, _ = _call(provider_id, provider, method, *args)
-        provider_snapshot[method] = value
+        outcome = _call(provider_id, provider, method, *args)
+        provider_snapshot[method] = outcome.data
 
 
-def build_dashboard_data(*, providers: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """构建统一 Dashboard payload，便于对 fake Provider 做纯单元测试。"""
+def build_dashboard_aggregate(*, providers: Mapping[str, Any] | None = None) -> DashboardAggregate:
+    """构建内部类型化 aggregate，便于对 fake Provider 做纯单元测试。"""
     active_providers = dict(providers) if isinstance(providers, Mapping) else get_providers()
-    today = {
-        "in": 0,
-        "out": 0,
-        "cache": 0,
-        "total": 0,
-        "inMiss": 0,
-    }
-    snapshots: dict[str, dict[str, Any]] = {}
-    statuses: dict[str, dict[str, Any]] = {}
-    usage_sources: list[dict[str, Any]] = []
+    totals = DashboardTotals()
+    snapshots: ProviderSnapshots = {}
+    statuses: dict[str, ProviderStatus] = {}
+    usage_sources: list[UsageSource] = []
 
     for provider_id, provider in sorted(active_providers.items(), key=lambda item: str(item[0]).casefold()):
+        name = str(provider_id)
         capabilities = set(getattr(provider, "CAPABILITIES", ()) or ())
-        statuses[str(provider_id)] = _provider_status(provider)
-        _snapshot_vibe_methods(str(provider_id), provider, snapshots)
+        statuses[name] = _provider_status(provider)
+        _snapshot_vibe_methods(name, provider, snapshots)
         if "daily_usage" not in capabilities:
             continue
 
-        usage, error = _call(str(provider_id), provider, "get_today_usage")
-        snapshots.setdefault(str(provider_id), {})["get_today_usage"] = usage
-        if not isinstance(usage, Mapping):
-            if error:
-                usage_sources.append({"provider": str(provider_id), "ok": False, "error": error})
+        outcome = _call(name, provider, "get_today_usage")
+        snapshots.setdefault(name, {})["get_today_usage"] = outcome.data
+        if not isinstance(outcome.data, Mapping):
+            if outcome.error:
+                usage_sources.append(UsageSource(provider=name, ok=False, error=outcome.error))
             continue
 
-        input_tokens = _count(usage.get("input_tokens"))
-        output_tokens = _count(usage.get("output_tokens"))
-        cached_input_tokens = _count(usage.get("cached_input_tokens"))
-        total_tokens = _count(usage.get("total_tokens"))
-        uncached_input_tokens = _count(usage.get("uncached_input_tokens"))
-        if not uncached_input_tokens:
-            uncached_input_tokens = max(0, input_tokens - cached_input_tokens)
-        today["in"] += input_tokens
-        today["out"] += output_tokens
-        today["cache"] += cached_input_tokens
-        today["total"] += total_tokens
-        today["inMiss"] += uncached_input_tokens
-        usage_sources.append({
-            "provider": str(provider_id),
-            "ok": True,
-            "source_count": _count(usage.get("source_count")),
-            "period": str(usage.get("period") or "today"),
-        })
+        usage = DailyUsage.from_value(outcome.data)
+        totals.add(
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cached_input_tokens=usage.cached_input_tokens,
+            total_tokens=usage.total_tokens,
+            uncached_input_tokens=usage.uncached_input_tokens,
+        )
+        usage_sources.append(UsageSource(
+            provider=name,
+            ok=True,
+            source_count=usage.source_count,
+            period=usage.period,
+        ))
 
-    return {
-        "success": True,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "today": today,
-        "provider_statuses": statuses,
-        "usage_sources": usage_sources,
-        "_provider_snapshots": snapshots,
-    }
+    return DashboardAggregate(
+        success=True,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        today=totals,
+        provider_statuses=statuses,
+        usage_sources=usage_sources,
+        snapshots=snapshots,
+    )
 
 
-def fetch_dashboard_data() -> dict[str, Any]:
-    """返回带 TTL 缓存的 Provider 无关 Dashboard 数据。"""
+def build_dashboard_data(*, providers: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """兼容入口：继续返回包含 ``_provider_snapshots`` 的原 dict。"""
+    return build_dashboard_aggregate(providers=providers).to_compat_payload()
+
+
+def fetch_dashboard_aggregate() -> DashboardAggregate:
+    """返回带 TTL 缓存的内部类型化 Dashboard aggregate。"""
     global _last_result
     cached = _cache.get()
-    if cached is not None:
+    if isinstance(cached, DashboardAggregate):
         return copy.deepcopy(cached)
-    result = build_dashboard_data()
+    result = build_dashboard_aggregate()
     _last_result = copy.deepcopy(result)
     _cache.set(copy.deepcopy(result))
     return result
+
+
+def fetch_dashboard_data() -> dict[str, Any]:
+    """兼容入口：继续返回包含私有快照的原 Dashboard dict。"""
+    return fetch_dashboard_aggregate().to_compat_payload()
 
 
 def invalidate_dashboard_data_cache() -> None:
@@ -163,5 +174,7 @@ def get_provider_public_data(provider_id: str, resource: str, *, days: int = 7) 
     capability, method, args = selected
     if capability is not None and capability not in capabilities:
         return None
-    value, _ = _call(provider_id, provider, method, *args)
-    return value
+    outcome = _call(provider_id, provider, method, *args)
+    if resource == "status" and isinstance(outcome.data, Mapping):
+        return ProviderStatus.from_value(outcome.data).to_provider_payload()
+    return outcome.data

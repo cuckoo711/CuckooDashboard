@@ -13,6 +13,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from contracts.provider import ProviderCallOutcome
 from providers.auth import refresh_scheduler
 
 logger = logging.getLogger("cuckoo.providers")
@@ -24,6 +25,29 @@ _CONFIG_FIELD_TYPES = {
     "boolean", "string", "secret", "url", "integer", "number", "select", "color", "time",
     "string_list", "object_list", "key_value_map",
 }
+CAPABILITY_METHODS: dict[str, tuple[str, ...]] = {
+    "token_plan": ("get_plan_detail", "get_plan_usage", "get_daily_detail", "get_model_breakdown"),
+    "balance": ("get_balance",),
+    "api_usage": ("get_usage_summary", "get_channel_breakdown"),
+    "daily_usage": ("get_today_usage",),
+}
+
+
+def _warn_incomplete_capabilities(provider_id: str, provider: ModuleType) -> None:
+    """报告声明能力与方法矩阵不一致，但绝不拒绝加载第三方插件。"""
+    missing: list[str] = []
+    if not callable(getattr(provider, "get_status", None)):
+        missing.append("get_status")
+    for capability in getattr(provider, "CAPABILITIES", ()) or ():
+        for method in CAPABILITY_METHODS.get(str(capability), ()):
+            if not callable(getattr(provider, method, None)):
+                missing.append(f"{capability}.{method}")
+    if missing:
+        logger.warning(
+            "[providers] 插件 %s capability-method 不完整: %s；仍继续加载",
+            provider_id,
+            ", ".join(missing),
+        )
 
 
 def _valid_schema_fields(fields: object, path: str) -> bool:
@@ -68,6 +92,7 @@ def _discover() -> None:
             if not isinstance(declared_id, str) or declared_id != provider_id:
                 logger.warning("[providers] %s 必须声明且保持 PROVIDER_ID 与目录名一致，已跳过", provider_id)
                 continue
+            _warn_incomplete_capabilities(provider_id, module)
             _registry[provider_id] = module
             refresh_scheduler.register_provider(provider_id, module)
             logger.info("[providers] 已加载插件: %s -> %s", provider_id, module.CAPABILITIES)
@@ -148,27 +173,41 @@ def get_providers_by_capability(capability: str) -> dict[str, ModuleType]:
     }
 
 
+def _invoke(
+    provider_id: str,
+    provider: ModuleType | None,
+    method: str,
+    *args: Any,
+    **kwargs: Any,
+) -> ProviderCallOutcome[Any]:
+    """内部类型化调用；公开 ``call_all``/``call_one`` 继续维持原返回形状。"""
+    fn = getattr(provider, method, None) if provider is not None else None
+    if not callable(fn):
+        return ProviderCallOutcome(provider=provider_id, called=False)
+    try:
+        return ProviderCallOutcome(provider=provider_id, data=fn(*args, **kwargs))
+    except Exception as exc:
+        logger.warning("[providers] %s.%s() 调用失败: %s", provider_id, method, exc)
+        return ProviderCallOutcome(provider=provider_id, error=str(exc))
+
+
+
 def call_all(capability: str, method: str, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
     """调用所有拥有某能力的 Provider 方法，隔离单 Provider 异常。"""
     results: list[dict[str, Any]] = []
     for provider_id, provider in sorted(get_providers_by_capability(capability).items(), key=lambda item: item[0].casefold()):
-        fn = getattr(provider, method, None)
-        if not callable(fn):
-            continue
-        try:
-            results.append({"provider": provider_id, "data": fn(*args, **kwargs)})
-        except Exception as exc:
-            logger.warning("[providers] %s.%s() 调用失败: %s", provider_id, method, exc)
-            results.append({"provider": provider_id, "data": None, "error": str(exc)})
+        outcome = _invoke(provider_id, provider, method, *args, **kwargs)
+        if outcome.called:
+            results.append(outcome.to_call_all_payload())
     return results
+
 
 
 def call_one(provider_id: str, method: str, *args: Any, **kwargs: Any) -> Any:
     """调用一个 Provider 的公开方法；失败返回 ``None``。"""
-    provider = get_provider(provider_id)
-    fn = getattr(provider, method, None) if provider is not None else None
-    if not callable(fn):
-        return None
+    outcome = _invoke(provider_id, get_provider(provider_id), method, *args, **kwargs)
+    return outcome.data if outcome.ok else None
+
     try:
         return fn(*args, **kwargs)
     except Exception as exc:

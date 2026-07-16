@@ -19,7 +19,22 @@ class MissingStatusProvider:
     pass
 
 
+
+def test_health_normalization_keeps_existing_seven_key_semantics():
+    assert health_service._normalize_status({"status": "stale", "details": ["lagging"]}) == {
+        "status": "stale",
+        "ok": False,
+        "enabled": True,
+        "stale": True,
+        "error": None,
+        "last_success_at": None,
+        "details": ["lagging"],
+    }
+
+
+
 def test_health_snapshot_discovers_provider_statuses(monkeypatch):
+
     monkeypatch.setattr(health_service, "get_providers", lambda: {
         "zenith": HealthyProvider(),
         "archive": BrokenProvider(),

@@ -7,8 +7,8 @@ import json
 
 import pytest
 
-import services.settings_service as settings_service
 from core.credentials import VaultConflict
+from features.settings import persistence, runtime, schema, service
 
 
 class MemoryVault:
@@ -66,13 +66,17 @@ def memory_vault(monkeypatch):
         "global": {"dashboard_token": "dashboard-secret", "github_token": "github-secret"},
         "providers": {},
     })
-    monkeypatch.setattr(settings_service, "vault", store)
-    monkeypatch.setattr(settings_service, "get_global_secret", lambda key, default=None: copy.deepcopy(store.state["global"].get(key, default)))
+    monkeypatch.setattr(persistence, "vault", store)
+    monkeypatch.setattr(
+        persistence,
+        "get_global_secret",
+        lambda key, default=None: copy.deepcopy(store.state["global"].get(key, default)),
+    )
     return store
 
 
 def test_public_global_payload_masks_vault_secrets(base_config, memory_vault):
-    payload = settings_service._public_global_config(base_config)
+    payload = service._public_global_config(base_config)
     serialized = json.dumps(payload, ensure_ascii=False)
 
     assert payload["dashboard"]["token"]["configured"] is True
@@ -83,12 +87,12 @@ def test_public_global_payload_masks_vault_secrets(base_config, memory_vault):
 
 def test_save_moves_global_secrets_to_vault_and_keeps_yaml_clean(monkeypatch, base_config, memory_vault):
     saved: dict = {}
-    monkeypatch.setattr(settings_service, "load_config", lambda: copy.deepcopy(base_config))
-    monkeypatch.setattr(settings_service, "save_config", lambda value: saved.update(copy.deepcopy(value)))
-    monkeypatch.setattr(settings_service, "apply_runtime_config", lambda: (["test"], []))
-    monkeypatch.setattr(settings_service, "get_settings_payload", lambda: {"config": {}, "providers": [], "options": {}})
+    monkeypatch.setattr(service, "load_config", lambda: copy.deepcopy(base_config))
+    monkeypatch.setattr(service, "save_config", lambda value: saved.update(copy.deepcopy(value)))
+    monkeypatch.setattr(runtime, "apply_runtime_config", lambda: (["test"], []))
+    monkeypatch.setattr(service, "get_settings_payload", lambda: {"config": {}, "providers": [], "options": {}})
 
-    result = settings_service.save_settings_payload({
+    result = service.save_settings_payload({
         "config": {"dashboard": {}, "providers": {}},
         "secrets": {
             "dashboard.token": {"action": "set", "value": "new-dashboard"},
@@ -119,15 +123,21 @@ def test_schema_secret_is_stored_in_provider_vault_state(monkeypatch, base_confi
     memory_vault.state["providers"]["atlas"] = {"config_secrets": {"fields": {"api_key": "old-key"}, "objects": {}}}
     saved: dict = {}
 
-    monkeypatch.setattr(settings_service, "load_config", lambda: copy.deepcopy(base))
-    monkeypatch.setattr(settings_service, "save_config", lambda value: saved.update(copy.deepcopy(value)))
-    monkeypatch.setattr(settings_service, "apply_runtime_config", lambda: ([], []))
-    monkeypatch.setattr(settings_service, "get_settings_payload", lambda: {"config": {}, "providers": [], "options": {}})
-    monkeypatch.setattr(settings_service, "get_provider_config_schemas", lambda: copy.deepcopy(fake_schema))
-    monkeypatch.setattr(settings_service, "get_providers", lambda: {"atlas": fake_provider})
-    monkeypatch.setattr(settings_service, "get_provider_config", lambda name, default=None: {"enabled": True, "api_key": memory_vault.state["providers"]["atlas"]["config_secrets"]["fields"]["api_key"]})
+    provider_config = lambda name, default=None: {
+        "enabled": True,
+        "api_key": memory_vault.state["providers"]["atlas"]["config_secrets"]["fields"]["api_key"],
+    }
+    monkeypatch.setattr(service, "load_config", lambda: copy.deepcopy(base))
+    monkeypatch.setattr(service, "save_config", lambda value: saved.update(copy.deepcopy(value)))
+    monkeypatch.setattr(runtime, "apply_runtime_config", lambda: ([], []))
+    monkeypatch.setattr(service, "get_settings_payload", lambda: {"config": {}, "providers": [], "options": {}})
+    monkeypatch.setattr(schema, "get_provider_config_schemas", lambda: copy.deepcopy(fake_schema))
+    monkeypatch.setattr(schema, "get_providers", lambda: {"atlas": fake_provider})
+    monkeypatch.setattr(schema, "get_provider_config", provider_config)
+    monkeypatch.setattr(persistence, "load_config", lambda: copy.deepcopy(base))
+    monkeypatch.setattr(persistence, "get_provider_config", provider_config)
 
-    settings_service.save_settings_payload({
+    service.save_settings_payload({
         "config": {"providers": {"atlas": {"enabled": True}}},
         "secrets": {"providers.atlas.api_key": {"action": "set", "value": "new-key"}},
         "credential_revision": 3,
@@ -135,14 +145,14 @@ def test_schema_secret_is_stored_in_provider_vault_state(monkeypatch, base_confi
 
     assert "api_key" not in saved["providers"]["atlas"]
     assert memory_vault.state["providers"]["atlas"]["config_secrets"]["fields"]["api_key"] == "new-key"
-    assert settings_service.reveal_secret("providers.atlas.api_key") == "new-key"
+    assert persistence.reveal_secret("providers.atlas.api_key") == "new-key"
 
 
 def test_stale_credential_revision_is_rejected(monkeypatch, base_config, memory_vault):
-    monkeypatch.setattr(settings_service, "load_config", lambda: copy.deepcopy(base_config))
+    monkeypatch.setattr(service, "load_config", lambda: copy.deepcopy(base_config))
 
-    with pytest.raises(settings_service.SettingsValidationError):
-        settings_service.save_settings_payload({
+    with pytest.raises(schema.SettingsValidationError):
+        service.save_settings_payload({
             "config": {"providers": {}},
             "secrets": {"github_token": {"action": "set", "value": "x"}},
             "credential_revision": 1,

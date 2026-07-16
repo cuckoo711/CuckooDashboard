@@ -203,23 +203,51 @@ class AuthRefreshScheduler:
             self._thread = threading.Thread(target=self._loop, daemon=True, name="provider-auth-refresh")
             self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 5) -> None:
+        """Stop and join the scheduler thread; a later ``start`` creates a new one."""
         self._stop_event.set()
+        with self._lock:
+            thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(max(0.0, float(timeout)))
+        with self._lock:
+            if self._thread is thread and (thread is None or not thread.is_alive()):
+                self._thread = None
+
+    def health(self) -> dict[str, Any]:
+        with self._lock:
+            thread = self._thread
+            task_count = len(self._tasks)
+        running = bool(thread and thread.is_alive() and not self._stop_event.is_set())
+        return {
+            "status": "ok" if running else "stopped",
+            "ok": running,
+            "running": running,
+            "thread_alive": bool(thread and thread.is_alive()),
+            "tasks": task_count,
+        }
 
     def _loop(self) -> None:
-        while not self._stop_event.wait(0.5):
-            now = time.time()
+        try:
+            while not self._stop_event.wait(0.5):
+                now = time.time()
+                with self._lock:
+                    tasks = list(self._tasks.values())
+                for fn in tasks:
+                    if self._stop_event.is_set():
+                        break
+                    spec: AutoRefreshSpec = getattr(fn, "__auto_refresh_spec__")
+                    key = _task_key(fn)
+                    with _runtime_lock:
+                        runtime = _runtime.setdefault(key, _RefreshRuntime())
+                        due = not runtime.last_finished_at or now >= runtime.next_run_at
+                        running = runtime.running
+                    if due and not running:
+                        _execute(fn, force=True, args=(), kwargs={})
+        finally:
             with self._lock:
-                tasks = list(self._tasks.values())
-            for fn in tasks:
-                spec: AutoRefreshSpec = getattr(fn, "__auto_refresh_spec__")
-                key = _task_key(fn)
-                with _runtime_lock:
-                    runtime = _runtime.setdefault(key, _RefreshRuntime())
-                    due = not runtime.last_finished_at or now >= runtime.next_run_at
-                    running = runtime.running
-                if due and not running:
-                    _execute(fn, force=True, args=(), kwargs={})
+                if self._thread is threading.current_thread():
+                    self._thread = None
 
 
 refresh_scheduler = AuthRefreshScheduler()

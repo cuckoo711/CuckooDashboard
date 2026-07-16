@@ -85,25 +85,25 @@
         <div class="menu-section">
             <div class="menu-label">歌词偏移</div>
             <div class="menu-row">
-                <button type="button" onclick="adjLyric(-0.5)">−</button>
+                <button type="button" data-action="lyric-offset" data-delta="-0.5">−</button>
                 <span id="lyricOffsetVal">0.0s</span>
-                <button type="button" onclick="adjLyric(0.5)">+</button>
+                <button type="button" data-action="lyric-offset" data-delta="0.5">+</button>
             </div>
         </div>
         <div class="menu-section">
             <div class="menu-label">频谱偏移</div>
             <div class="menu-row">
-                <button type="button" onclick="adjSpectrum(-10)">−</button>
+                <button type="button" data-action="spectrum-offset" data-delta="-10">−</button>
                 <span id="spectrumOffsetVal">+40ms</span>
-                <button type="button" onclick="adjSpectrum(10)">+</button>
+                <button type="button" data-action="spectrum-offset" data-delta="10">+</button>
             </div>
         </div>
         <div class="menu-section">
             <div class="menu-label">鼓点提前</div>
             <div class="menu-row">
-                <button type="button" onclick="adjBeat(-10)">−</button>
+                <button type="button" data-action="beat-lead" data-delta="-10">−</button>
                 <span id="beatLeadVal">+20ms</span>
-                <button type="button" onclick="adjBeat(10)">+</button>
+                <button type="button" data-action="beat-lead" data-delta="10">+</button>
             </div>
         </div>
         <div class="menu-divider"></div>
@@ -117,6 +117,6 @@
 </div>
 
 <script src="/static/lib/html2canvas.min.js"></script>
-<script src="/static/music.js?v=music-ui-6"></script>
+<script type="module" src="/static/modules/music/main.js?v=music-ui-7"></script>
 </body>
 </html>

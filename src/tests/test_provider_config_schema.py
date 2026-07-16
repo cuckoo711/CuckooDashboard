@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 
-import services.settings_service as settings_service
+from features.settings import schema, service
 from providers import _valid_schema_fields, get_auth_providers, get_provider_config_schemas
 
 
@@ -47,13 +47,17 @@ def test_fake_provider_schema_appears_without_settings_code_changes(monkeypatch)
         "providers": {"atlas": {"enabled": True}},
         "dashboard": {},
     }
-    monkeypatch.setattr(settings_service, "get_provider_config_schemas", lambda: copy.deepcopy(fake_schema))
-    monkeypatch.setattr(settings_service, "get_providers", lambda: {"atlas": fake_provider})
-    monkeypatch.setattr(settings_service, "load_config", lambda: copy.deepcopy(base))
-    monkeypatch.setattr(settings_service, "get_provider_config", lambda name, default=None: {"enabled": True, "api_key": "atlas-secret"})
-    monkeypatch.setattr(settings_service, "get_settings_options", lambda: {})
+    monkeypatch.setattr(schema, "get_provider_config_schemas", lambda: copy.deepcopy(fake_schema))
+    monkeypatch.setattr(schema, "get_providers", lambda: {"atlas": fake_provider})
+    monkeypatch.setattr(service, "load_config", lambda: copy.deepcopy(base))
+    monkeypatch.setattr(
+        schema,
+        "get_provider_config",
+        lambda name, default=None: {"enabled": True, "api_key": "atlas-secret"},
+    )
+    monkeypatch.setattr(service, "get_settings_options", lambda: {})
 
-    payload = settings_service.get_settings_payload()
+    payload = service.get_settings_payload()
 
     assert len(payload["providers"]) == 1
     panel = payload["providers"][0]

@@ -30,6 +30,10 @@ _smtc_last_update = 0.0
 _SMTC_WORKER = str(SRC_DIR / "smtc_worker.py")
 _SMTC_PYTHON = str(PROJECT_ROOT / "venv" / "Scripts" / "python.exe")
 _smtc_started = False
+_smtc_thread: threading.Thread | None = None
+_smtc_process: _media_sp.Popen | None = None
+_smtc_stop_event = threading.Event()
+_smtc_lifecycle_lock = threading.RLock()
 
 # Cover art cache lives in the main process so /api/media JSON stays small.
 _cover_lock = threading.Lock()
@@ -566,56 +570,123 @@ def _fetch_ypm_direct() -> dict | None:
         return None
 
 
+def _terminate_smtc_process(proc) -> None:
+    if proc is None:
+        return
+    try:
+        if proc.poll() is not None:
+            return
+    except Exception:
+        pass
+    try:
+        proc.terminate()
+        proc.wait(timeout=0.5)
+        return
+    except Exception:
+        pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
+
+
+
 def _smtc_reader_loop():
     global _smtc_result, _smtc_last_update
-    import time as _time
-    while True:
-        proc = None
-        try:
-            proc = popen_hidden(
-                [_SMTC_PYTHON, _SMTC_WORKER],
-                stdout=_media_sp.PIPE, stderr=_media_sp.DEVNULL,
-                bufsize=0,
-            )
-            assert proc.stdout is not None
-            # binary line reader (bufsize=0); join chunks until \n
-            buf = b""
-            while True:
-                chunk = proc.stdout.read(4096)
-                if not chunk:
+    global _smtc_started, _smtc_thread, _smtc_process
+    try:
+        while not _smtc_stop_event.is_set():
+            proc = None
+            try:
+                proc = popen_hidden(
+                    [_SMTC_PYTHON, _SMTC_WORKER],
+                    stdout=_media_sp.PIPE,
+                    stderr=_media_sp.DEVNULL,
+                    bufsize=0,
+                )
+                with _smtc_lifecycle_lock:
+                    _smtc_process = proc
+                    stopping = _smtc_stop_event.is_set()
+                if stopping:
+                    _terminate_smtc_process(proc)
                     break
-                buf += chunk
-                while b"\n" in buf:
-                    raw_line, buf = buf.split(b"\n", 1)
-                    line = raw_line.decode("utf-8", errors="replace").strip()
-                    if not line:
-                        continue
-                    try:
-                        info = json.loads(line)
-                        _update_cover_from_worker(info)
-                        with _smtc_lock:
-                            _smtc_result = info
-                            _smtc_last_update = _time.time()
-                    except json.JSONDecodeError:
-                        continue
-            proc.wait(timeout=1)
-        except Exception as e:
-            logger.error(f"[media] worker error: {e}")
-        finally:
-            if proc:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-        _time.sleep(2)
+                assert proc.stdout is not None
+                # binary line reader (bufsize=0); join chunks until \n
+                buf = b""
+                while not _smtc_stop_event.is_set():
+                    chunk = proc.stdout.read(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        raw_line, buf = buf.split(b"\n", 1)
+                        line = raw_line.decode("utf-8", errors="replace").strip()
+                        if not line:
+                            continue
+                        try:
+                            info = json.loads(line)
+                            _update_cover_from_worker(info)
+                            with _smtc_lock:
+                                _smtc_result = info
+                                _smtc_last_update = time.time()
+                        except json.JSONDecodeError:
+                            continue
+                if not _smtc_stop_event.is_set():
+                    proc.wait(timeout=1)
+            except Exception as e:
+                if not _smtc_stop_event.is_set():
+                    logger.error(f"[media] worker error: {e}")
+            finally:
+                _terminate_smtc_process(proc)
+                with _smtc_lifecycle_lock:
+                    if _smtc_process is proc:
+                        _smtc_process = None
+            # Interruptible wait prevents the old 2-second crash delay from
+            # spawning another worker after service shutdown.
+            if _smtc_stop_event.wait(2):
+                break
+    finally:
+        with _smtc_lifecycle_lock:
+            if _smtc_thread is threading.current_thread():
+                _smtc_thread = None
+                _smtc_started = False
+            _smtc_process = None
+
 
 
 def _ensure_smtc_thread():
-    global _smtc_started
-    if not _smtc_started:
+    global _smtc_started, _smtc_thread
+    with _smtc_lifecycle_lock:
+        if _smtc_thread and _smtc_thread.is_alive():
+            return
+        _smtc_stop_event.clear()
         _smtc_started = True
-        t = threading.Thread(target=_smtc_reader_loop, daemon=True)
-        t.start()
+        _smtc_thread = threading.Thread(
+            target=_smtc_reader_loop,
+            daemon=True,
+            name="media-smtc-reader",
+        )
+        _smtc_thread.start()
+
+
+
+def stop_media_service(timeout: float = 5) -> None:
+    """Stop the SMTC reader and its child process; lazy access may restart it."""
+    global _smtc_started, _smtc_thread, _smtc_process
+    _smtc_stop_event.set()
+    with _smtc_lifecycle_lock:
+        thread = _smtc_thread
+        proc = _smtc_process
+    _terminate_smtc_process(proc)
+    if thread is not None and thread is not threading.current_thread():
+        thread.join(max(0.0, float(timeout)))
+    with _smtc_lifecycle_lock:
+        if _smtc_thread is thread and (thread is None or not thread.is_alive()):
+            _smtc_thread = None
+            _smtc_started = False
+        if _smtc_process is proc:
+            _smtc_process = None
+
 
 
 

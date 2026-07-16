@@ -58,6 +58,7 @@ _HAS_AUDIO = _HAS_NUMPY and (_HAS_SOUNDCARD or _HAS_SOUNDDEVICE)
 
 
 _lock = threading.Lock()
+_lifecycle_lock = threading.RLock()
 _state = {
     "bins": [0.0] * _BINS_DEFAULT,
     "rms": 0.0,
@@ -1323,35 +1324,62 @@ def _start_capture_thread_locked() -> threading.Thread:
 
 def acquire_spectrum() -> None:
     """Increase music-stage interest and keep one recorder continuously alive."""
-    global _ref_count, _idle_until
+    global _ref_count, _idle_until, _started, _thread
     thread_to_start = None
-    with _lock:
-        _ref_count += 1
-        # A newly connected LAN dashboard takes ownership of any short handoff
-        # window, so the recorder is not closed and reopened for a reconnection.
-        _idle_until = 0.0
-        if not _started:
-            thread_to_start = _start_capture_thread_locked()
-        count = _ref_count
-    if thread_to_start is not None:
-        thread_to_start.start()
+    with _lifecycle_lock:
+        with _lock:
+            if _started and (_thread is None or not _thread.is_alive()):
+                _started = False
+                _thread = None
+            _ref_count += 1
+            # A newly connected LAN dashboard takes ownership of any short handoff
+            # window, so the recorder is not closed and reopened for a reconnection.
+            _idle_until = 0.0
+            if not _started:
+                thread_to_start = _start_capture_thread_locked()
+            count = _ref_count
+        if thread_to_start is not None:
+            thread_to_start.start()
     logger.info("[spectrum] acquire (refs=%s, continuous=%s)", count, True)
+
 
 
 def release_spectrum() -> None:
     """Release one dashboard while preserving the recorder across reconnects."""
     global _ref_count, _idle_until
-    with _lock:
-        _ref_count = max(0, _ref_count - 1)
-        count = _ref_count
-        if count == 0:
-            # Do not tear down WASAPI immediately: remote browsers often close and
-            # reopen a WebSocket during Wi-Fi handoff/page refresh.
-            _idle_until = time.monotonic() + _CAPTURE_LINGER_S
-        else:
-            _idle_until = 0.0
-        linger_left = max(0.0, _idle_until - time.monotonic())
+    with _lifecycle_lock:
+        with _lock:
+            _ref_count = max(0, _ref_count - 1)
+            count = _ref_count
+            if count == 0:
+                # Do not tear down WASAPI immediately: remote browsers often close and
+                # reopen a WebSocket during Wi-Fi handoff/page refresh.
+                _idle_until = time.monotonic() + _CAPTURE_LINGER_S
+            else:
+                _idle_until = 0.0
+            linger_left = max(0.0, _idle_until - time.monotonic())
     logger.info("[spectrum] release (refs=%s, linger=%.1fs)", count, linger_left)
+
+
+
+def shutdown_spectrum(timeout: float = 5) -> None:
+    """Drop all subscribers and stop the capture thread, allowing later acquire."""
+    global _ref_count, _idle_until, _thread, _started
+    with _lifecycle_lock:
+        with _lock:
+            _ref_count = 0
+            _idle_until = 0.0
+            _stop_event.set()
+            thread = _thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(max(0.0, float(timeout)))
+        with _lock:
+            if _thread is thread and (thread is None or not thread.is_alive()):
+                _thread = None
+                _started = False
+            _ref_count = 0
+            _idle_until = 0.0
+
 
 
 def get_spectrum_frame() -> dict:
