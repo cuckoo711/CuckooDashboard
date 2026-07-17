@@ -1,13 +1,15 @@
 import {$, escHtml} from './dom.js';
 import {requestJson} from './api.js';
 import {showMessage} from './state.js';
-import {getDeviceId} from '/static/modules/shared/device-id.js';
+import {getDeviceId} from './device-id.js';
 
 const PAGE_LABELS = {dashboard: '看板', music: '音乐舞台', settings: '设置页', unknown: '未知'};
 let settingsWebSocket = null;
 let settingsWebSocketRetry = 1000;
 let latestClients = [];
 let clientWorkspaces = [{id: 'main', name: '主工作区'}];
+let clientsAutoRefreshTimer = 0;
+const CLIENTS_AUTO_REFRESH_MS = 5000;
 
 function targetOptions(client) {
     const current = client.page === 'music' ? 'page:music' : `workspace:${client.workspace_id || 'main'}`;
@@ -63,9 +65,9 @@ export function setClientWorkspaces(workspaces) {
     if (latestClients.length) renderClientsList(latestClients);
 }
 
-export async function refreshClientsList() {
+export async function refreshClientsList({quiet = false} = {}) {
     const button = $('#refreshClientsBtn');
-    if (button) button.disabled = true;
+    if (button && !quiet) button.disabled = true;
     try {
         const data = await requestJson('/api/settings/clients');
         renderClientsList(data.clients || []);
@@ -73,12 +75,30 @@ export async function refreshClientsList() {
             window.dispatchEvent(new CustomEvent('workspace-clients-updated'));
         }
     } catch (error) {
-        const container = $('#clientsList');
-        if (container) container.innerHTML = `<div class="empty-row state-error">获取失败：${escHtml(error.message)}</div>`;
+        if (!quiet) {
+            const container = $('#clientsList');
+            if (container) container.innerHTML = `<div class="empty-row state-error">获取失败：${escHtml(error.message)}</div>`;
+        }
     } finally {
-        if (button) button.disabled = false;
+        if (button && !quiet) button.disabled = false;
     }
 }
+
+export function startClientsAutoRefresh() {
+    if (clientsAutoRefreshTimer) return;
+    // Quiet background refresh so workspace calibration always sees live clients.
+    refreshClientsList({quiet: true}).catch(() => {});
+    clientsAutoRefreshTimer = window.setInterval(() => {
+        refreshClientsList({quiet: true}).catch(() => {});
+    }, CLIENTS_AUTO_REFRESH_MS);
+}
+
+export function stopClientsAutoRefresh() {
+    if (!clientsAutoRefreshTimer) return;
+    window.clearInterval(clientsAutoRefreshTimer);
+    clientsAutoRefreshTimer = 0;
+}
+
 
 function downloadScreenshot(dataUrl, clientId, timestamp) {
     const link = document.createElement('a');
@@ -209,12 +229,19 @@ async function requestScreenshot(button) {
 
 export function bindClientEvents() {
     const refreshButton = $('#refreshClientsBtn');
-    if (refreshButton) refreshButton.addEventListener('click', refreshClientsList);
-    $('#reloadClientsButton').addEventListener('click', (event) => reloadClients(event.currentTarget));
+    if (refreshButton) refreshButton.addEventListener('click', () => refreshClientsList());
+    $('#reloadClientsButton')?.addEventListener('click', (event) => reloadClients(event.currentTarget));
     document.addEventListener('click', (event) => {
         const navigateButton = event.target.closest ? event.target.closest('.client-nav-btn') : null;
         if (navigateButton) navigateClient(navigateButton);
         const screenshotButton = event.target.closest ? event.target.closest('.client-screenshot-btn') : null;
         if (screenshotButton) requestScreenshot(screenshotButton);
     });
+    startClientsAutoRefresh();
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) stopClientsAutoRefresh();
+        else startClientsAutoRefresh();
+    });
 }
+
+

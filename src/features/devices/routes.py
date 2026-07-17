@@ -64,10 +64,34 @@ def api_settings_devices():
     return _no_store(jsonify({"devices": rows}))
 
 
-@settings_blueprint.route("/api/settings/devices/<device_id>", methods=["PATCH", "PUT"])
+@settings_blueprint.route("/api/settings/devices/<device_id>", methods=["PATCH", "PUT", "DELETE"])
 def api_settings_device_item(device_id: str):
-    """Approve, disable or reconfigure one display terminal."""
+    """Approve, disable, reconfigure or delete one display terminal."""
     require_settings_access()
+    if request.method == "DELETE":
+        try:
+            device = _device_service().delete(device_id)
+        except DeviceValidationError as exc:
+            status = 404 if str(exc) == "终端不存在" else 400
+            return _no_store(jsonify({"error": exc.as_dict()})), status
+        try:
+            get_runtime().hub.broadcast({
+                "type": "device_updated",
+                "data": {
+                    "approved": False,
+                    "reason": "device_deleted",
+                    "device": device,
+                    "workspace_id": None,
+                    "scale_mode": None,
+                    "scale": None,
+                    "layout_override": {},
+                },
+                "device_id": device["id"],
+            })
+        except Exception:
+            pass
+        return _no_store(jsonify({"ok": True, "deleted": True, "device": device}))
+
     payload = request.get_json(silent=True) or {}
     try:
         device = _device_service().update(device_id, payload)

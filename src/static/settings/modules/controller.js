@@ -5,22 +5,30 @@ import {collect} from './collect.js';
 import {render} from './render.js';
 
 export async function loadSettings() {
-    $('#loadingState').hidden = false;
-    $('#errorState').hidden = true;
-    $('#settingsApp').hidden = true;
-    $('#settingsFooter').hidden = true;
+    const loading = $('#loadingState');
+    const errorState = $('#errorState');
+    const app = $('#settingsApp');
+    const footer = $('#settingsFooter');
+    if (loading) loading.hidden = false;
+    if (errorState) errorState.hidden = true;
+    if (app) app.hidden = true;
+    if (footer) footer.hidden = true;
     try {
         const payload = await requestJson('/api/settings');
         render(payload);
-        $('#settingsApp').hidden = false;
-        $('#settingsFooter').hidden = false;
+        if (app) app.hidden = false;
+        if (footer) footer.hidden = false;
     } catch (error) {
-        $('#errorState').textContent = `无法读取配置：${error.message}`;
-        $('#errorState').hidden = false;
+        console.error('[settings] load failed:', error);
+        if (errorState) {
+            errorState.textContent = `无法读取配置：${error.message}`;
+            errorState.hidden = false;
+        }
     } finally {
-        $('#loadingState').hidden = true;
+        if (loading) loading.hidden = true;
     }
 }
+
 
 export async function saveSettings() {
     if (state.saving) return;

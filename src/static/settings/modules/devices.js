@@ -75,6 +75,7 @@ function renderDevices(devices) {
                         ${status === 'approved' ? '<button type="button" class="small-btn danger-btn device-disable-btn">禁用</button>' : ''}
                         ${status === 'disabled' ? '<button type="button" class="small-btn device-approve-btn">重新启用</button>' : ''}
                         <button type="button" class="small-btn device-save-btn">保存</button>
+                        <button type="button" class="small-btn danger-btn device-delete-btn">删除</button>
                     </div>
                 </div>
             </div>
@@ -157,6 +158,15 @@ async function handleDeviceAction(event) {
         } else if (button.classList.contains('device-save-btn')) {
             await patchDevice(deviceId, collectDeviceDraft(row));
             showMessage('终端配置已保存', 'success');
+        } else if (button.classList.contains('device-delete-btn')) {
+            const shortId = `${deviceId.slice(0, 8)}…${deviceId.slice(-4)}`;
+            if (!window.confirm(`确定删除终端 ${shortId} 吗？删除后该浏览器需要重新申请审批。`)) {
+                return;
+            }
+            await requestJson(`/api/settings/devices/${encodeURIComponent(deviceId)}`, {
+                method: 'DELETE',
+            });
+            showMessage('终端已删除', 'success');
         } else {
             return;
         }
@@ -168,6 +178,7 @@ async function handleDeviceAction(event) {
         button.disabled = false;
     }
 }
+
 
 export function bindDeviceEvents() {
     const refreshButton = $('#refreshDevicesBtn');

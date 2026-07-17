@@ -45,7 +45,7 @@ _EXPECTED = {
     ("/api/settings/clients/<client_id>/navigate", frozenset({"POST"})),
     ("/api/settings/clients/<client_id>/screenshot", frozenset({"POST"})),
     ("/api/settings/devices", frozenset({"GET"})),
-    ("/api/settings/devices/<device_id>", frozenset({"PATCH", "PUT"})),
+    ("/api/settings/devices/<device_id>", frozenset({"PATCH", "PUT", "DELETE"})),
     ("/api/settings/reveal", frozenset({"POST"})),
 }
 

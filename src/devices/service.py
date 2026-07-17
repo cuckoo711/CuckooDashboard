@@ -136,6 +136,13 @@ class DeviceService:
             raise DeviceValidationError("终端不存在", "device_id")
         return device
 
+    def delete(self, device_id: Any) -> dict[str, Any]:
+        normalized_id = self.normalize_device_id(device_id)
+        device = self.repository.delete(normalized_id)
+        if device is None:
+            raise DeviceValidationError("终端不存在", "device_id")
+        return device
+
     def session_payload(self, device: Mapping[str, Any]) -> dict[str, Any]:
         approved = device.get("status") == "approved"
         return {

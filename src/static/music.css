@@ -538,25 +538,25 @@ body.cinema .layer-lyric {
     align-items: flex-start;
 }
 .lyric-slot.is-active {
-    font-size: clamp(50px, calc(7.55vw * var(--lyric-scale)), 112px);
-    font-weight: 650;
-    letter-spacing: 0.016em;
-    opacity: 1;
-    filter: none;
-    background: linear-gradient(111deg, rgba(230, 235, 243, 0.92), #ffffff 47%, rgba(208, 218, 242, 0.86));
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
-    /* Soft ground shadow only — huge glow was hard-cut by overflow/mask edges. */
-    text-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+	font-size: clamp(50px, calc(7.55vw * var(--lyric-scale)), 112px);
+	font-weight: 650;
+	letter-spacing: 0.016em;
+	opacity: 1;
+	filter: none;
+	background: linear-gradient(111deg, rgba(var(--spectrum-block-rgb), 0.95), rgb(var(--spectrum-block-rgb)) 47%, rgba(var(--spectrum-block-rgb), 0.88));
+	-webkit-background-clip: text;
+	background-clip: text;
+	-webkit-text-fill-color: transparent;
+	/* Spectrum-colored ground shadow — contrast with background. */
+	text-shadow: 0 8px 32px rgba(var(--spectrum-rgb), 0.6);
 }
 .lyric-slot.is-next {
-    font-size: clamp(32px, 3.75vw, 52px);
-    font-weight: 520;
-    letter-spacing: 0.055em;
-    color: rgba(232, 240, 252, 0.62);
-    opacity: 0.78;
-    text-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
+	font-size: clamp(32px, 3.75vw, 52px);
+	font-weight: 520;
+	letter-spacing: 0.055em;
+	color: rgba(var(--spectrum-block-rgb), 0.62);
+	opacity: 0.78;
+	text-shadow: 0 5px 22px rgba(var(--spectrum-rgb), 0.5);
 }
 .lyric-slot.is-fading {
     opacity: 0;
@@ -578,7 +578,7 @@ body.cinema .layer-lyric {
 /* Active long lines: put the residual glow on the moving span so the outer
    mask only clips text overflow, not a large soft halo hard-cut. */
 .lyric-slot.is-active .lyric-scroll-inner {
-    filter: drop-shadow(0 0 10px rgba(var(--spectrum-rgb), 0.18));
+    filter: drop-shadow(0 0 20px rgba(var(--spectrum-rgb), 0.5));
 }
 .lyric-slot.marquee {
     width: min(100%, 10.8em);
@@ -875,10 +875,10 @@ body.cinema .layer-lyric {
 .menu-link:hover { color: #fff; }
 
 body.beat .lyric-slot.is-active {
-    text-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+	text-shadow: 0 8px 36px rgba(var(--spectrum-rgb), 0.7);
 }
 body.beat .lyric-slot.is-active .lyric-scroll-inner {
-    filter: drop-shadow(0 0 14px rgba(var(--spectrum-rgb), 0.28));
+    filter: drop-shadow(0 0 26px rgba(var(--spectrum-rgb), 0.65));
 }
 
 /* Low-power render path: H618/Panfrost gets one small spectrum canvas only. */
@@ -932,17 +932,17 @@ body.performance-lite #specCanvas {
 }
 /* Solid text avoids the low-contrast clipped gradient on a bright flat cover. */
 body.performance-lite .lyric-slot.is-active {
-    color: #f8fbff;
+    color: rgb(var(--spectrum-block-rgb));
     background: none;
-    -webkit-text-fill-color: #f8fbff;
-    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.55);
+    -webkit-text-fill-color: rgb(var(--spectrum-block-rgb));
+    text-shadow: 0 4px 16px rgba(var(--spectrum-rgb), 0.85);
 }
 body.performance-lite .lyric-slot.is-active .lyric-scroll-inner {
     filter: none;
 }
 body.performance-lite .lyric-slot.is-next {
-    color: rgba(244, 248, 255, 0.72);
-    text-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+    color: rgba(var(--spectrum-block-rgb), 0.72);
+    text-shadow: 0 3px 12px rgba(var(--spectrum-rgb), 0.75);
 }
 
 @media (max-width: 820px) {

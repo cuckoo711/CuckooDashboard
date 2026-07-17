@@ -24,10 +24,16 @@
     <div id="loadingState" class="state-card">正在读取配置…</div>
     <div id="errorState" class="state-card state-error" hidden></div>
 
-    <main id="settingsApp" hidden>
-        <form id="settingsForm" autocomplete="off">
-            <div class="layout-grid">
-                <section class="panel panel-wide">
+        <main id="settingsApp" hidden>
+        <div class="settings-layout">
+            <aside class="settings-nav" aria-label="设置分组">
+                <div class="settings-nav-title">设置分组</div>
+                <button type="button" class="settings-nav-item is-active" data-settings-nav="general"><strong>基础配置</strong><span>访问保护 / 主题 / 硬件 / 日志</span></button><button type="button" class="settings-nav-item" data-settings-nav="appearance"><strong>外观与字体</strong><span>字体与字号</span></button><button type="button" class="settings-nav-item" data-settings-nav="providers"><strong>Provider</strong><span>插件数据源配置</span></button><button type="button" class="settings-nav-item" data-settings-nav="music"><strong>Music / 频谱</strong><span>Loopback 与舞台参数</span></button><button type="button" class="settings-nav-item" data-settings-nav="workspaces"><strong>工作区布局</strong><span>动态网格与组件</span></button><button type="button" class="settings-nav-item" data-settings-nav="terminals"><strong>终端与在线</strong><span>审批与在线看板</span></button><button type="button" class="settings-nav-item" data-settings-nav="extensions"><strong>扩展管理</strong><span>本地扩展启停</span></button>
+            </aside>
+            <div class="settings-content">
+                <form id="settingsForm" autocomplete="off">
+                    <section class="settings-view is-active" data-settings-view="general">
+<section id="section-dashboard" data-settings-section="general" class="panel panel-wide">
                     <div class="panel-title">
                         <div><span class="section-mark"></span><h2>Dashboard</h2></div>
                         <span class="panel-hint">访问保护与看板数据源</span>
@@ -77,7 +83,7 @@
                     </div>
                 </section>
 
-                <section class="panel">
+<section id="section-github" data-settings-section="general" class="panel panel-wide">
                     <div class="panel-title">
                         <div><span class="section-mark"></span><h2>GitHub</h2></div>
                         <span class="panel-hint">用于精确贡献数据</span>
@@ -93,15 +99,7 @@
                     </div>
                 </section>
 
-                <section class="panel panel-wide">
-                    <div class="panel-title">
-                        <div><span class="section-mark"></span><h2>Provider 配置</h2></div>
-                        <span class="panel-hint">由 Provider Schema 自动渲染</span>
-                    </div>
-                    <div id="providerPanels" class="provider-panels"></div>
-                </section>
-
-                <section class="panel panel-wide">
+<section id="section-hardware" data-settings-section="general" class="panel panel-wide">
                     <div class="panel-title">
                         <div><span class="section-mark"></span><h2>硬件覆盖</h2></div>
                         <span class="panel-hint">留空表示使用自动检测</span>
@@ -131,7 +129,7 @@
                     <textarea id="apuDeviceIds" rows="3" placeholder="例如：13c0\n13e0"></textarea>
                 </section>
 
-                <section class="panel">
+<section id="section-logging" data-settings-section="general" class="panel panel-wide">
                     <div class="panel-title">
                         <div><span class="section-mark"></span><h2>日志</h2></div>
                         <span class="panel-hint">保存后立即重载</span>
@@ -165,7 +163,25 @@
                     <div class="check-line"><label class="switch"><input id="logConsole" type="checkbox"><span></span></label><span>同时输出到控制台</span></div>
                 </section>
 
-                <section class="panel">
+<section id="section-ui" data-settings-section="general" class="panel panel-wide">
+                    <div class="panel-title">
+                        <div><span class="section-mark"></span><h2>UI 状态</h2></div>
+                        <span class="panel-hint">也可在主看板操作</span>
+                    </div>
+                    <div class="field-grid compact-grid">
+                        <div class="field">
+                            <label for="theme">主题</label>
+                            <select id="theme"></select>
+                        </div>
+                        <div class="field">
+                            <label for="lyricOffset">歌词偏移（秒）</label>
+                            <input id="lyricOffset" type="number" step="0.1">
+                        </div>
+                    </div>
+                    <div class="check-line"><label class="switch"><input id="vibeActive" type="checkbox"><span></span></label><span>启动时启用 Vibe Coding</span></div>
+                </section>
+</section><section class="settings-view" data-settings-view="appearance" hidden>
+<section id="section-font" data-settings-section="appearance" class="panel panel-wide">
                     <div class="panel-title">
                         <div><span class="section-mark"></span><h2>字体</h2></div>
                         <span class="panel-hint">看板页专用；关闭则回落系统字体</span>
@@ -230,8 +246,16 @@
                         </div>
                     </div>
                 </section>
-
-                <section class="panel panel-wide">
+</section><section class="settings-view" data-settings-view="providers" hidden>
+<section id="section-providers" data-settings-section="providers" class="panel panel-wide">
+                    <div class="panel-title">
+                        <div><span class="section-mark"></span><h2>Provider 配置</h2></div>
+                        <span class="panel-hint">由 Provider Schema 自动渲染</span>
+                    </div>
+                    <div id="providerPanels" class="provider-panels"></div>
+                </section>
+</section><section class="settings-view" data-settings-view="music" hidden>
+<section id="section-music" data-settings-section="music" class="panel panel-wide">
                     <div class="panel-title">
                         <div><span class="section-mark"></span><h2>Music / 频谱采集</h2></div>
                         <span class="panel-hint">/music 舞台音频源；可手动选择 Loopback 设备</span>
@@ -276,40 +300,10 @@
                     <div class="check-line"><label class="switch"><input id="musicAutoCalibrate" type="checkbox"><span></span></label><span>允许一键鼓点校准写入 beat_lead</span></div>
                     <div class="field-help" id="musicDeviceStatus"></div>
                 </section>
-
-                <section class="panel">
-                    <div class="panel-title">
-                        <div><span class="section-mark"></span><h2>UI 状态</h2></div>
-                        <span class="panel-hint">也可在主看板操作</span>
-                    </div>
-                    <div class="field-grid compact-grid">
-                        <div class="field">
-                            <label for="theme">主题</label>
-                            <select id="theme"></select>
-                        </div>
-                        <div class="field">
-                            <label for="lyricOffset">歌词偏移（秒）</label>
-                            <input id="lyricOffset" type="number" step="0.1">
-                        </div>
-                    </div>
-                    <div class="check-line"><label class="switch"><input id="vibeActive" type="checkbox"><span></span></label><span>启动时启用 Vibe Coding</span></div>
-                </section>
-            </div>
-        </form>
-
-        <section class="panel panel-wide extensions-panel" id="extensionsPanel">
-            <div class="panel-title extension-panel-title">
-                <div><span class="section-mark"></span><h2>扩展管理</h2></div>
-                <button type="button" class="small-btn" id="extensionsRescanButton">重新扫描</button>
-            </div>
-            <p class="extension-trust-warning">仅启用你信任的本地扩展。启用后，扩展的 Python 与 JavaScript 代码拥有和 Dashboard 相同的本机权限；启停与新代码均在重启 Dashboard 后生效。</p>
-            <div id="extensionsList" class="extensions-list">
-                <div class="empty-row">正在读取扩展状态…</div>
-            </div>
-            <div id="extensionMessage" class="extension-message">扩展状态尚未加载</div>
-        </section>
-
-        <section class="panel panel-wide workspaces-panel" id="workspacesPanel">
+</section>
+                </form>
+                <section class="settings-view" data-settings-view="workspaces" hidden>
+<section data-settings-section="workspaces" class="panel panel-wide workspaces-panel" id="workspacesPanel">
             <div class="panel-title workspace-panel-title">
                 <div><span class="section-mark"></span><h2>工作区与布局</h2></div>
                 <div class="workspace-title-badges">
@@ -416,8 +410,8 @@
                 </div>
             </div>
         </section>
-
-        <section class="panel panel-wide devices-panel" id="devicesPanel">
+</section><section class="settings-view" data-settings-view="terminals" hidden>
+<section data-settings-section="terminals" class="panel panel-wide devices-panel" id="devicesPanel">
             <div class="panel-title">
                 <div><span class="section-mark"></span><h2>显示终端</h2></div>
                 <button type="button" class="small-btn" id="refreshDevicesBtn" title="刷新终端">刷新</button>
@@ -429,7 +423,7 @@
             <div id="deviceMessage" class="workspace-message">终端审批后才会加载看板数据。</div>
         </section>
 
-        <section class="panel panel-wide clients-panel">
+<section id="section-clients" data-settings-section="terminals" class="panel panel-wide clients-panel">
             <div class="panel-title">
                 <div><span class="section-mark"></span><h2>在线看板</h2></div>
                 <button type="button" class="small-btn" id="refreshClientsBtn" title="刷新列表">刷新</button>
@@ -438,6 +432,21 @@
                 <div class="empty-row">点击刷新读取在线客户端</div>
             </div>
         </section>
+</section><section class="settings-view" data-settings-view="extensions" hidden>
+<section data-settings-section="extensions" class="panel panel-wide extensions-panel" id="extensionsPanel">
+            <div class="panel-title extension-panel-title">
+                <div><span class="section-mark"></span><h2>扩展管理</h2></div>
+                <button type="button" class="small-btn" id="extensionsRescanButton">重新扫描</button>
+            </div>
+            <p class="extension-trust-warning">仅启用你信任的本地扩展。启用后，扩展的 Python 与 JavaScript 代码拥有和 Dashboard 相同的本机权限；启停与新代码均在重启 Dashboard 后生效。</p>
+            <div id="extensionsList" class="extensions-list">
+                <div class="empty-row">正在读取扩展状态…</div>
+            </div>
+            <div id="extensionMessage" class="extension-message">扩展状态尚未加载</div>
+        </section>
+</section>
+            </div>
+        </div>
     </main>
 
     <footer class="settings-footer" id="settingsFooter" hidden>

@@ -97,28 +97,41 @@ def test_client_navigation_supports_workspaces_and_legacy_music_page():
     assert "后端工作区导航尚未接入" not in source
 
 
-def test_calibration_syncs_online_client_resolution_into_size_fields():
-    html = (STATIC / "settings.html").read_text(encoding="utf-8")
+def test_calibration_prefers_viewport_and_applies_on_target_change():
     source = (SETTINGS_MODULES / "workspaces.js").read_text(encoding="utf-8")
     for marker in (
-        'id="workspaceCalibrationTarget"',
-        'id="workspaceCalibrationClient"',
-        'id="workspaceCalibrationWidth"',
-        'id="workspaceCalibrationHeight"',
-        'option value="client"',
-    ):
-        assert marker in html
-    for marker in (
         "function onlineClientSize(",
-        "function clientOptionLabel(",
-        "function findOnlineClient(",
-        "value === 'client'",
-        "onlineClientSize(select?.value)",
-        "onlineClientSize(event.target.value)",
-        "if (target?.value === 'client')",
-        "width.value = live.width",
-        "height.value = live.height",
-        "client.workspace_width",
+        "function recommendedGridForCalibration(",
         "client.viewport_width",
+        "client.viewport_height",
+        "never reflow during render",
+        "已按 ${nextCalibration.width}×${nextCalibration.height} 自动调整为",
+        "recommendGrid({",
+        "targetCellWidth: nextCalibration.targetCellWidth",
     ):
         assert marker in source
+    paint = source.split("function renderCalibration")[1].split("function applyRecommendedGrid")[0]
+    assert "renderEditor()" not in paint
+    assert "applyRecommendedGrid(" not in paint
+
+
+def test_settings_uses_sidebar_navigation_sections():
+    html = (STATIC / "settings.html").read_text(encoding="utf-8")
+    main = (SETTINGS_MODULES / "main.js").read_text(encoding="utf-8")
+    nav = (SETTINGS_MODULES / "navigation.js").read_text(encoding="utf-8")
+    for marker in (
+        'class="settings-layout"',
+        'class="settings-nav"',
+        'data-settings-nav="general"',
+        'data-settings-nav="workspaces"',
+        'data-settings-nav="terminals"',
+        'data-settings-view="music"',
+        'id="extensionsPanel"',
+        'id="workspacesPanel"',
+        'id="devicesPanel"',
+        'id="clientsList"',
+    ):
+        assert marker in html
+    assert "bindSettingsNavigation" in main
+    assert "setActiveSettingsSection" in nav
+    assert "cuckoo.settings.active_section" in nav

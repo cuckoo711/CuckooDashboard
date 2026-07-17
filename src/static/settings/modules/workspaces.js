@@ -111,20 +111,21 @@ function onlineClientSize(id) {
         return null;
     }
     const viewport = client.viewport || client.screen || client.display || {};
+    // Prefer full browser viewport; workspace_* is content box only.
     const width = Number(
-        client.workspace_width
-        ?? viewport.workspace_width
-        ?? client.viewport_width
+        client.viewport_width
         ?? viewport.width
         ?? client.width
+        ?? client.workspace_width
+        ?? viewport.workspace_width
         ?? 0,
     );
     const height = Number(
-        client.workspace_height
-        ?? viewport.workspace_height
-        ?? client.viewport_height
+        client.viewport_height
         ?? viewport.height
         ?? client.height
+        ?? client.workspace_height
+        ?? viewport.workspace_height
         ?? 0,
     );
     if (!(width > 0) || !(height > 0)) {
@@ -133,6 +134,7 @@ function onlineClientSize(id) {
     return {
         width: Math.max(1, Math.round(width)),
         height: Math.max(1, Math.round(height)),
+        device_pixel_ratio: Number(client.device_pixel_ratio || viewport.device_pixel_ratio || 1) || 1,
     };
 }
 
@@ -144,8 +146,20 @@ function clientOptionLabel(client = {}) {
     const id = clientOptionValue(client);
     const page = client.page || 'dashboard';
     const size = onlineClientSize(id);
-    const sizeLabel = size ? `${size.width}×${size.height}` : '尺寸未知';
-    return `${id} · ${page} · ${sizeLabel}`;
+    if (!size) return `${id} · ${page} · 尺寸未知`;
+    const dpr = size.device_pixel_ratio && size.device_pixel_ratio !== 1
+        ? ` @${Number(size.device_pixel_ratio).toFixed(2)}x`
+        : '';
+    return `${id} · ${page} · ${size.width}×${size.height}${dpr}`;
+}
+
+function recommendedGridForCalibration(calibration) {
+    return recommendGrid({
+        width: calibration.width,
+        height: calibration.height,
+        targetCellWidth: calibration.targetCellWidth,
+        targetCellHeight: calibration.targetCellHeight,
+    }, calibration.density);
 }
 
 function normalizeCatalogItem(item) {
@@ -371,25 +385,42 @@ function renderCalibration() {
             // Preserve either device_id or session_id based previous selection.
             const matched = findOnlineClient(previous);
             client.value = matched ? clientOptionValue(matched) : previous;
-        } else if (clients.length) {
+        } else if (!previous && clients.length && target?.value === 'client') {
             client.value = clientOptionValue(clients[0]);
+        } else {
+            client.value = previous || '';
         }
     }
-    // If the operator is currently targeting an online client, always keep the
-    // numeric fields synced to the selected device's live size.
+    // Read-only paint: never reflow during render.
     if (target?.value === 'client') {
         const live = onlineClientSize(client?.value);
         if (live) {
             if (width) width.value = live.width;
             if (height) height.value = live.height;
+            const recommended = recommendedGridForCalibration({
+                ...calibration,
+                width: live.width,
+                height: live.height,
+            });
+            const matches = Number(draft.grid.columns) === Number(recommended.columns)
+                && Number(draft.grid.rows) === Number(recommended.rows)
+                && Number(calibration.width) === Number(live.width)
+                && Number(calibration.height) === Number(live.height);
             if (summary) {
-                summary.textContent = `${live.width} × ${live.height} · Cell ${calibration.targetCellWidth} × ${calibration.targetCellHeight} · ${calibration.fit} · ${calibration.density}`;
+                summary.textContent = matches
+                    ? `${live.width} × ${live.height} → 网格 ${draft.grid.columns} × ${draft.grid.rows} · Cell ${calibration.targetCellWidth} × ${calibration.targetCellHeight}`
+                    : `${live.width} × ${live.height} → 建议网格 ${recommended.columns} × ${recommended.rows}（当前 ${draft.grid.columns} × ${draft.grid.rows}，切换目标/ client 时会自动应用）`;
             }
         } else if (summary) {
-            summary.textContent = `未拿到在线 client 尺寸 · Cell ${calibration.targetCellWidth} × ${calibration.targetCellHeight}`;
+            summary.textContent = `未拿到在线 client 尺寸 · 当前网格 ${draft.grid.columns} × ${draft.grid.rows}`;
         }
     } else if (summary) {
-        summary.textContent = `${calibration.width} × ${calibration.height} · Cell ${calibration.targetCellWidth} × ${calibration.targetCellHeight} · ${calibration.fit} · ${calibration.density}`;
+        const recommended = recommendedGridForCalibration(calibration);
+        const matches = Number(draft.grid.columns) === Number(recommended.columns)
+            && Number(draft.grid.rows) === Number(recommended.rows);
+        summary.textContent = matches
+            ? `${calibration.width} × ${calibration.height} → 网格 ${draft.grid.columns} × ${draft.grid.rows} · Cell ${calibration.targetCellWidth} × ${calibration.targetCellHeight}`
+            : `${calibration.width} × ${calibration.height} · 当前网格 ${draft.grid.columns} × ${draft.grid.rows}（更合理 ${recommended.columns} × ${recommended.rows}）`;
     }
     if (dimension) dimension.textContent = `${draft.grid.columns} × ${draft.grid.rows} 动态网格预览`;
 }
@@ -495,20 +526,37 @@ function handleCalibrationChange(event) {
     }
     if (workspaceState.interaction) workspaceState.interaction = null;
     if (shouldRecommend) {
-        const nextGrid = recommendGrid(nextCalibration, nextCalibration.density);
+        const nextGrid = recommendGrid({
+            width: nextCalibration.width,
+            height: nextCalibration.height,
+            targetCellWidth: nextCalibration.targetCellWidth,
+            targetCellHeight: nextCalibration.targetCellHeight,
+        }, nextCalibration.density);
         if (!applyRecommendedGrid(draft, nextGrid, nextCalibration)) {
-            // Keep the numeric fields showing the attempted size so the user can see it.
             draft.grid = {
                 ...draft.grid,
                 calibration: {
                     ...normalizeCalibration(draft.grid.calibration),
                     width: nextCalibration.width,
                     height: nextCalibration.height,
+                    targetCellWidth: nextCalibration.targetCellWidth,
+                    targetCellHeight: nextCalibration.targetCellHeight,
+                    density: nextCalibration.density,
+                    fit: nextCalibration.fit,
                 },
             };
+            setMessage(
+                `目标 ${nextCalibration.width}×${nextCalibration.height} 建议网格 ${nextGrid.columns}×${nextGrid.rows}，但当前组件无法完整重排，已只更新目标尺寸。`,
+                'error',
+            );
+            markDirty(true);
             renderEditor();
             return;
         }
+        setMessage(
+            `已按 ${nextCalibration.width}×${nextCalibration.height} 自动调整为 ${nextGrid.columns}×${nextGrid.rows} 网格。`,
+            'success',
+        );
     } else {
         draft.grid = {...draft.grid, calibration: nextCalibration};
     }

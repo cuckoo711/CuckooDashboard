@@ -24,8 +24,13 @@ def test_settings_page_contains_display_terminal_manager():
     html = (STATIC / "settings.html").read_text(encoding="utf-8")
     main = (STATIC / "settings" / "modules" / "main.js").read_text(encoding="utf-8")
     devices = (STATIC / "settings" / "modules" / "devices.js").read_text(encoding="utf-8")
+    clients = (STATIC / "settings" / "modules" / "clients.js").read_text(encoding="utf-8")
     assert 'id="devicesPanel"' in html
     assert 'id="devicesList"' in html
     assert "bindDeviceEvents" in main
     assert "/api/settings/devices" in devices
     assert "device-approve-btn" in devices
+    assert "device-delete-btn" in devices
+    assert "method: 'DELETE'" in devices
+    assert "startClientsAutoRefresh" in clients
+    assert "CLIENTS_AUTO_REFRESH_MS" in clients

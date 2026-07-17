@@ -181,3 +181,19 @@ class DeviceRepository:
             ).fetchone()
             assert row is not None
             return self._payload(row)
+
+    def delete(self, device_id: str) -> dict[str, Any] | None:
+        with self._lock, self._transaction_locked() as connection:
+            row = connection.execute(
+                "SELECT * FROM display_devices WHERE id = ?", (device_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            payload = self._payload(row)
+            cursor = connection.execute(
+                "DELETE FROM display_devices WHERE id = ?", (device_id,)
+            )
+            if cursor.rowcount != 1:
+                return None
+            return payload
+

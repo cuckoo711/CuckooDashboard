@@ -72,7 +72,7 @@ function deriveSpectrum(theme) {
 function deriveContrast(spectrum) {
     const hsl = rgbToHsl(spectrum);
     return hslToRgb(
-        hsl.h + 0.5,
+        hsl.h + 1 / 12,
         Math.max(0.34, Math.min(0.68, hsl.s * 1.18 + 0.08)),
         hsl.l < 0.48 ? 0.72 : 0.30,
     );

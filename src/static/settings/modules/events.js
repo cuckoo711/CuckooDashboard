@@ -41,17 +41,19 @@ function bindDelegatedFormActions() {
 export function bindSettingsEvents() {
     bindDelegatedFormActions();
     const form = $('#settingsForm');
-    form.addEventListener('input', (event) => {
-        updateSecretAction(event.target);
-        setDirty(true);
-    });
-    form.addEventListener('change', () => setDirty(true));
+    if (form) {
+        form.addEventListener('input', (event) => {
+            updateSecretAction(event.target);
+            setDirty(true);
+        });
+        form.addEventListener('change', () => setDirty(true));
+    }
 
-    $('#addOffPeakRange').addEventListener('click', addOffPeakRange);
-    $('#addBalance').addEventListener('click', addBalance);
-    $('#addVram').addEventListener('click', addVram);
-    $('#saveButton').addEventListener('click', saveSettings);
-    $('#reloadButton').addEventListener('click', loadSettings);
+    $('#addOffPeakRange')?.addEventListener('click', addOffPeakRange);
+    $('#addBalance')?.addEventListener('click', addBalance);
+    $('#addVram')?.addEventListener('click', addVram);
+    $('#saveButton')?.addEventListener('click', saveSettings);
+    $('#reloadButton')?.addEventListener('click', loadSettings);
     const refreshDevices = $('#musicRefreshDevices');
     if (refreshDevices) {
         refreshDevices.addEventListener('click', () => refreshCaptureDevices(true).catch(() => {}));
@@ -65,3 +67,4 @@ export function bindSettingsEvents() {
         }
     });
 }
+
