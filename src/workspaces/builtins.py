@@ -10,6 +10,7 @@ from contracts.workspace import (
     WidgetInstance,
     WidgetLayout,
     WorkspaceDefinition,
+    STANDARD_WORKSPACE_CALIBRATION,
     WorkspaceGrid,
 )
 from features.dashboard.service import get_dashboard_data
@@ -80,7 +81,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
             single_instance=True,
             default_width=6,
             default_height=5,
-            constraints=WidgetConstraints(4, 4, 16, 15),
+            constraints=WidgetConstraints(4, 4, 48, 48),
         ),
         WidgetDefinition(
             type="builtin.dashboard.network",
@@ -89,7 +90,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
             single_instance=True,
             default_width=2,
             default_height=3,
-            constraints=WidgetConstraints(2, 2, 16, 15),
+            constraints=WidgetConstraints(2, 2, 48, 48),
         ),
         WidgetDefinition(
             type="builtin.dashboard.uptime",
@@ -98,7 +99,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
             single_instance=True,
             default_width=2,
             default_height=2,
-            constraints=WidgetConstraints(2, 2, 16, 15),
+            constraints=WidgetConstraints(2, 2, 48, 48),
         ),
         WidgetDefinition(
             type="builtin.dashboard.disks",
@@ -107,7 +108,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
             single_instance=True,
             default_width=8,
             default_height=4,
-            constraints=WidgetConstraints(4, 3, 16, 15),
+            constraints=WidgetConstraints(4, 3, 48, 48),
         ),
         WidgetDefinition(
             type="builtin.dashboard.player",
@@ -117,7 +118,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
             single_instance=True,
             default_width=8,
             default_height=6,
-            constraints=WidgetConstraints(6, 4, 16, 15),
+            constraints=WidgetConstraints(6, 4, 48, 48),
         ),
         WidgetDefinition(
             type="builtin.dashboard.github",
@@ -126,7 +127,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
             single_instance=True,
             default_width=8,
             default_height=6,
-            constraints=WidgetConstraints(6, 4, 16, 15),
+            constraints=WidgetConstraints(6, 4, 48, 48),
         ),
         WidgetDefinition(
             type="builtin.dashboard.vibe",
@@ -135,7 +136,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
             single_instance=True,
             default_width=8,
             default_height=9,
-            constraints=WidgetConstraints(6, 6, 16, 15),
+            constraints=WidgetConstraints(6, 6, 48, 48),
         ),
     )
     for definition in widget_definitions:
@@ -144,12 +145,12 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
     registry.register_workspace(
         WorkspaceDefinition(
             id="main",
-            version=2,
+            version=3,
             revision=1,
             name="Main Dashboard",
             kind="builtin",
             required=True,
-            grid=WorkspaceGrid(columns=16, rows=15),
+            grid=WorkspaceGrid(columns=16, rows=15, calibration=STANDARD_WORKSPACE_CALIBRATION),
             sources=(),
             widgets=(
                 WidgetInstance(
@@ -157,7 +158,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
                     "builtin.dashboard.system-info",
                     "main",
                     WidgetLayout(0, 0, 6, 5),
-                    WidgetConstraints(4, 4, 16, 15),
+                    WidgetConstraints(4, 4, 48, 48),
                     owner=CORE_OWNER_ID,
                 ),
                 WidgetInstance(
@@ -165,7 +166,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
                     "builtin.dashboard.network",
                     "main",
                     WidgetLayout(6, 0, 2, 3),
-                    WidgetConstraints(2, 2, 16, 15),
+                    WidgetConstraints(2, 2, 48, 48),
                     owner=CORE_OWNER_ID,
                 ),
                 WidgetInstance(
@@ -173,7 +174,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
                     "builtin.dashboard.uptime",
                     "main",
                     WidgetLayout(6, 3, 2, 2),
-                    WidgetConstraints(2, 2, 16, 15),
+                    WidgetConstraints(2, 2, 48, 48),
                     owner=CORE_OWNER_ID,
                 ),
                 WidgetInstance(
@@ -181,7 +182,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
                     "builtin.dashboard.disks",
                     "main",
                     WidgetLayout(0, 5, 8, 4),
-                    WidgetConstraints(4, 3, 16, 15),
+                    WidgetConstraints(4, 3, 48, 48),
                     owner=CORE_OWNER_ID,
                 ),
                 WidgetInstance(
@@ -189,7 +190,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
                     "builtin.dashboard.vibe",
                     "main",
                     WidgetLayout(8, 0, 8, 9),
-                    WidgetConstraints(6, 6, 16, 15),
+                    WidgetConstraints(6, 6, 48, 48),
                     owner=CORE_OWNER_ID,
                 ),
                 WidgetInstance(
@@ -197,7 +198,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
                     "builtin.dashboard.player",
                     "main",
                     WidgetLayout(0, 9, 8, 6),
-                    WidgetConstraints(6, 4, 16, 15),
+                    WidgetConstraints(6, 4, 48, 48),
                     owner=CORE_OWNER_ID,
                 ),
                 WidgetInstance(
@@ -205,7 +206,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
                     "builtin.dashboard.github",
                     "main",
                     WidgetLayout(8, 9, 8, 6),
-                    WidgetConstraints(6, 4, 16, 15),
+                    WidgetConstraints(6, 4, 48, 48),
                     owner=CORE_OWNER_ID,
                 ),
             ),

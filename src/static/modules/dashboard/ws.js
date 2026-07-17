@@ -24,9 +24,50 @@ let activeSubscriptionClient = dashboardSubscriptionClient;
 let activeWorkspaceId = 'main';
 let workspaceUpdateHandler = null;
 let fallbackTicks = 0;
+let viewportObserver = null;
+let viewportResizeHandler = null;
+let visualViewportResizeHandler = null;
+let viewportReportFrame = 0;
 
 function normalizeSources(sources) {
     return [...new Set((sources || []).filter((source) => typeof source === 'string' && source))];
+}
+
+function finiteCssNumber(value, fallback = 1) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return fallback;
+    return Math.round(numeric * 1000) / 1000;
+}
+
+export function getWorkspaceViewport() {
+    const browserWindow = typeof window === 'undefined' ? null : window;
+    const browserDocument = typeof document === 'undefined' ? null : document;
+    const host = browserDocument?.getElementById?.('workspaceHost') || null;
+    const hostRect = host?.getBoundingClientRect?.() || null;
+    const viewportWidth = finiteCssNumber(
+        browserWindow?.innerWidth,
+        finiteCssNumber(browserDocument?.documentElement?.clientWidth, 1),
+    );
+    const viewportHeight = finiteCssNumber(
+        browserWindow?.innerHeight,
+        finiteCssNumber(browserDocument?.documentElement?.clientHeight, 1),
+    );
+    const workspaceWidth = finiteCssNumber(
+        hostRect?.width,
+        finiteCssNumber(host?.clientWidth, viewportWidth),
+    );
+    const workspaceHeight = finiteCssNumber(
+        hostRect?.height,
+        finiteCssNumber(host?.clientHeight, viewportHeight),
+    );
+    return {
+        width: viewportWidth,
+        height: viewportHeight,
+        workspace_width: workspaceWidth,
+        workspace_height: workspaceHeight,
+        device_pixel_ratio: finiteCssNumber(browserWindow?.devicePixelRatio, 1),
+        visual_viewport_scale: finiteCssNumber(browserWindow?.visualViewport?.scale, 1),
+    };
 }
 
 function usesSource(source) {
@@ -150,10 +191,73 @@ function stopRestFallback() {
     state.websocket.fallbackTimer = null;
 }
 
+export function sendWorkspaceViewport(socket = state.websocket.socket) {
+    const openState = typeof WebSocket === 'undefined' ? 1 : WebSocket.OPEN;
+    if (socket?.readyState !== openState) return false;
+    try {
+        socket.send(JSON.stringify({
+            type: 'report',
+            page: 'dashboard',
+            workspace_id: activeWorkspaceId,
+            viewport: getWorkspaceViewport(),
+        }));
+        return true;
+    } catch (_error) {
+        return false;
+    }
+}
+
+function scheduleWorkspaceViewportReport() {
+    if (viewportReportFrame) return;
+    const flush = () => {
+        viewportReportFrame = 0;
+        sendWorkspaceViewport();
+    };
+    if (typeof requestAnimationFrame === 'function') {
+        viewportReportFrame = requestAnimationFrame(flush);
+    } else {
+        viewportReportFrame = setTimeout(flush, 0);
+    }
+}
+
+function installWorkspaceViewportReporter() {
+    if (viewportObserver || typeof window === 'undefined') return;
+    const host = document.getElementById('workspaceHost');
+    if (typeof ResizeObserver === 'function' && host) {
+        viewportObserver = new ResizeObserver(scheduleWorkspaceViewportReport);
+        viewportObserver.observe(host);
+    }
+    viewportResizeHandler = scheduleWorkspaceViewportReport;
+    window.addEventListener('resize', viewportResizeHandler, {passive: true});
+    const visualViewport = window.visualViewport;
+    if (visualViewport?.addEventListener) {
+        visualViewportResizeHandler = scheduleWorkspaceViewportReport;
+        visualViewport.addEventListener('resize', visualViewportResizeHandler, {passive: true});
+    }
+}
+
+export function uninstallWorkspaceViewportReporter() {
+    viewportObserver?.disconnect?.();
+    viewportObserver = null;
+    if (typeof window !== 'undefined' && viewportResizeHandler) {
+        window.removeEventListener('resize', viewportResizeHandler);
+    }
+    if (typeof window !== 'undefined' && visualViewportResizeHandler) {
+        window.visualViewport?.removeEventListener?.('resize', visualViewportResizeHandler);
+    }
+    viewportResizeHandler = null;
+    visualViewportResizeHandler = null;
+    if (viewportReportFrame) {
+        if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(viewportReportFrame);
+        else clearTimeout(viewportReportFrame);
+        viewportReportFrame = 0;
+    }
+}
+
 function sendWorkspaceState(socket) {
     activeSubscriptionClient.attach(socket, { replay: false });
     activeSubscriptionClient.sendReplace();
-    socket.send(JSON.stringify({ type: 'report', page: 'dashboard', workspace_id: activeWorkspaceId }));
+    sendWorkspaceViewport(socket);
 }
 
 export function setWorkspaceUpdateHandler(handler) {
@@ -243,6 +347,7 @@ export function startWebSocket(
     activeSubscriptionClient = subscriptions || dashboardSubscriptionClient;
     activeWorkspaceId = String(workspaceId || 'main');
     setWorkspaceUpdateHandler(onWorkspaceUpdated);
+    installWorkspaceViewportReporter();
     connectWebSocket();
     state.timers.ping = setInterval(sendPing, 5000);
     sendPing();

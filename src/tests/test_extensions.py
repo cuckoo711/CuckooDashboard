@@ -118,8 +118,8 @@ def test_extension_disable_is_blocked_by_workspace_references(tmp_path):
                     "constraints": {
                         "min_width": 4,
                         "min_height": 3,
-                        "max_width": 16,
-                        "max_height": 15,
+                        "max_width": 48,
+                        "max_height": 48,
                     },
                 }
             ],

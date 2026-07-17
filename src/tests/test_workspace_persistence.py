@@ -1,4 +1,4 @@
-"""Manifest v2 persistence, service and Settings CRUD tests."""
+"""Manifest v3 persistence, service and Settings CRUD tests."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from workspaces.repository import (
     WorkspaceConflictError,
     WorkspaceRepository,
 )
+from contracts.workspace import WorkspaceGridCalibration
 from workspaces.service import WorkspaceService, WorkspaceValidationError
 
 
@@ -27,16 +28,26 @@ def _service(database=":memory:"):
     return WorkspaceService(repository, registry, seed_workspace=main)
 
 
-def test_builtin_manifest_v2_has_fixed_grid_catalog_and_layout():
+def test_builtin_manifest_v3_has_dynamic_grid_calibration_catalog_and_layout():
     service = _service()
     manifest = service.serialize("main")
 
-    assert manifest["version"] == 2
+    assert manifest["version"] == 3
     assert manifest["revision"] == 1
     assert manifest["name"] == "Main Dashboard"
     assert manifest["kind"] == "builtin"
     assert manifest["required"] is True
-    assert manifest["grid"] == {"columns": 16, "rows": 15}
+    assert manifest["grid"]["columns"] == 16
+    assert manifest["grid"]["rows"] == 15
+    assert manifest["grid"]["calibration"] == {
+        "reference_width": 1920,
+        "reference_height": 1080,
+        "target_cell_width": 120,
+            "target_cell_height": 72,
+            "fit_mode": "contain",
+            "density": "normal",
+        }
+
     assert [widget["id"] for widget in manifest["widgets"]] == [
         "system-info",
         "network",
@@ -78,7 +89,7 @@ def test_repository_is_lazy_configures_sqlite_and_reopens(tmp_path):
             )
         }
         assert {"workspaces", "workspace_widgets"} <= tables
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         widget_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(workspace_widgets)")
         }
@@ -135,9 +146,54 @@ def test_schema_v1_migrates_existing_widgets_to_core_owner(tmp_path):
     assert workspace.widgets[0].owner == "cuckoo.core.dashboard"
     migrated = sqlite3.connect(database)
     try:
-        assert migrated.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert migrated.execute("PRAGMA user_version").fetchone()[0] == 3
     finally:
         migrated.close()
+
+
+def test_schema_v2_migrates_rows_to_v3_with_standard_calibration(tmp_path):
+    database = tmp_path / "v2.db"
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE workspaces (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
+            required INTEGER NOT NULL, revision INTEGER NOT NULL,
+            version INTEGER NOT NULL, grid_columns INTEGER NOT NULL,
+            grid_rows INTEGER NOT NULL, created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE workspace_widgets (
+            workspace_id TEXT NOT NULL, position INTEGER NOT NULL,
+            widget_id TEXT NOT NULL, type TEXT NOT NULL, slot TEXT NOT NULL,
+            owner_id TEXT NOT NULL DEFAULT 'cuckoo.core.dashboard',
+            layout_x INTEGER NOT NULL, layout_y INTEGER NOT NULL,
+            layout_width INTEGER NOT NULL, layout_height INTEGER NOT NULL,
+            min_width INTEGER NOT NULL, min_height INTEGER NOT NULL,
+            max_width INTEGER NOT NULL, max_height INTEGER NOT NULL,
+            PRIMARY KEY (workspace_id, widget_id), UNIQUE (workspace_id, position)
+        );
+        INSERT INTO workspaces
+            (id, name, kind, required, revision, version, grid_columns, grid_rows)
+        VALUES ('legacy-v2', 'Legacy v2', 'custom', 0, 3, 2, 20, 22);
+        INSERT INTO workspace_widgets
+            (workspace_id, position, widget_id, type, slot, owner_id,
+             layout_x, layout_y, layout_width, layout_height,
+             min_width, min_height, max_width, max_height)
+        VALUES ('legacy-v2', 0, 'card', 'missing.card', 'main', 'com.example.owner',
+                7, 8, 4, 3, 2, 2, 20, 22);
+        PRAGMA user_version = 2;
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    workspace = WorkspaceRepository(database).get_workspace("legacy-v2")
+    assert workspace.version == 3
+    assert workspace.revision == 3
+    assert workspace.grid.columns == 20
+    assert workspace.grid.rows == 22
+    assert workspace.grid.calibration == WorkspaceGridCalibration()
+    assert workspace.widgets[0].layout.to_payload() == {"x": 7, "y": 8, "width": 4, "height": 3}
 
 
 def test_seed_create_update_cas_delete_and_required_protection():
@@ -221,7 +277,7 @@ def test_public_and_settings_workspace_routes_cover_crud_security_and_conflicts(
     public_list = client.get("/api/workspaces")
     assert public_list.status_code == 200
     assert public_list.get_json()["workspaces"][0]["id"] == "main"
-    assert client.get("/api/workspaces/main").get_json()["version"] == 2
+    assert client.get("/api/workspaces/main").get_json()["version"] == 3
     assert client.get("/workspaces/main").status_code == 200
     assert client.get("/workspaces/missing").status_code == 404
 
@@ -230,8 +286,19 @@ def test_public_and_settings_workspace_routes_cover_crud_security_and_conflicts(
     ).status_code == 403
     collection = client.get("/api/settings/workspaces", environ_base=LOOPBACK)
     assert collection.status_code == 200
-    assert collection.get_json()["grid"] == {"columns": 16, "rows": 15}
-    assert len(collection.get_json()["widget_catalog"]) == 7
+    collection_payload = collection.get_json()
+    assert collection_payload["grid_defaults"]["columns"] == 16
+    assert collection_payload["grid_defaults"]["rows"] == 15
+    assert collection_payload["grid_defaults"]["calibration"]["density"] == "normal"
+    assert collection_payload["grid_limits"] == {
+        "min_columns": 4,
+        "max_columns": 48,
+        "min_rows": 4,
+        "max_rows": 48,
+    }
+    assert collection_payload["calibration_presets"]
+    assert collection_payload["client_size_summary"]["client_count"] >= 0
+    assert len(collection_payload["widget_catalog"]) == 7
 
     assert client.post(
         "/api/settings/workspaces",

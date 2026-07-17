@@ -56,6 +56,23 @@ def _revision_from_request(payload: Mapping[str, Any] | None = None) -> int | No
     return revision
 
 
+def client_size_summary() -> dict[str, Any]:
+    """Read runtime client viewport summaries without coupling to websocket internals."""
+    try:
+        clients = get_runtime().hub.list_clients()
+    except Exception:
+        clients = []
+    sizes = []
+    for client in clients if isinstance(clients, list) else []:
+        if not isinstance(client, Mapping):
+            continue
+        width = client.get("workspace_width") or client.get("viewport_width")
+        height = client.get("workspace_height") or client.get("viewport_height")
+        if isinstance(width, (int, float)) and isinstance(height, (int, float)):
+            sizes.append({"width": width, "height": height})
+    return {"client_count": len(sizes), "sizes": sizes}
+
+
 def _broadcast(operation: str, workspace_id: str, revision: int | None) -> None:
     get_runtime().hub.broadcast(
         {
@@ -98,7 +115,8 @@ def settings_workspaces_collection():
     if request.method == "GET":
         return jsonify(
             {
-                "grid": {"columns": 16, "rows": 15},
+                **service.grid_metadata(),
+                "client_size_summary": client_size_summary(),
                 "widget_catalog": service.widget_catalog(),
                 "workspaces": service.list_workspaces(),
             }

@@ -39,6 +39,10 @@ function renderClientsList(clients) {
     }).join('');
 }
 
+export function getLatestClients() {
+    return latestClients.map((client) => ({...client}));
+}
+
 export function setClientWorkspaces(workspaces) {
     const normalized = (Array.isArray(workspaces) ? workspaces : [])
         .map((workspace) => ({id: String(workspace?.id || ''), name: String(workspace?.name || workspace?.id || '')}))
@@ -56,6 +60,9 @@ export async function refreshClientsList() {
     try {
         const data = await requestJson('/api/settings/clients');
         renderClientsList(data.clients || []);
+        if (typeof window !== 'undefined' && typeof CustomEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('workspace-clients-updated'));
+        }
     } catch (error) {
         const container = $('#clientsList');
         if (container) container.innerHTML = `<div class="empty-row state-error">获取失败：${escHtml(error.message)}</div>`;

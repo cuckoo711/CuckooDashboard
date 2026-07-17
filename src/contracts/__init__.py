@@ -49,6 +49,7 @@ from contracts.workspace import (
     WidgetLayout,
     WorkspaceDefinition,
     WorkspaceGrid,
+    WorkspaceGridCalibration,
 )
 
 __all__ = [
@@ -95,4 +96,5 @@ __all__ = [
     "WidgetLayout",
     "WorkspaceDefinition",
     "WorkspaceGrid",
+    "WorkspaceGridCalibration",
 ]

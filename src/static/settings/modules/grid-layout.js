@@ -1,3 +1,5 @@
+const MIN_GRID = 4;
+const MAX_GRID = 48;
 const DEFAULT_GRID = Object.freeze({columns: 16, rows: 15});
 
 function integer(value, fallback) {
@@ -11,8 +13,8 @@ export function clamp(value, minimum, maximum) {
 
 export function normalizeGrid(grid = {}) {
     return {
-        columns: Math.max(1, integer(grid.columns ?? grid.cols, DEFAULT_GRID.columns)),
-        rows: Math.max(1, integer(grid.rows, DEFAULT_GRID.rows)),
+        columns: clamp(integer(grid.columns ?? grid.cols, DEFAULT_GRID.columns), MIN_GRID, MAX_GRID),
+        rows: clamp(integer(grid.rows, DEFAULT_GRID.rows), MIN_GRID, MAX_GRID),
     };
 }
 
@@ -98,6 +100,79 @@ export function validate(items = [], grid = DEFAULT_GRID, constraintsByType = {}
         }
     });
     return {valid: errors.length === 0, errors};
+}
+
+export function recommendGrid(target = {}, density = 'normal') {
+    const width = Math.max(1, integer(target.width ?? target.viewportWidth, 1920));
+    const height = Math.max(1, integer(target.height ?? target.viewportHeight, 1080));
+    const targetCellWidth = Math.max(
+        1,
+        integer(target.targetCellWidth ?? target.target_cell_width, 120),
+    );
+    const targetCellHeight = Math.max(
+        1,
+        integer(target.targetCellHeight ?? target.target_cell_height, 72),
+    );
+    const densityScale = {compact: 0.82, normal: 1, spacious: 1.2}[density] || 1;
+    const columns = Math.round(width / (targetCellWidth * densityScale));
+    const rows = Math.round(height / (targetCellHeight * densityScale));
+    return {
+        columns: clamp(columns, MIN_GRID, MAX_GRID),
+        rows: clamp(rows, MIN_GRID, MAX_GRID),
+    };
+}
+
+function itemConstraints(item, constraintsByType = {}) {
+    return {...(item?.constraints || {}), ...(constraintsByType[item?.type] || {})};
+}
+
+function stableItems(items = []) {
+    return items.map((item, index) => ({item, index})).sort((a, b) => {
+        const ar = normalizeRect(a.item);
+        const br = normalizeRect(b.item);
+        return ar.y - br.y || ar.x - br.x || String(a.item?.id ?? '').localeCompare(String(b.item?.id ?? '')) || a.index - b.index;
+    });
+}
+
+function attachReflowMeta(items, ok, grid, errors = []) {
+    Object.defineProperties(items, {
+        ok: {value: ok, enumerable: false},
+        grid: {value: grid, enumerable: false},
+        errors: {value: errors, enumerable: false},
+    });
+    return items;
+}
+
+export function reflow(items = [], oldGrid = DEFAULT_GRID, newGrid = DEFAULT_GRID, constraintsByType = {}) {
+    const target = normalizeGrid(newGrid);
+    const source = items.map((item) => ({...item}));
+    const placed = [];
+    const result = [];
+    for (const entry of stableItems(source)) {
+        const item = entry.item;
+        const rect = normalizeRect(item);
+        const constraints = itemConstraints(item, constraintsByType);
+        const minWidth = constraintValue(constraints, ['minW', 'min_w', 'minWidth', 'min_width'], 1);
+        const minHeight = constraintValue(constraints, ['minH', 'min_h', 'minHeight', 'min_height'], 1);
+        if (minWidth > target.columns || minHeight > target.rows) {
+            return {ok: false, items: attachReflowMeta(source, false, target, [`${item.id || '组件'} 的最小尺寸超出目标网格`]), grid: target};
+        }
+        const legal = isPlacementValid(rect, placed, target, {constraints});
+        if (legal) {
+            const next = {...item, x: rect.x, y: rect.y, w: rect.w, h: rect.h};
+            result.push(next);
+            placed.push(next);
+            continue;
+        }
+        const fit = firstFit(placed, rect, target, constraints);
+        if (!fit) {
+            return {ok: false, items: attachReflowMeta(source, false, target, [`无法在 ${target.columns} × ${target.rows} 网格中放置 ${item.id || '组件'}`]), grid: target};
+        }
+        const next = {...item, x: fit.x, y: fit.y, w: fit.w, h: fit.h};
+        result.push(next);
+        placed.push(next);
+    }
+    return {ok: true, items: attachReflowMeta(result, true, target), grid: target};
 }
 
 export function firstFit(items = [], size = {}, grid = DEFAULT_GRID, constraints = {}) {

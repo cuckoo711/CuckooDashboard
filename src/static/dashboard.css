@@ -125,16 +125,34 @@
             gap:8px; padding:32px 34px 22px 44px;
         }
         #workspaceHost {
+            --workspace-gap:8px;
+            --workspace-scale:1;
             grid-row:2; grid-column:1;
             min-width:0; min-height:0;
-            display:grid;
-            grid-template-columns:repeat(16, minmax(0,1fr));
-            grid-template-rows:repeat(15, minmax(0,1fr));
-            gap:8px;
-            position:relative;
+            display:flex; align-items:center; justify-content:center;
+            position:relative; overflow:hidden;
+            gap:var(--workspace-gap);
         }
+        #workspaceHost.workspace-fit-contain { overflow:hidden; }
+        #workspaceHost.workspace-fit-fill { overflow:hidden; }
+        .workspace-surface {
+            width:var(--workspace-surface-width, 100%);
+            height:var(--workspace-surface-height, 100%);
+            min-width:0; min-height:0;
+            display:grid;
+            gap:var(--workspace-gap);
+            position:relative;
+            transform:translate(var(--workspace-offset-x, 0px), var(--workspace-offset-y, 0px)) scale(var(--workspace-scale));
+            transform-origin:center;
+            overflow:hidden;
+        }
+        #workspaceHost.workspace-density-compact { --workspace-gap:5px; --workspace-scale:.96; overflow:auto; }
+        #workspaceHost.workspace-density-compact .workspace-surface { overflow:visible; }
+        #workspaceHost.workspace-density-normal { --workspace-gap:8px; --workspace-scale:1; }
+        #workspaceHost.workspace-density-spacious { --workspace-gap:11px; --workspace-scale:1.02; }
         .workspace-error {
-            grid-column:1 / -1; grid-row:1 / -1; z-index:20;
+            position:absolute; inset:0; z-index:20;
+            display:flex; flex-direction:column; align-items:center; justify-content:center;
             align-self:center; justify-self:center;
             max-width:min(560px, 90%); padding:18px 22px;
             border:1px solid var(--card-border); border-radius:14px;
@@ -260,7 +278,21 @@
             border:1px solid var(--card-border);
             box-shadow:var(--card-shadow);
             position:relative; overflow:hidden;
+            min-width:0; min-height:0;
         }
+        .workspace-surface > .card,
+        .workspace-surface > section { min-width:0; min-height:0; overflow:hidden; }
+        .workspace-surface .card-title,
+        .workspace-surface .card-head,
+        .workspace-surface .card-foot,
+        .workspace-surface .card-body { min-width:0; }
+        .workspace-surface .card-title,
+        .workspace-surface .card-head-l,
+        .workspace-surface .card-head-c,
+        .workspace-surface .card-head-r,
+        .workspace-surface .card-foot-l,
+        .workspace-surface .card-foot-c,
+        .workspace-surface .card-foot-r { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         /* 可见 footer 的卡片：底部内边距交给 footer 自己撑起，避免叠加两层间距。 */
         .card:has(.card-foot:not([hidden])) { padding-bottom:0; }
         /* ── 统一卡片结构：头（左/中/右）+ 内容 + 脚（左/中/右，可不显示）── */

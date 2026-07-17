@@ -18,7 +18,11 @@ from contracts.subscription import (
 )
 from core.config import load_config, set_config_value
 from features.appearance.service import get_font_payload
-from runtime.client_session import ClientSession
+from runtime.client_session import (
+    ClientSession,
+    ViewportContractError,
+    normalize_viewport_payload,
+)
 from runtime.refresh_scheduler import RefreshScheduler
 from runtime.source_cache import SourceCache
 from runtime.subscription_broker import SubscriptionBroker
@@ -324,12 +328,34 @@ class WebSocketHub:
                 self._apply_vibe_refresh_policy(vibe)
                 logger.info("[ws] vibe coding: %s", "ON" if vibe else "OFF")
             elif msg_type == "report":
-                page = str(msg.get("page") or "unknown")
+                page = str(msg.get("page") or "unknown").strip() or "unknown"
                 workspace_id = None
+                viewport = None
                 if page == "dashboard":
+                    try:
+                        viewport = normalize_viewport_payload(
+                            msg.get("viewport"),
+                            require_workspace=True,
+                        )
+                    except ViewportContractError as exc:
+                        self._send_protocol_error(session, "invalid_viewport", str(exc))
+                        return
                     workspace_id = str(msg.get("workspace_id") or "main").strip() or "main"
+                elif isinstance(msg.get("viewport"), Mapping):
+                    try:
+                        viewport = normalize_viewport_payload(
+                            msg.get("viewport"),
+                            require_workspace=False,
+                        )
+                    except ViewportContractError as exc:
+                        self._send_protocol_error(session, "invalid_viewport", str(exc))
+                        return
                 session.page = page
                 session.workspace_id = workspace_id
+                if viewport is not None:
+                    session.set_viewport(viewport)
+                else:
+                    session.clear_viewport()
                 self.subscription_broker.report_session(
                     session,
                     page=page,
@@ -342,10 +368,15 @@ class WebSocketHub:
                 ):
                     session.lyric = True
                 logger.info(
-                    "[ws] client %s reports page: %s%s",
+                    "[ws] client %s reports page: %s%s%s",
                     session.client_id,
                     page,
                     f" ({workspace_id})" if workspace_id else "",
+                    (
+                        f" [{viewport['workspace_width']}x{viewport['workspace_height']} CSS px]"
+                        if viewport is not None
+                        else ""
+                    ),
                 )
             elif msg_type == "subscribe":
                 channel = str(msg.get("channel") or "")
@@ -725,6 +756,20 @@ class WebSocketHub:
             session,
             {
                 "type": "source_error",
+                "error": {"code": code, "message": message, "retryable": False},
+            },
+        )
+
+    def _send_protocol_error(
+        self,
+        session: ClientSession,
+        code: str,
+        message: str,
+    ) -> None:
+        self._send(
+            session,
+            {
+                "type": "protocol_error",
                 "error": {"code": code, "message": message, "retryable": False},
             },
         )

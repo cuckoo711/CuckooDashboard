@@ -10,11 +10,15 @@ from dataclasses import replace
 from typing import Any
 
 from contracts.workspace import (
+    GRID_MAX,
+    GRID_MIN,
+    STANDARD_WORKSPACE_CALIBRATION,
     WidgetConstraints,
     WidgetInstance,
     WidgetLayout,
     WorkspaceDefinition,
     WorkspaceGrid,
+    WorkspaceGridCalibration,
 )
 from workspaces.registry import WorkspaceRegistry
 from workspaces.repository import (
@@ -46,7 +50,54 @@ class WorkspaceInUseError(WorkspaceConflictError):
 
 
 class WorkspaceService:
-    """Application service for persistent Manifest v2 workspaces."""
+    """Application service for persistent Manifest v3 workspaces."""
+
+    GRID_DEFAULTS = WorkspaceGrid().to_payload()
+    GRID_LIMITS = {
+        "min_columns": GRID_MIN,
+        "max_columns": GRID_MAX,
+        "min_rows": GRID_MIN,
+        "max_rows": GRID_MAX,
+    }
+    CALIBRATION_PRESETS = (
+        {"id": "1920x1080", **STANDARD_WORKSPACE_CALIBRATION.to_payload()},
+        {
+            "id": "2560x1080",
+            "reference_width": 2560,
+            "reference_height": 1080,
+            "target_cell_width": 128,
+            "target_cell_height": 72,
+            "fit_mode": "contain",
+            "density": "normal",
+        },
+        {
+            "id": "3440x1440",
+            "reference_width": 3440,
+            "reference_height": 1440,
+            "target_cell_width": 144,
+            "target_cell_height": 96,
+            "fit_mode": "contain",
+            "density": "normal",
+        },
+        {
+            "id": "3840x1080",
+            "reference_width": 3840,
+            "reference_height": 1080,
+            "target_cell_width": 128,
+            "target_cell_height": 72,
+            "fit_mode": "contain",
+            "density": "normal",
+        },
+        {
+            "id": "1080x1920",
+            "reference_width": 1080,
+            "reference_height": 1920,
+            "target_cell_width": 90,
+            "target_cell_height": 96,
+            "fit_mode": "contain",
+            "density": "compact",
+        },
+    )
 
     def __init__(
         self,
@@ -94,6 +145,13 @@ class WorkspaceService:
         self._ensure_seeded()
         return [self.serialize_summary(item) for item in self.repository.list_workspaces()]
 
+    def grid_metadata(self) -> dict[str, Any]:
+        return {
+            "grid_defaults": dict(self.GRID_DEFAULTS),
+            "grid_limits": dict(self.GRID_LIMITS),
+            "calibration_presets": [dict(item) for item in self.CALIBRATION_PRESETS],
+        }
+
     def widget_catalog(self) -> list[dict[str, Any]]:
         catalog = []
         for definition in self.registry.iter_widgets():
@@ -135,12 +193,12 @@ class WorkspaceService:
         self._ensure_seeded()
         workspace = WorkspaceDefinition(
             id=workspace_id or self._new_workspace_id(),
-            version=2,
+            version=3,
             revision=1,
             name=name,
             kind=kind,
             required=False,
-            grid=WorkspaceGrid(),
+            grid=WorkspaceGrid(calibration=STANDARD_WORKSPACE_CALIBRATION),
             widgets=(),
         )
         self.validate(workspace)
@@ -209,13 +267,14 @@ class WorkspaceService:
             raise WorkspaceValidationError("invalid workspace id", "id")
         self._trimmed(workspace.name, "name", maximum=120)
         self._trimmed(workspace.kind, "kind", maximum=64)
-        if workspace.version != 2:
-            raise WorkspaceValidationError("version must be 2", "version")
+        if workspace.version != 3 or not workspace.is_manifest_v3:
+            raise WorkspaceValidationError("version must be 3", "version")
         if workspace.revision is None or workspace.revision < 1:
             raise WorkspaceValidationError("revision must be at least 1", "revision")
         grid = workspace.grid
-        if grid is None or grid.columns != 16 or grid.rows != 15:
-            raise WorkspaceValidationError("grid must be 16 columns by 15 rows", "grid")
+        if grid is None:
+            raise WorkspaceValidationError("grid is required", "grid")
+        calibration = grid.calibration
 
         current_widgets = {item.id: item for item in (current.widgets if current else ())}
         widget_ids: set[str] = set()
@@ -364,7 +423,7 @@ class WorkspaceService:
                     constraints=definition.constraints,
                     owner=owner,
                 )
-                payload = canonical_instance.to_payload(definition, manifest_version=2)
+                payload = canonical_instance.to_payload(definition, manifest_version=3)
                 payload["title"] = definition.title
                 widgets.append(payload)
                 continue
@@ -388,7 +447,7 @@ class WorkspaceService:
             )
         return {
             "id": workspace.id,
-            "version": 2,
+            "version": 3,
             "revision": workspace.revision,
             "name": workspace.name,
             "kind": workspace.kind,
@@ -414,7 +473,7 @@ class WorkspaceService:
                 unavailable += 1
         return {
             "id": workspace.id,
-            "version": 2,
+            "version": 3,
             "revision": workspace.revision,
             "name": workspace.name,
             "kind": workspace.kind,
@@ -434,9 +493,9 @@ class WorkspaceService:
         supplied_id = payload.get("id", workspace_id)
         if supplied_id != workspace_id:
             raise WorkspaceValidationError("workspace id cannot be changed", "id")
-        version = payload.get("version", 2)
-        if version != 2:
-            raise WorkspaceValidationError("version must be 2", "version")
+        version = payload.get("version", 3)
+        if version != 3:
+            raise WorkspaceValidationError("version must be 3", "version")
         if "kind" in payload and payload.get("kind") != current.kind:
             raise WorkspaceValidationError("workspace kind cannot be changed", "kind")
         if "required" in payload and bool(payload.get("required")) != current.required:
@@ -446,10 +505,23 @@ class WorkspaceService:
         if grid_payload is not None:
             if not isinstance(grid_payload, Mapping):
                 raise WorkspaceValidationError("grid must be an object", "grid")
-            grid = WorkspaceGrid(
-                self._integer(grid_payload.get("columns"), "grid.columns", minimum=1),
-                self._integer(grid_payload.get("rows"), "grid.rows", minimum=1),
-            )
+            calibration = grid.calibration
+            calibration_payload = grid_payload.get("calibration")
+            if calibration_payload is not None:
+                if not isinstance(calibration_payload, Mapping):
+                    raise WorkspaceValidationError("calibration must be an object", "grid.calibration")
+                try:
+                    calibration = WorkspaceGridCalibration.from_payload(calibration_payload)
+                except (TypeError, ValueError) as exc:
+                    raise WorkspaceValidationError(str(exc), "grid.calibration") from exc
+            try:
+                grid = WorkspaceGrid(
+                    self._integer(grid_payload.get("columns"), "grid.columns", minimum=GRID_MIN),
+                    self._integer(grid_payload.get("rows"), "grid.rows", minimum=GRID_MIN),
+                    calibration=calibration,
+                )
+            except (TypeError, ValueError) as exc:
+                raise WorkspaceValidationError(str(exc), "grid") from exc
         widgets_payload = payload.get("widgets")
         widgets = current.widgets
         if widgets_payload is not None:
@@ -468,7 +540,7 @@ class WorkspaceService:
             )
         return WorkspaceDefinition(
             id=workspace_id,
-            version=2,
+            version=3,
             revision=current.revision,
             name=payload.get("name", current.name),
             kind=current.kind,

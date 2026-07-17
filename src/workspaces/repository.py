@@ -15,9 +15,10 @@ from contracts.workspace import (
     WidgetLayout,
     WorkspaceDefinition,
     WorkspaceGrid,
+    WorkspaceGridCalibration,
 )
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _CORE_OWNER_ID = "cuckoo.core.dashboard"
 
 
@@ -78,7 +79,7 @@ class WorkspaceRepository:
     @staticmethod
     def _create_schema(connection: sqlite3.Connection) -> None:
         current_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if current_version not in {0, 1, _SCHEMA_VERSION}:
+        if current_version not in {0, 1, 2, _SCHEMA_VERSION}:
             raise WorkspaceRepositoryError(
                 f"unsupported workspace database schema: {current_version}"
             )
@@ -90,9 +91,15 @@ class WorkspaceRepository:
                 kind TEXT NOT NULL,
                 required INTEGER NOT NULL DEFAULT 0 CHECK (required IN (0, 1)),
                 revision INTEGER NOT NULL CHECK (revision >= 1),
-                version INTEGER NOT NULL DEFAULT 2 CHECK (version >= 2),
-                grid_columns INTEGER NOT NULL DEFAULT 16 CHECK (grid_columns > 0),
-                grid_rows INTEGER NOT NULL DEFAULT 15 CHECK (grid_rows > 0),
+                version INTEGER NOT NULL DEFAULT 3 CHECK (version >= 3),
+                grid_columns INTEGER NOT NULL DEFAULT 16 CHECK (grid_columns BETWEEN 4 AND 48),
+                grid_rows INTEGER NOT NULL DEFAULT 15 CHECK (grid_rows BETWEEN 4 AND 48),
+                calibration_reference_width INTEGER NOT NULL DEFAULT 1920 CHECK (calibration_reference_width > 0),
+                calibration_reference_height INTEGER NOT NULL DEFAULT 1080 CHECK (calibration_reference_height > 0),
+                calibration_target_cell_width INTEGER NOT NULL DEFAULT 120 CHECK (calibration_target_cell_width > 0),
+                calibration_target_cell_height INTEGER NOT NULL DEFAULT 72 CHECK (calibration_target_cell_height > 0),
+                calibration_fit_mode TEXT NOT NULL DEFAULT 'contain' CHECK (calibration_fit_mode IN ('fill', 'contain')),
+                calibration_density TEXT NOT NULL DEFAULT 'normal' CHECK (calibration_density IN ('compact', 'normal', 'spacious')),
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -122,6 +129,33 @@ class WorkspaceRepository:
             connection.execute(
                 "ALTER TABLE workspace_widgets ADD COLUMN owner_id TEXT NOT NULL "
                 f"DEFAULT '{_CORE_OWNER_ID}'"
+            )
+        if current_version < _SCHEMA_VERSION:
+            existing_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(workspaces)")
+            }
+            calibration_columns = (
+                ("calibration_reference_width", "INTEGER NOT NULL DEFAULT 1920"),
+                ("calibration_reference_height", "INTEGER NOT NULL DEFAULT 1080"),
+                ("calibration_target_cell_width", "INTEGER NOT NULL DEFAULT 120"),
+                ("calibration_target_cell_height", "INTEGER NOT NULL DEFAULT 72"),
+                ("calibration_fit_mode", "TEXT NOT NULL DEFAULT 'contain'"),
+                ("calibration_density", "TEXT NOT NULL DEFAULT 'normal'"),
+            )
+            for column, declaration in calibration_columns:
+                if column not in existing_columns:
+                    connection.execute(
+                        f"ALTER TABLE workspaces ADD COLUMN {column} {declaration}"
+                    )
+            connection.execute(
+                "UPDATE workspaces SET version = 3, "
+                "calibration_reference_width = 1920, "
+                "calibration_reference_height = 1080, "
+                "calibration_target_cell_width = 120, "
+                "calibration_target_cell_height = 72, "
+                "calibration_fit_mode = 'contain', "
+                "calibration_density = 'normal' "
+                "WHERE version < 3"
             )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_workspace_widgets_owner "
@@ -180,7 +214,7 @@ class WorkspaceRepository:
             return True
 
     def create_workspace(self, workspace: WorkspaceDefinition) -> WorkspaceDefinition:
-        created = replace(workspace, version=2, revision=1)
+        created = replace(workspace, version=3, revision=1)
         with self._lock, self._transaction_locked() as connection:
             try:
                 self._insert_workspace(connection, created)
@@ -194,13 +228,16 @@ class WorkspaceRepository:
         *,
         expected_revision: int,
     ) -> WorkspaceDefinition:
-        next_workspace = replace(workspace, version=2, revision=expected_revision + 1)
+        next_workspace = replace(workspace, version=3, revision=expected_revision + 1)
         with self._lock, self._transaction_locked() as connection:
             cursor = connection.execute(
                 """
                 UPDATE workspaces
                 SET name = ?, kind = ?, required = ?, revision = ?, version = ?,
-                    grid_columns = ?, grid_rows = ?, updated_at = CURRENT_TIMESTAMP
+                    grid_columns = ?, grid_rows = ?,
+                    calibration_reference_width = ?, calibration_reference_height = ?,
+                    calibration_target_cell_width = ?, calibration_target_cell_height = ?,
+                    calibration_fit_mode = ?, calibration_density = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND revision = ?
                 """,
                 (
@@ -211,6 +248,12 @@ class WorkspaceRepository:
                     next_workspace.version,
                     next_workspace.grid.columns if next_workspace.grid else 16,
                     next_workspace.grid.rows if next_workspace.grid else 15,
+                    (next_workspace.grid or WorkspaceGrid()).calibration.reference_width,
+                    (next_workspace.grid or WorkspaceGrid()).calibration.reference_height,
+                    (next_workspace.grid or WorkspaceGrid()).calibration.target_cell_width,
+                    (next_workspace.grid or WorkspaceGrid()).calibration.target_cell_height,
+                    (next_workspace.grid or WorkspaceGrid()).calibration.fit_mode,
+                    (next_workspace.grid or WorkspaceGrid()).calibration.density,
                     next_workspace.id,
                     expected_revision,
                 ),
@@ -295,11 +338,15 @@ class WorkspaceRepository:
     @staticmethod
     def _insert_workspace(connection: sqlite3.Connection, workspace: WorkspaceDefinition) -> None:
         grid = workspace.grid or WorkspaceGrid()
+        calibration = grid.calibration
         connection.execute(
             """
             INSERT INTO workspaces
-                (id, name, kind, required, revision, version, grid_columns, grid_rows)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, name, kind, required, revision, version, grid_columns, grid_rows,
+                 calibration_reference_width, calibration_reference_height,
+                 calibration_target_cell_width, calibration_target_cell_height,
+                 calibration_fit_mode, calibration_density)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 workspace.id,
@@ -307,9 +354,15 @@ class WorkspaceRepository:
                 workspace.kind or "dashboard",
                 int(workspace.required),
                 workspace.revision or 1,
-                max(2, workspace.version),
+                3,
                 grid.columns,
                 grid.rows,
+                calibration.reference_width,
+                calibration.reference_height,
+                calibration.target_cell_width,
+                calibration.target_cell_height,
+                calibration.fit_mode,
+                calibration.density,
             ),
         )
         WorkspaceRepository._insert_widgets(connection, workspace)
@@ -380,11 +433,22 @@ class WorkspaceRepository:
         )
         return WorkspaceDefinition(
             id=row["id"],
-            version=row["version"],
+            version=3,
             revision=row["revision"],
             name=row["name"],
             kind=row["kind"],
             required=bool(row["required"]),
-            grid=WorkspaceGrid(row["grid_columns"], row["grid_rows"]),
+            grid=WorkspaceGrid(
+                row["grid_columns"],
+                row["grid_rows"],
+                WorkspaceGridCalibration(
+                    row["calibration_reference_width"],
+                    row["calibration_reference_height"],
+                    row["calibration_target_cell_width"],
+                    row["calibration_target_cell_height"],
+                    row["calibration_fit_mode"],
+                    row["calibration_density"],
+                ),
+            ),
             widgets=widgets,
         )

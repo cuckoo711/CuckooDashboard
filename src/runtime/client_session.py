@@ -3,9 +3,82 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+
+_MAX_CSS_VIEWPORT_PX = 65536.0
+_MIN_DEVICE_SCALE = 0.25
+_MAX_DEVICE_SCALE = 8.0
+
+
+class ViewportContractError(ValueError):
+    """Raised when a client sends an invalid CSS viewport report."""
+
+
+def _finite_number(payload: Mapping[str, Any], key: str, *, minimum: float, maximum: float) -> float:
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ViewportContractError(f"viewport.{key} must be a number")
+    value = float(value)
+    if not math.isfinite(value) or value < minimum or value > maximum:
+        raise ViewportContractError(
+            f"viewport.{key} must be between {minimum:g} and {maximum:g}"
+        )
+    return round(value, 3)
+
+
+def normalize_viewport_payload(
+    payload: Any,
+    *,
+    require_workspace: bool = True,
+) -> dict[str, float]:
+    """Validate a browser report and return normalized CSS-pixel measurements."""
+    if not isinstance(payload, Mapping):
+        raise ViewportContractError("viewport must be an object")
+    width = _finite_number(payload, "width", minimum=1.0, maximum=_MAX_CSS_VIEWPORT_PX)
+    height = _finite_number(payload, "height", minimum=1.0, maximum=_MAX_CSS_VIEWPORT_PX)
+    if require_workspace and (
+        "workspace_width" not in payload or "workspace_height" not in payload
+    ):
+        raise ViewportContractError(
+            "dashboard viewport must include workspace_width and workspace_height"
+        )
+    workspace_width = _finite_number(
+        {"workspace_width": payload.get("workspace_width", width)},
+        "workspace_width",
+        minimum=1.0,
+        maximum=_MAX_CSS_VIEWPORT_PX,
+    )
+    workspace_height = _finite_number(
+        {"workspace_height": payload.get("workspace_height", height)},
+        "workspace_height",
+        minimum=1.0,
+        maximum=_MAX_CSS_VIEWPORT_PX,
+    )
+    device_pixel_ratio = _finite_number(
+        {"device_pixel_ratio": payload.get("device_pixel_ratio", 1.0)},
+        "device_pixel_ratio",
+        minimum=_MIN_DEVICE_SCALE,
+        maximum=_MAX_DEVICE_SCALE,
+    )
+    visual_viewport_scale = _finite_number(
+        {"visual_viewport_scale": payload.get("visual_viewport_scale", 1.0)},
+        "visual_viewport_scale",
+        minimum=_MIN_DEVICE_SCALE,
+        maximum=_MAX_DEVICE_SCALE,
+    )
+    return {
+        "width": width,
+        "height": height,
+        "workspace_width": workspace_width,
+        "workspace_height": workspace_height,
+        "device_pixel_ratio": device_pixel_ratio,
+        "visual_viewport_scale": visual_viewport_scale,
+    }
 
 
 @dataclass(eq=False)
@@ -16,6 +89,12 @@ class ClientSession:
     client_id: str
     page: str = "unknown"
     workspace_id: str | None = None
+    viewport_width: float | None = None
+    viewport_height: float | None = None
+    workspace_width: float | None = None
+    workspace_height: float | None = None
+    device_pixel_ratio: float | None = None
+    visual_viewport_scale: float | None = None
     wire_mode: str = "legacy"
     source_subscriptions: set[str] | None = None
     vibe: bool = False
@@ -85,6 +164,38 @@ class ClientSession:
             pass
         return True
 
+    def set_viewport(self, viewport: Mapping[str, float]) -> None:
+        """Store one already-normalized CSS viewport report."""
+        with self.send_lock:
+            self.viewport_width = viewport["width"]
+            self.viewport_height = viewport["height"]
+            self.workspace_width = viewport["workspace_width"]
+            self.workspace_height = viewport["workspace_height"]
+            self.device_pixel_ratio = viewport["device_pixel_ratio"]
+            self.visual_viewport_scale = viewport["visual_viewport_scale"]
+
+    def clear_viewport(self) -> None:
+        """Clear dashboard-only geometry when the client navigates elsewhere."""
+        with self.send_lock:
+            self.viewport_width = None
+            self.viewport_height = None
+            self.workspace_width = None
+            self.workspace_height = None
+            self.device_pixel_ratio = None
+            self.visual_viewport_scale = None
+
+    def viewport_payload(self) -> dict[str, float | None]:
+        """Return the latest browser geometry in the public client shape."""
+        with self.send_lock:
+            return {
+                "viewport_width": self.viewport_width,
+                "viewport_height": self.viewport_height,
+                "workspace_width": self.workspace_width,
+                "workspace_height": self.workspace_height,
+                "device_pixel_ratio": self.device_pixel_ratio,
+                "visual_viewport_scale": self.visual_viewport_scale,
+            }
+
     def metadata(self) -> dict[str, Any]:
         """Return a lightweight mutable-state snapshot for hub migration code."""
         with self.send_lock:
@@ -92,6 +203,7 @@ class ClientSession:
                 "id": self.client_id,
                 "page": self.page,
                 "workspace_id": self.workspace_id,
+                **self.viewport_payload(),
                 "wire_mode": self.wire_mode,
                 "source_subscription_mode": self.source_subscription_mode,
                 "source_subscriptions": (
@@ -118,6 +230,7 @@ class ClientSession:
                 "id": self.client_id,
                 "page": self.page,
                 "workspace_id": workspace_id,
+                **self.viewport_payload(),
                 "connected": not self.closed and bool(getattr(self.socket, "connected", True)),
                 "sources": (
                     None

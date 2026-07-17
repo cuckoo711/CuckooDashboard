@@ -6,7 +6,11 @@ import { bindDashboardActions } from './events.js';
 import { initLyrics } from './lyrics.js';
 import { initNavigation } from './navigation.js';
 import { applyVibeUi, initVibe } from './vibe.js';
-import { startWebSocket, updateWebSocketWorkspace } from './ws.js';
+import {
+    startWebSocket,
+    uninstallWorkspaceViewportReporter,
+    updateWebSocketWorkspace,
+} from './ws.js';
 import { dashboardDataBus } from './workspace/data-bus.js';
 import { DEFAULT_WORKSPACE_MANIFEST } from './workspace/default-manifest.js';
 import { createWorkspaceHost } from './workspace/host.js';
@@ -133,7 +137,10 @@ export async function bootstrapDashboard() {
         dashboardSubscriptionClient,
     );
     websocketStarted = true;
-    window.addEventListener('pagehide', () => host.destroy(), { once: true });
+    window.addEventListener('pagehide', () => {
+        uninstallWorkspaceViewportReporter();
+        host.destroy();
+    }, { once: true });
     return host;
 }
 

@@ -1,5 +1,6 @@
 import { createSubscriptionClient } from './subscription-client.js';
 import { createWidgetContext, normalizeWidgetLifecycle, widgetChannels } from './widget-sdk.js';
+import { createViewportCalibration, normalizeCalibration } from './viewport-calibration.js';
 
 function sourceId(source) {
     if (typeof source === 'string') return source;
@@ -19,6 +20,7 @@ function manifestKey(manifest) {
         version: manifest.version,
         revision: manifest.revision,
         grid: manifest.grid,
+        calibration: manifest.grid?.calibration || null,
         sources: sourceIds(manifest.sources),
         widgets: (manifest.widgets || []).map((widget) => ({
             id: widget.id,
@@ -38,8 +40,11 @@ function manifestKey(manifest) {
     });
 }
 
-function isInteger(value, minimum) {
-    return Number.isInteger(value) && value >= minimum;
+const MIN_GRID = 4;
+const MAX_GRID = 48;
+
+function isInteger(value, minimum, maximum = Number.POSITIVE_INFINITY) {
+    return Number.isInteger(value) && value >= minimum && value <= maximum;
 }
 
 function createUnavailableComponent(widget, reason) {
@@ -123,12 +128,20 @@ export class WorkspaceHost {
         this.grid = null;
         this.sources = [];
         this.channels = [];
+        this.surface = null;
+        this.viewportState = null;
+        this.viewport = createViewportCalibration({
+            host: this.root,
+            grid: {columns: 1, rows: 1},
+            calibration: {},
+            onChange: (result) => this.applyViewport(result),
+        });
     }
 
     validate(manifest) {
         const errors = [];
         if (!manifest || typeof manifest !== 'object') return ['manifest must be an object'];
-        if (manifest.version !== 2) errors.push('manifest.version must be 2');
+        if (manifest.version !== 3) errors.push('manifest.version must be 3');
         if (typeof manifest.id !== 'string' || !manifest.id.trim()) errors.push('manifest.id must be a non-empty string');
         if (!isInteger(manifest.revision, 1)) errors.push('manifest.revision must be a positive integer');
         if (typeof manifest.name !== 'string' || !manifest.name.trim()) errors.push('manifest.name must be a non-empty string');
@@ -140,7 +153,28 @@ export class WorkspaceHost {
         if (!grid || typeof grid !== 'object') errors.push('manifest.grid must be an object');
         const columns = grid?.columns;
         const rows = grid?.rows;
-        if (columns !== 16 || rows !== 15) errors.push('manifest.grid must be 16x15');
+        if (!isInteger(columns, MIN_GRID, MAX_GRID)) errors.push(`manifest.grid.columns must be an integer between ${MIN_GRID} and ${MAX_GRID}`);
+        if (!isInteger(rows, MIN_GRID, MAX_GRID)) errors.push(`manifest.grid.rows must be an integer between ${MIN_GRID} and ${MAX_GRID}`);
+        const calibration = grid?.calibration;
+        if (!calibration || typeof calibration !== 'object') errors.push('manifest.grid.calibration must be an object');
+        else {
+            const normalizedCalibration = normalizeCalibration(calibration);
+            const rawWidth = calibration.reference_width
+                ?? calibration.width
+                ?? calibration.target_width
+                ?? calibration.target?.width;
+            const rawHeight = calibration.reference_height
+                ?? calibration.height
+                ?? calibration.target_height
+                ?? calibration.target?.height;
+            if ((rawWidth !== undefined && !isInteger(rawWidth, 1)) || (rawHeight !== undefined && !isInteger(rawHeight, 1))) {
+                errors.push('manifest.grid.calibration target must be positive');
+            }
+            const fit = calibration.fit_mode ?? calibration.fit;
+            if (fit !== undefined && !['fill', 'contain'].includes(fit)) errors.push('manifest.grid.calibration.fit_mode is invalid');
+            if (calibration.density !== undefined && !['compact', 'normal', 'spacious'].includes(calibration.density)) errors.push('manifest.grid.calibration.density is invalid');
+            if (!isInteger(normalizedCalibration.width, 1) || !isInteger(normalizedCalibration.height, 1)) errors.push('manifest.grid.calibration target must be positive');
+        }
         if (!Array.isArray(manifest.widgets)) errors.push('manifest.widgets must be an array');
         const ids = new Set();
         const singletonTypes = new Set();
@@ -224,6 +258,25 @@ export class WorkspaceHost {
         return errors;
     }
 
+    applyViewport(result) {
+        if (!result) return;
+        this.viewportState = result;
+        this.root.classList?.toggle('workspace-fit-fill', result.fit === 'fill');
+        this.root.classList?.toggle('workspace-fit-contain', result.fit === 'contain');
+        this.root.classList?.toggle('workspace-density-compact', result.density === 'compact');
+        this.root.classList?.toggle('workspace-density-normal', result.density === 'normal');
+        this.root.classList?.toggle('workspace-density-spacious', result.density === 'spacious');
+        if (this.surface) {
+            this.surface.style.gridTemplateColumns = `repeat(${result.grid.columns}, minmax(0,1fr))`;
+            this.surface.style.gridTemplateRows = `repeat(${result.grid.rows}, minmax(0,1fr))`;
+        }
+        this.mounted.forEach(({instance}) => {
+            try { instance.resize(result); } catch (error) {
+                console.warn('[workspace] widget resize failed:', error);
+            }
+        });
+    }
+
     mount(manifest) {
         const errors = this.validate(manifest);
         if (errors.length) throw new Error(`Invalid workspace manifest: ${errors.join('; ')}`);
@@ -232,6 +285,8 @@ export class WorkspaceHost {
 
         const doc = this.root.ownerDocument || document;
         const stagingRoot = doc.createElement('div');
+        stagingRoot.className = 'workspace-surface';
+        stagingRoot.dataset.workspaceVersion = '3';
         const nextMounted = [];
         const nextScope = this.subscriptions.createScope(`workspace:${manifest.id}`);
         try {
@@ -301,16 +356,16 @@ export class WorkspaceHost {
         const previousMounted = this.mounted;
         const previousScope = this.subscriptionScope;
         const previousChildren = Array.from(this.root.childNodes);
-        const previousColumns = this.root.style.gridTemplateColumns;
-        const previousRows = this.root.style.gridTemplateRows;
+        const previousColumns = this.surface?.style.gridTemplateColumns || '';
+        const previousRows = this.surface?.style.gridTemplateRows || '';
         const previousWorkspaceId = this.root.dataset.workspaceId;
         const previousRevision = this.root.dataset.workspaceRevision;
         let replaced = false;
         try {
-            this.root.replaceChildren(...Array.from(stagingRoot.childNodes));
+            this.root.replaceChildren(stagingRoot);
             replaced = true;
-            this.root.style.gridTemplateColumns = `repeat(${manifest.grid.columns}, minmax(0,1fr))`;
-            this.root.style.gridTemplateRows = `repeat(${manifest.grid.rows}, minmax(0,1fr))`;
+            stagingRoot.style.gridTemplateColumns = `repeat(${manifest.grid.columns}, minmax(0,1fr))`;
+            stagingRoot.style.gridTemplateRows = `repeat(${manifest.grid.rows}, minmax(0,1fr))`;
             this.root.dataset.workspaceId = manifest.id;
             this.root.dataset.workspaceRevision = String(manifest.revision);
             nextScope.commit({ replaceScope: previousScope });
@@ -318,8 +373,11 @@ export class WorkspaceHost {
             nextScope.abort();
             if (replaced) {
                 this.root.replaceChildren(...previousChildren);
-                this.root.style.gridTemplateColumns = previousColumns;
-                this.root.style.gridTemplateRows = previousRows;
+                const previousSurface = this.root.querySelector?.(':scope > .workspace-surface');
+                if (previousSurface) {
+                    previousSurface.style.gridTemplateColumns = previousColumns;
+                    previousSurface.style.gridTemplateRows = previousRows;
+                }
                 if (previousWorkspaceId === undefined) delete this.root.dataset.workspaceId;
                 else this.root.dataset.workspaceId = previousWorkspaceId;
                 if (previousRevision === undefined) delete this.root.dataset.workspaceRevision;
@@ -334,7 +392,9 @@ export class WorkspaceHost {
         this.key = nextKey;
         this.workspaceId = manifest.id;
         this.revision = manifest.revision;
-        this.grid = { ...manifest.grid };
+        this.grid = { ...manifest.grid, calibration: normalizeCalibration(manifest.grid.calibration) };
+        this.surface = stagingRoot;
+        this.viewport.update(this.grid, this.grid.calibration);
         const widgetSourceIds = new Set(
             manifest.widgets.flatMap((widget) => sourceIds(widget.sources)),
         );
@@ -357,7 +417,17 @@ export class WorkspaceHost {
         return {
             workspaceId: this.workspaceId,
             revision: this.revision,
-            grid: this.grid ? { ...this.grid } : null,
+            grid: this.grid ? { ...this.grid, calibration: this.grid.calibration ? { ...this.grid.calibration, offset: { ...this.grid.calibration.offset } } : null } : null,
+            viewport: this.viewportState ? {
+                fit: this.viewportState.fit,
+                density: this.viewportState.density,
+                container: { ...this.viewportState.container },
+                surface: { ...this.viewportState.surface },
+                cell: { ...this.viewportState.cell },
+                gutter: { ...this.viewportState.gutter },
+                offset: { ...this.viewportState.offset },
+                diagnostic: { ...this.viewportState.diagnostic },
+            } : null,
             widgetIds: this.mounted.map(({ widget }) => widget.id),
             widgetTypes: this.mounted
                 .filter((entry) => entry.available)
@@ -374,11 +444,15 @@ export class WorkspaceHost {
     destroy() {
         this.subscriptionScope?.dispose();
         this.subscriptionScope = null;
+        this.viewport.destroy();
         cleanupMounted(this.mounted.splice(0));
         if (this.ownsSubscriptions) this.subscriptions.destroy();
         this.root.replaceChildren();
-        this.root.style.gridTemplateColumns = '';
-        this.root.style.gridTemplateRows = '';
+        this.surface = null;
+        this.viewportState = null;
+        if (typeof this.root.className === 'string') {
+            this.root.className = this.root.className.replace(/\bworkspace-(?:fit|density)-\S+/g, '').trim();
+        }
         delete this.root.dataset.workspaceId;
         delete this.root.dataset.workspaceRevision;
         this.key = '';

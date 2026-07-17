@@ -62,6 +62,22 @@ def _registry(definitions):
     return registry
 
 
+def _dashboard_report(workspace_id="main"):
+    return {
+        "type": "report",
+        "page": "dashboard",
+        "workspace_id": workspace_id,
+        "viewport": {
+            "width": 1920,
+            "height": 1080,
+            "workspace_width": 1920,
+            "workspace_height": 1080,
+            "device_pixel_ratio": 1,
+            "visual_viewport_scale": 1,
+        },
+    }
+
+
 def _attach(hub, sock, *, sources=None, page="unknown", client_id="client-1"):
     hub.transport.start()
     session = ClientSession(socket=sock, client_id=client_id)
@@ -70,7 +86,22 @@ def _attach(hub, sock, *, sources=None, page="unknown", client_id="client-1"):
     hub._on_open(session)
     sock.messages.clear()
     if page != "unknown":
-        hub._on_message(session, {"type": "report", "page": page})
+        report = {"type": "report", "page": page}
+        if page == "dashboard":
+            report.update(
+                {
+                    "workspace_id": "main",
+                    "viewport": {
+                        "width": 1920,
+                        "height": 1080,
+                        "workspace_width": 1920,
+                        "workspace_height": 1080,
+                        "device_pixel_ratio": 1,
+                        "visual_viewport_scale": 1,
+                    },
+                }
+            )
+        hub._on_message(session, report)
     if sources is not None:
         hub._subscribe_sources(session, sources, replace=True)
     sock.messages.clear()
@@ -229,7 +260,7 @@ def test_card_subscriptions_accept_browser_camel_case_and_split_lyric_channel(mo
             ],
         },
     )
-    hub._on_message(session, {"type": "report", "page": "dashboard"})
+    hub._on_message(session, _dashboard_report())
     hub._on_message(session, {"type": "init"})
 
     assert session.wire_mode == "snapshot"
@@ -250,8 +281,8 @@ def test_explicit_dashboard_sources_do_not_force_optional_lyric_channel(monkeypa
     music = _attach(hub, _Socket(), client_id="music")
 
     hub._on_message(modular, {"type": "subscribe", "sources": ["system.snapshot"], "replace": True})
-    hub._on_message(modular, {"type": "report", "page": "dashboard"})
-    hub._on_message(legacy, {"type": "report", "page": "dashboard"})
+    hub._on_message(modular, _dashboard_report())
+    hub._on_message(legacy, _dashboard_report())
     hub._on_message(music, {"type": "report", "page": "music"})
 
     assert modular.lyric is False
@@ -356,19 +387,45 @@ def test_media_broadcast_keeps_dashboard_slim_music_full_and_filters_sources():
     assert excluded_sock.messages == []
 
 
+def test_dashboard_report_rejects_missing_or_invalid_viewport_without_mutating_session():
+    hub = WebSocketHub()
+    sock = _Socket()
+    session = _attach(hub, sock)
+    sock.messages.clear()
+
+    hub._on_message(session, {"type": "report", "page": "dashboard"})
+
+    assert session.page == "unknown"
+    assert session.workspace_id is None
+    assert session.workspace_width is None
+    assert sock.messages == [
+        {
+            "type": "protocol_error",
+            "error": {
+                "code": "invalid_viewport",
+                "message": "viewport must be an object",
+                "retryable": False,
+            },
+        }
+    ]
+
+
 def test_dashboard_report_tracks_workspace_and_keeps_legacy_main_default():
     hub = WebSocketHub()
     legacy = _attach(hub, _Socket(), client_id="legacy")
     custom = _attach(hub, _Socket(), client_id="custom")
     music = _attach(hub, _Socket(), client_id="music")
 
-    hub._on_message(legacy, {"type": "report", "page": "dashboard"})
-    hub._on_message(custom, {"type": "report", "page": "dashboard", "workspace_id": "ws_demo"})
+    hub._on_message(legacy, _dashboard_report())
+    hub._on_message(custom, _dashboard_report("ws_demo"))
     hub._on_message(music, {"type": "report", "page": "music"})
 
     clients = {item["id"]: item for item in hub.list_clients()}
     assert clients["legacy"]["workspace_id"] == "main"
     assert clients["custom"]["workspace_id"] == "ws_demo"
+    assert clients["custom"]["workspace_width"] == 1920
+    assert clients["custom"]["workspace_height"] == 1080
+    assert clients["custom"]["device_pixel_ratio"] == 1
     assert clients["music"]["workspace_id"] is None
     assert hub.workspace_client_ids("main") == ["legacy"]
     assert hub.workspace_client_ids("ws_demo") == ["custom"]

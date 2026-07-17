@@ -11,6 +11,7 @@ from contracts.workspace import (
     WidgetDefinition,
     WidgetInstance,
     WorkspaceDefinition,
+    WorkspaceGridCalibration,
 )
 from workspaces.data_sources import DataSourceDefinition
 
@@ -165,15 +166,14 @@ class WorkspaceRegistry:
     ) -> WorkspaceDefinition:
         self._ensure_owner(owner_id)
         workspace_id = _require_identifier(definition.id, "workspace id")
-        if definition.version < 1:
-            raise ValueError("workspace version must be at least 1")
-        if definition.is_manifest_v2:
-            _require_identifier(definition.name or "", "workspace name")
-            _require_identifier(definition.kind or "", "workspace kind")
-            if (definition.revision or 0) < 1:
-                raise ValueError("workspace revision must be at least 1")
-            if definition.grid is None or definition.grid.columns != 16 or definition.grid.rows != 15:
-                raise ValueError("Manifest v2 workspaces must use a 16x15 grid")
+        if definition.version != 3 or not definition.is_manifest_v3:
+            raise ValueError("workspace definitions require Manifest v3")
+        _require_identifier(definition.name or "", "workspace name")
+        _require_identifier(definition.kind or "", "workspace kind")
+        if (definition.revision or 0) < 1:
+            raise ValueError("workspace revision must be at least 1")
+        if definition.grid is None or not isinstance(definition.grid.calibration, WorkspaceGridCalibration):
+            raise ValueError("Manifest v3 workspace metadata is incomplete")
         if workspace_id in self._workspaces:
             raise ValueError(f"workspace already registered: {workspace_id}")
 
@@ -182,8 +182,11 @@ class WorkspaceRegistry:
         singleton_types: set[str] = set()
         for instance in definition.widgets:
             self._validate_widget_instance(instance)
-            if definition.is_manifest_v2:
-                self._validate_v2_layout(instance, columns=16, rows=15)
+            self._validate_v3_layout(
+                instance,
+                columns=definition.grid.columns,
+                rows=definition.grid.rows,
+            )
             if instance.id in instance_ids:
                 raise ValueError(f"workspace contains duplicate widget id: {instance.id}")
             instance_ids.add(instance.id)
@@ -191,7 +194,7 @@ class WorkspaceRegistry:
             widget = self._widgets.get(instance.type)
             if widget is None:
                 raise ValueError(f"workspace references unknown widget: {instance.type}")
-            if definition.is_manifest_v2 and instance.constraints != widget.constraints:
+            if instance.constraints != widget.constraints:
                 raise ValueError(f"workspace widget constraints differ from definition: {instance.type}")
             canonical_owner = self._widget_owners[instance.type]
             if instance.owner is not None and instance.owner != canonical_owner:
@@ -292,11 +295,11 @@ class WorkspaceRegistry:
         _require_identifier(instance.slot, "widget instance slot")
 
     @staticmethod
-    def _validate_v2_layout(instance: WidgetInstance, *, columns: int, rows: int) -> None:
+    def _validate_v3_layout(instance: WidgetInstance, *, columns: int, rows: int) -> None:
         layout = instance.layout
         constraints = instance.constraints
         if layout is None or constraints is None:
-            raise ValueError(f"Manifest v2 widget is missing layout or constraints: {instance.id}")
+            raise ValueError(f"Manifest v3 widget is missing layout or constraints: {instance.id}")
         if layout.x < 0 or layout.y < 0 or layout.width < 1 or layout.height < 1:
             raise ValueError(f"widget has invalid layout: {instance.id}")
         if layout.x + layout.width > columns or layout.y + layout.height > rows:
@@ -382,30 +385,20 @@ class WorkspaceRegistry:
                 constraints=widget.constraints,
                 owner=self._widget_owners[instance.type],
             )
-            widget_payload = canonical.to_payload(
-                widget,
-                manifest_version=2 if workspace.is_manifest_v2 else 1,
-            )
-            if workspace.is_manifest_v2:
-                widget_payload["title"] = widget.title
+            widget_payload = canonical.to_payload(widget, manifest_version=3)
+            widget_payload["title"] = widget.title
             widgets.append(widget_payload)
-        payload = {
+        return {
             "id": workspace.id,
-            "version": workspace.version,
+            "version": 3,
+            "revision": workspace.revision,
+            "name": workspace.name,
+            "kind": workspace.kind,
             "required": workspace.required,
+            "grid": workspace.grid.to_payload(),
             "sources": [
                 self._data_sources[source_id].descriptor.to_payload()
                 for source_id in source_ids
             ],
             "widgets": widgets,
         }
-        if workspace.is_manifest_v2:
-            payload.update(
-                {
-                    "revision": workspace.revision,
-                    "name": workspace.name,
-                    "kind": workspace.kind,
-                    "grid": workspace.grid.to_payload(),
-                }
-            )
-        return payload

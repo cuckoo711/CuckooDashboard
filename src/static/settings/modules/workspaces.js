@@ -1,6 +1,7 @@
 import {requestJson} from './api.js';
 import {$, escHtml} from './dom.js';
-import {constrain, firstFit, isPlacementValid, normalizeGrid, normalizeRect, validate} from './grid-layout.js';
+import {getLatestClients} from './clients.js';
+import {constrain, firstFit, isPlacementValid, normalizeGrid, normalizeRect, recommendGrid, reflow, validate} from './grid-layout.js';
 import {setWorkspaceDirty, state} from './state.js';
 
 const BUILTIN_LAYOUT_DEFAULTS = Object.freeze({
@@ -45,6 +46,69 @@ function workspaceId(value) {
 
 function workspaceName(value) {
     return String(value?.name || value?.title || workspaceId(value) || '未命名工作区');
+}
+
+function normalizeCalibration(value = {}) {
+    const source = value || {};
+    const target = source.target || source.viewport || {};
+    const width = Number(source.reference_width ?? source.width ?? source.target_width ?? target.width ?? 1920);
+    const height = Number(source.reference_height ?? source.height ?? source.target_height ?? target.height ?? 1080);
+    const targetCellWidth = Number(source.target_cell_width ?? source.targetCellWidth ?? 120);
+    const targetCellHeight = Number(source.target_cell_height ?? source.targetCellHeight ?? 72);
+    return {
+        width: Math.max(1, Number.isFinite(width) ? width : 1920),
+        height: Math.max(1, Number.isFinite(height) ? height : 1080),
+        targetCellWidth: Math.max(1, Number.isFinite(targetCellWidth) ? targetCellWidth : 120),
+        targetCellHeight: Math.max(1, Number.isFinite(targetCellHeight) ? targetCellHeight : 72),
+        fit: (source.fit_mode ?? source.fit) === 'fill' ? 'fill' : 'contain',
+        density: ['compact', 'normal', 'spacious'].includes(source.density) ? source.density : 'normal',
+        offset: {
+            x: Number(source.offset?.x ?? source.offset_x ?? 0) || 0,
+            y: Number(source.offset?.y ?? source.offset_y ?? 0) || 0,
+        },
+    };
+}
+
+function serializeCalibration(value = {}) {
+    const calibration = normalizeCalibration(value);
+    return {
+        reference_width: Math.round(calibration.width),
+        reference_height: Math.round(calibration.height),
+        target_cell_width: Math.round(calibration.targetCellWidth),
+        target_cell_height: Math.round(calibration.targetCellHeight),
+        fit_mode: calibration.fit,
+        density: calibration.density,
+    };
+}
+
+function currentSettingsSize() {
+    return {
+        width: Math.max(1, Math.round(window.innerWidth || document.documentElement.clientWidth || 1920)),
+        height: Math.max(1, Math.round(window.innerHeight || document.documentElement.clientHeight || 1080)),
+    };
+}
+
+function onlineClientSize(id) {
+    const client = getLatestClients().find((item) => String(item.id) === String(id));
+    const viewport = client?.viewport || client?.screen || client?.display || {};
+    return {
+        width: Number(
+            client?.workspace_width
+            ?? viewport.workspace_width
+            ?? viewport.width
+            ?? client?.viewport_width
+            ?? client?.width
+            ?? 1920
+        ) || 1920,
+        height: Number(
+            client?.workspace_height
+            ?? viewport.workspace_height
+            ?? viewport.height
+            ?? client?.viewport_height
+            ?? client?.height
+            ?? 1080
+        ) || 1080,
+    };
 }
 
 function normalizeCatalogItem(item) {
@@ -125,6 +189,7 @@ function normalizedWidget(widget) {
 function normalizeWorkspace(payload) {
     const source = payload?.workspace || payload?.data || payload || {};
     const grid = normalizeGrid(source.grid || workspaceState.grid);
+    grid.calibration = normalizeCalibration(source.grid?.calibration);
     return {
         ...clone(source),
         id: workspaceId(source),
@@ -152,7 +217,10 @@ function workspacePayload() {
     return {
         revision: workspaceState.draft.revision,
         name: workspaceState.draft.name.trim(),
-        grid: normalizeGrid(workspaceState.draft.grid),
+        grid: {
+            ...normalizeGrid(workspaceState.draft.grid),
+            calibration: serializeCalibration(workspaceState.draft.grid.calibration),
+        },
         widgets: workspaceState.draft.widgets.map(serializeWidget),
     };
 }
@@ -220,6 +288,139 @@ function renderGrid() {
     }
 }
 
+function renderCalibration() {
+    const draft = workspaceState.draft;
+    const calibration = normalizeCalibration(draft?.grid?.calibration);
+    const target = $('#workspaceCalibrationTarget');
+    const client = $('#workspaceCalibrationClient');
+    const width = $('#workspaceCalibrationWidth');
+    const height = $('#workspaceCalibrationHeight');
+    const cellWidth = $('#workspaceCalibrationCellWidth');
+    const cellHeight = $('#workspaceCalibrationCellHeight');
+    const density = $('#workspaceCalibrationDensity');
+    const fit = $('#workspaceCalibrationFit');
+    const dimension = $('#workspaceGridDimension');
+    const summary = $('#workspaceCalibrationSummary');
+    if (!draft) {
+        if (dimension) dimension.textContent = '动态网格预览';
+        if (summary) summary.textContent = '未选择工作区';
+        return;
+    }
+    if (width) width.value = calibration.width;
+    if (height) height.value = calibration.height;
+    if (cellWidth) cellWidth.value = calibration.targetCellWidth;
+    if (cellHeight) cellHeight.value = calibration.targetCellHeight;
+    if (density) density.value = calibration.density;
+    if (fit) fit.value = calibration.fit;
+    const preset = `${calibration.width}x${calibration.height}`;
+    if (target) target.value = ['settings', 'client', 'manual', '1920x1080', '2560x1080', '3440x1440', '3840x1080', '1080x1920'].includes(target.value)
+        && (target.value === 'manual' || target.value === 'settings' || target.value === 'client' || target.value === preset)
+        ? target.value : 'manual';
+    if (client) {
+        const clients = getLatestClients();
+        const current = client.value;
+        client.innerHTML = clients.length
+            ? clients.map((item) => `<option value="${escHtml(item.id)}">${escHtml(item.id)} · ${escHtml(item.page || 'dashboard')}</option>`).join('')
+            : '<option value="">暂无在线客户端</option>';
+        if (clients.some((item) => String(item.id) === current)) client.value = current;
+    }
+    if (dimension) dimension.textContent = `${draft.grid.columns} × ${draft.grid.rows} 动态网格预览`;
+    if (summary) summary.textContent = `${calibration.width} × ${calibration.height} · Cell ${calibration.targetCellWidth} × ${calibration.targetCellHeight} · ${calibration.fit} · ${calibration.density}`;
+}
+
+function applyRecommendedGrid(draft, nextGrid, calibration) {
+    const oldGrid = normalizeGrid(draft.grid);
+    const result = reflow(
+        draft.widgets,
+        oldGrid,
+        nextGrid,
+        catalogConstraints(),
+    );
+    if (!result.ok) {
+        setMessage(result.errors?.join('；') || '目标网格无法容纳当前组件。', 'error');
+        return false;
+    }
+    draft.widgets = result.items.map((item) => ({...item, ...normalizeRect(item)}));
+    draft.grid = {...draft.grid, ...nextGrid, calibration};
+    return true;
+}
+
+function applyCalibrationSize(size, {recommend = true} = {}) {
+    const draft = workspaceState.draft;
+    if (!draft || !size) return false;
+    const calibration = normalizeCalibration(draft.grid.calibration);
+    calibration.width = Math.max(1, Math.round(Number(size.width) || calibration.width));
+    calibration.height = Math.max(1, Math.round(Number(size.height) || calibration.height));
+    if (recommend) {
+        const nextGrid = recommendGrid(calibration, calibration.density);
+        if (!applyRecommendedGrid(draft, nextGrid, calibration)) return false;
+    } else {
+        draft.grid.calibration = calibration;
+    }
+    markDirty(true);
+    renderEditor();
+    return true;
+}
+
+function handleCalibrationChange(event) {
+    const draft = workspaceState.draft;
+    if (!draft) return;
+    const id = event.target.id;
+    const calibration = normalizeCalibration(draft.grid.calibration);
+    let nextCalibration = {...calibration};
+    let shouldRecommend = false;
+    if (id === 'workspaceCalibrationTarget') {
+        const value = event.target.value;
+        let size = null;
+        if (value === 'settings') size = currentSettingsSize();
+        else if (value === 'client') size = onlineClientSize($('#workspaceCalibrationClient')?.value);
+        else if (/^\d+x\d+$/.test(value)) {
+            const [width, height] = value.split('x').map(Number);
+            size = {width, height};
+        }
+        if (!size) return;
+        nextCalibration = {...nextCalibration, ...size};
+        shouldRecommend = true;
+    } else if (id === 'workspaceCalibrationClient') {
+        if ($('#workspaceCalibrationTarget')?.value !== 'client') return;
+        nextCalibration = {...nextCalibration, ...onlineClientSize(event.target.value)};
+        shouldRecommend = true;
+    } else if (id === 'workspaceCalibrationWidth' || id === 'workspaceCalibrationHeight') {
+        nextCalibration = {
+            ...nextCalibration,
+            [id.endsWith('Width') ? 'width' : 'height']:
+                Math.max(1, Number(event.target.value) || 1),
+        };
+        const target = $('#workspaceCalibrationTarget');
+        if (target) target.value = 'manual';
+        shouldRecommend = true;
+    } else if (id === 'workspaceCalibrationCellWidth' || id === 'workspaceCalibrationCellHeight') {
+        nextCalibration = {
+            ...nextCalibration,
+            [id.endsWith('Width') ? 'targetCellWidth' : 'targetCellHeight']:
+                Math.max(1, Number(event.target.value) || 1),
+        };
+        shouldRecommend = true;
+    } else if (id === 'workspaceCalibrationDensity') {
+        nextCalibration.density = event.target.value;
+        shouldRecommend = true;
+    } else if (id === 'workspaceCalibrationFit') {
+        nextCalibration.fit = event.target.value;
+    }
+    if (workspaceState.interaction) workspaceState.interaction = null;
+    if (shouldRecommend) {
+        const nextGrid = recommendGrid(nextCalibration, nextCalibration.density);
+        if (!applyRecommendedGrid(draft, nextGrid, nextCalibration)) {
+            renderEditor();
+            return;
+        }
+    } else {
+        draft.grid = {...draft.grid, calibration: nextCalibration};
+    }
+    markDirty(true);
+    renderEditor();
+}
+
 function renderCatalog() {
     const container = $('#workspaceCatalog');
     if (!container) return;
@@ -246,6 +447,7 @@ function renderEditor() {
     }
     renderWorkspaceList();
     renderGrid();
+    renderCalibration();
     renderCatalog();
     updateControls();
 }
@@ -253,7 +455,7 @@ function renderEditor() {
 function collectionParts(payload) {
     return {
         workspaces: asArray(payload?.workspaces),
-        grid: normalizeGrid(payload?.grid),
+        grid: normalizeGrid(payload?.grid || payload?.grid_defaults),
         catalog: asArray(payload?.widget_catalog || payload?.widgets).map(normalizeCatalogItem).filter((item) => item.type),
     };
 }
@@ -393,7 +595,7 @@ function addWidget(type) {
     if (definition.singleInstance && draft.widgets.some((widget) => widget.type === type)) return;
     const rect = firstFit(draft.widgets, definition.defaultSize, draft.grid, definition.constraints);
     if (!rect) {
-        setMessage('当前 16 × 15 网格没有足够空间放置该组件。', 'error');
+        setMessage(`当前 ${draft.grid.columns} × ${draft.grid.rows} 网格没有足够空间放置该组件。`, 'error');
         return;
     }
     const defaults = clone(definition.default_widget || definition.defaultWidget || {});
@@ -575,6 +777,19 @@ function bindEvents() {
         workspaceState.draft.name = event.target.value;
         markDirty(true);
     });
+    ['workspaceCalibrationTarget', 'workspaceCalibrationClient', 'workspaceCalibrationWidth', 'workspaceCalibrationHeight', 'workspaceCalibrationCellWidth', 'workspaceCalibrationCellHeight', 'workspaceCalibrationDensity', 'workspaceCalibrationFit']
+        .forEach((id) => $(`#${id}`)?.addEventListener('change', handleCalibrationChange));
+    window.addEventListener('workspace-clients-updated', renderCalibration);
+    const calibrationPreview = $('#workspaceGridPreview');
+    if (typeof ResizeObserver === 'function' && calibrationPreview) {
+        const observer = new ResizeObserver(() => {
+            if (!workspaceState.interaction) return;
+            workspaceState.interaction.card?.classList.remove('is-interacting');
+            workspaceState.interaction = null;
+            renderGrid();
+        });
+        observer.observe(calibrationPreview);
+    }
     $('#workspaceList')?.addEventListener('click', (event) => {
         const button = event.target.closest?.('[data-workspace-id]');
         if (button) selectWorkspace(button.dataset.workspaceId);

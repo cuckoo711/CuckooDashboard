@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -159,15 +159,91 @@ class DataSourceDescriptor:
     to_dict = to_payload
 
 
+GRID_MIN = 4
+GRID_MAX = 48
+
+
 @dataclass(frozen=True)
 class WorkspaceGrid:
-    """Fixed dashboard grid dimensions used by Manifest v2."""
+    """Dynamic logical workspace grid dimensions for Manifest v3."""
 
     columns: int = 16
     rows: int = 15
+    calibration: WorkspaceGridCalibration = field(default_factory=lambda: STANDARD_WORKSPACE_CALIBRATION)
 
-    def to_payload(self) -> dict[str, int]:
-        return {"columns": self.columns, "rows": self.rows}
+    def __post_init__(self) -> None:
+        for field_name, value in (("columns", self.columns), ("rows", self.rows)):
+            if isinstance(value, bool) or not isinstance(value, int) or not GRID_MIN <= value <= GRID_MAX:
+                raise ValueError(f"grid {field_name} must be an integer between {GRID_MIN} and {GRID_MAX}")
+        if not isinstance(self.calibration, WorkspaceGridCalibration):
+            raise TypeError("grid calibration must be a WorkspaceGridCalibration")
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "columns": self.columns,
+            "rows": self.rows,
+            "calibration": self.calibration.to_payload(),
+        }
+
+
+@dataclass(frozen=True)
+class WorkspaceGridCalibration:
+    """Immutable physical sizing hints used to render a logical grid."""
+
+    reference_width: int = 1920
+    reference_height: int = 1080
+    target_cell_width: int = 120
+    target_cell_height: int = 72
+    fit_mode: str = "contain"
+    density: str = "normal"
+
+    def __post_init__(self) -> None:
+        for field, value in (
+            ("reference_width", self.reference_width),
+            ("reference_height", self.reference_height),
+            ("target_cell_width", self.target_cell_width),
+            ("target_cell_height", self.target_cell_height),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > 16384:
+                raise ValueError(f"calibration {field} must be an integer between 1 and 16384")
+        if self.target_cell_width > self.reference_width:
+            raise ValueError("calibration target_cell_width cannot exceed reference_width")
+        if self.target_cell_height > self.reference_height:
+            raise ValueError("calibration target_cell_height cannot exceed reference_height")
+        if not isinstance(self.fit_mode, str) or self.fit_mode not in {"fill", "contain"}:
+            raise ValueError("calibration fit_mode must be fill or contain")
+        if not isinstance(self.density, str) or self.density not in {"compact", "normal", "spacious"}:
+            raise ValueError("calibration density must be compact, normal or spacious")
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> "WorkspaceGridCalibration":
+        if not isinstance(payload, Mapping):
+            raise TypeError("calibration must be an object")
+        return cls(
+            reference_width=payload.get("reference_width"),
+            reference_height=payload.get("reference_height"),
+            target_cell_width=payload.get("target_cell_width"),
+            target_cell_height=payload.get("target_cell_height"),
+            fit_mode=payload.get("fit_mode", "contain"),
+            density=payload.get("density", "normal"),
+        )
+
+    parse = from_payload
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "reference_width": self.reference_width,
+            "reference_height": self.reference_height,
+            "target_cell_width": self.target_cell_width,
+            "target_cell_height": self.target_cell_height,
+            "fit_mode": self.fit_mode,
+            "density": self.density,
+        }
+
+    to_dict = to_payload
+
+
+STANDARD_WORKSPACE_CALIBRATION = WorkspaceGridCalibration()
 
 
 @dataclass(frozen=True)
@@ -194,8 +270,8 @@ class WidgetConstraints:
 
     min_width: int = 1
     min_height: int = 1
-    max_width: int = 16
-    max_height: int = 15
+    max_width: int = GRID_MAX
+    max_height: int = GRID_MAX
 
     def to_payload(self) -> dict[str, int]:
         return {
@@ -235,20 +311,20 @@ class WidgetInstance:
     constraints: WidgetConstraints | None = None
     owner: str | None = None
 
-    def to_payload(self, definition: WidgetDefinition, *, manifest_version: int = 1) -> dict[str, Any]:
-        payload: dict[str, Any] = {
+    def to_payload(self, definition: WidgetDefinition, *, manifest_version: int = 3) -> dict[str, Any]:
+        if manifest_version != 3:
+            raise ValueError("workspace widget payloads require Manifest v3")
+        return {
             "id": self.id,
             "type": self.type,
             "slot": self.slot,
             "sources": list(definition.sources),
             "channels": list(definition.channels),
+            "layout": (self.layout or WidgetLayout(0, 0, 1, 1)).to_payload(),
+            "constraints": (self.constraints or WidgetConstraints()).to_payload(),
+            "owner": self.owner,
+            "available": True,
         }
-        if manifest_version >= 2:
-            payload["layout"] = (self.layout or WidgetLayout(0, 0, 1, 1)).to_payload()
-            payload["constraints"] = (self.constraints or WidgetConstraints()).to_payload()
-            payload["owner"] = self.owner
-            payload["available"] = True
-        return payload
 
 
 @dataclass(frozen=True)
@@ -268,14 +344,17 @@ class WorkspaceDefinition:
     def __post_init__(self) -> None:
         object.__setattr__(self, "sources", tuple(self.sources))
         object.__setattr__(self, "widgets", tuple(self.widgets))
+        if self.version == 3 and self.grid is None:
+            object.__setattr__(self, "grid", WorkspaceGrid())
 
     @property
-    def is_manifest_v2(self) -> bool:
-        """Return whether this definition carries the v2 persistence metadata."""
+    def is_manifest_v3(self) -> bool:
+        """Return whether this definition carries complete Manifest v3 metadata."""
         return (
-            self.version >= 2
+            self.version == 3
             and self.revision is not None
             and self.name is not None
             and self.kind is not None
             and self.grid is not None
+            and isinstance(self.grid.calibration, WorkspaceGridCalibration)
         )

@@ -25,6 +25,7 @@ venv/
 
 # IDE
 .kiro/
+.idea/
 
 # Test artifacts
 dashboard_check.png

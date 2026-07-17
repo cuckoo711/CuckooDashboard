@@ -41,7 +41,7 @@ class RuntimeHealthExtension:
                     single_instance=True,
                     default_width=4,
                     default_height=3,
-                    constraints=WidgetConstraints(4, 3, 16, 15),
+                    constraints=WidgetConstraints(4, 3, 48, 48),
                 ),
             ),
         )

@@ -343,7 +343,58 @@
                     </div>
                     <div class="workspace-edit-columns">
                         <div class="workspace-preview-column">
-                            <div class="subsection-inline-head"><h3>16 × 15 布局预览</h3><span>拖动卡片；右下角缩放</span></div>
+                            <div class="subsection-inline-head"><h3><span id="workspaceGridDimension">动态网格预览</span></h3><span>拖动卡片；右下角缩放</span></div>
+                            <div class="workspace-calibration-panel" aria-label="视口标定">
+                                <div class="workspace-calibration-head"><strong>视口标定</strong><span id="workspaceCalibrationSummary">未选择工作区</span></div>
+                                <div class="field-grid compact-grid">
+                                    <div class="field">
+                                        <label for="workspaceCalibrationTarget">目标尺寸</label>
+                                        <select id="workspaceCalibrationTarget">
+                                            <option value="settings">当前 Settings 尺寸</option>
+                                            <option value="client">在线客户端尺寸</option>
+                                            <option value="1920x1080">1920 × 1080</option>
+                                            <option value="2560x1080">2560 × 1080</option>
+                                            <option value="3440x1440">3440 × 1440</option>
+                                            <option value="3840x1080">3840 × 1080</option>
+                                            <option value="1080x1920">1080 × 1920</option>
+                                            <option value="manual">手动输入</option>
+                                        </select>
+                                    </div>
+                                    <div class="field">
+                                        <label for="workspaceCalibrationClient">在线 client</label>
+                                        <select id="workspaceCalibrationClient"><option value="">暂无在线客户端</option></select>
+                                    </div>
+                                    <div class="field">
+                                        <label for="workspaceCalibrationWidth">宽度（px）</label>
+                                        <input id="workspaceCalibrationWidth" type="number" min="1" step="1">
+                                    </div>
+                                    <div class="field">
+                                        <label for="workspaceCalibrationHeight">高度（px）</label>
+                                        <input id="workspaceCalibrationHeight" type="number" min="1" step="1">
+                                    </div>
+                                    <div class="field">
+                                        <label for="workspaceCalibrationCellWidth">目标 Cell 宽（px）</label>
+                                        <input id="workspaceCalibrationCellWidth" type="number" min="1" step="1">
+                                    </div>
+                                    <div class="field">
+                                        <label for="workspaceCalibrationCellHeight">目标 Cell 高（px）</label>
+                                        <input id="workspaceCalibrationCellHeight" type="number" min="1" step="1">
+                                    </div>
+                                    <div class="field">
+                                        <label for="workspaceCalibrationDensity">Cell 密度</label>
+                                        <select id="workspaceCalibrationDensity">
+                                            <option value="spacious">舒适</option>
+                                            <option value="normal">标准</option>
+                                            <option value="compact">紧凑</option>
+                                        </select>
+                                    </div>
+                                    <div class="field">
+                                        <label for="workspaceCalibrationFit">适配方式</label>
+                                        <select id="workspaceCalibrationFit"><option value="contain">contain</option><option value="fill">fill</option></select>
+                                    </div>
+                                </div>
+                                <div class="field-help">标定只修改当前草稿；保存时随 grid.calibration 一并提交。</div>
+                            </div>
                             <div id="workspaceGridPreview" class="workspace-grid-preview" aria-label="工作区布局编辑器">
                                 <div class="workspace-grid-empty">选择工作区后编辑布局</div>
                             </div>

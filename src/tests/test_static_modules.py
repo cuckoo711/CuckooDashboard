@@ -136,9 +136,11 @@ def test_dashboard_optional_channels_follow_workspace_manifest():
 
     assert "types.has('builtin.dashboard.player')" in main_source
     assert "activeSubscriptionClient.sendReplace()" in ws_source
-    assert ws_source.index("activeSubscriptionClient.sendReplace()") < ws_source.index(
-        "type: 'report', page: 'dashboard', workspace_id: activeWorkspaceId"
+    state_start = ws_source.index("function sendWorkspaceState")
+    assert ws_source.index("activeSubscriptionClient.sendReplace()", state_start) < ws_source.index(
+        "sendWorkspaceViewport(socket)", state_start
     )
+    assert "viewport: getWorkspaceViewport()" in ws_source
     assert "message.type === 'data.snapshot'" in ws_source
     assert "subscriptions.routeSnapshot(message)" in ws_source
     assert "publishSource('media.lyric'" in ws_source
@@ -147,7 +149,7 @@ def test_dashboard_optional_channels_follow_workspace_manifest():
     assert music_ws.index("sources: ['media.playback']") < music_ws.index("type: 'init'")
 
 
-def test_dashboard_workspace_v2_layout_and_loading_contracts():
+def test_dashboard_workspace_v3_layout_and_loading_contracts():
     dashboard = STATIC / "modules" / "dashboard"
     workspace = dashboard / "workspace"
     css = (STATIC / "dashboard.css").read_text(encoding="utf-8")
@@ -160,8 +162,10 @@ def test_dashboard_workspace_v2_layout_and_loading_contracts():
 
     assert "grid-template-rows:44px minmax(0,1fr)" in css
     assert "#workspaceHost" in css
-    assert "grid-template-columns:repeat(16" in css
-    assert "grid-template-rows:repeat(15" in css
+    assert "--workspace-surface-width" in css
+    assert "--workspace-surface-height" in css
+    assert "grid-template-columns:repeat(16" not in css
+    assert "grid-template-rows:repeat(15" not in css
     for fixed_position in (
         ".sysCard { grid-row:", ".netCard { grid-row:", ".uptimeCard { grid-row:",
         ".diskCard { grid-row:", ".tokenCard { grid-row:", ".lyric-wrap { grid-row:",
@@ -169,9 +173,12 @@ def test_dashboard_workspace_v2_layout_and_loading_contracts():
     ):
         assert fixed_position not in css
 
-    assert "version: 2" in manifest
+    assert "version: 3" in manifest
     assert "revision: 1" in manifest
-    assert "grid: { columns: 16, rows: 15 }" in manifest
+    assert "columns: 16" in manifest
+    assert "rows: 15" in manifest
+    assert "calibration:" in manifest
+    assert "reference_width: 1920" in manifest
     for layout in (
         "{ x: 0, y: 0, width: 6, height: 5 }",
         "{ x: 6, y: 0, width: 2, height: 3 }",
@@ -183,8 +190,9 @@ def test_dashboard_workspace_v2_layout_and_loading_contracts():
     ):
         assert layout in manifest
     assert "revision: manifest.revision" in host
-    assert "manifest.grid must be 16x15" in host
+    assert "manifest.grid.calibration must be an object" in host
     assert "manifest.name must be a non-empty string" in host
+    assert "createViewportCalibration" in host
     assert "layout: widget.layout" in host
     assert "element.style.gridColumn" in host
     assert "element.style.gridRow" in host
@@ -453,8 +461,15 @@ global.document = fakeDocument;
     constraints: { min_width: 1, min_height: 1, max_width: 16, max_height: 15 },
   };
   const manifest = {
-    id: 'test', version: 2, revision: 1, name: 'Test', kind: 'custom', required: true,
-    grid: { columns: 16, rows: 15 },
+    id: 'test', version: 3, revision: 1, name: 'Test', kind: 'custom', required: true,
+    grid: {
+      columns: 16, rows: 15,
+      calibration: {
+        reference_width: 1920, reference_height: 1080,
+        target_cell_width: 120, target_cell_height: 72,
+        fit_mode: 'contain', density: 'normal',
+      },
+    },
     sources: [{ id: 'dashboard.aggregate' }],
     widgets: [baseWidget],
   };
@@ -462,8 +477,8 @@ global.document = fakeDocument;
   host.mount(JSON.parse(JSON.stringify(manifest)));
   if (mounts !== 1 || root.childNodes.length !== 1) throw new Error('idempotent mount');
   if (updates !== 2) throw new Error('initial replay');
-  if (root.childNodes[0].style.gridColumn !== '1 / span 2') throw new Error('grid column');
-  if (root.childNodes[0].style.gridRow !== '1 / span 2') throw new Error('grid row');
+  if (root.childNodes[0].childNodes[0].style.gridColumn !== '1 / span 2') throw new Error('grid column');
+  if (root.childNodes[0].childNodes[0].style.gridRow !== '1 / span 2') throw new Error('grid row');
   if (JSON.stringify(first.sources.sort()) !== JSON.stringify(['dashboard.aggregate', 'system.snapshot'])) throw new Error('sources');
   if (JSON.stringify(first.channels) !== JSON.stringify(['media.lyric'])) throw new Error('channels');
 
@@ -475,7 +490,7 @@ global.document = fakeDocument;
     widgets: [{ ...baseWidget, layout: { x: 2, y: 0, width: 2, height: 2 } }],
   });
   if (mounts !== 3 || destroys !== 2 || updates !== 6) throw new Error('layout did not remount with replay');
-  if (root.childNodes[0].style.gridColumn !== '3 / span 2') throw new Error('updated grid column');
+  if (root.childNodes[0].childNodes[0].style.gridColumn !== '3 / span 2') throw new Error('updated grid column');
   bus.publish('system.snapshot', { value: 3 });
   if (updates !== 9) throw new Error('active subscription');
 

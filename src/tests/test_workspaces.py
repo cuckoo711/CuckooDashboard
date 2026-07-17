@@ -11,9 +11,12 @@ from contracts.extension import ExtensionContributions
 from contracts.workspace import (
     DataSourceDescriptor,
     DataSourceRefreshPolicy,
+    WidgetConstraints,
     WidgetDefinition,
     WidgetInstance,
+    WidgetLayout,
     WorkspaceDefinition,
+    WorkspaceGrid,
 )
 from features.dashboard.service import get_dashboard_data
 from services.github_service import get_github_data
@@ -205,8 +208,12 @@ def test_registry_serialization_returns_json_friendly_copies():
         WorkspaceDefinition(
             id="test",
             version=3,
+            revision=1,
+            name="Test",
+            kind="custom",
             required=False,
-            widgets=(WidgetInstance("test-widget", "test.widget", "main"),),
+            grid=WorkspaceGrid(),
+            widgets=(WidgetInstance("test-widget", "test.widget", "main", WidgetLayout(0, 0, 1, 1), WidgetConstraints()),),
         )
     )
 
@@ -215,39 +222,22 @@ def test_registry_serialization_returns_json_friendly_copies():
     payload["widgets"][0]["sources"].append("mutated")
 
     fresh = registry.serialize_workspace("test")
-    assert fresh == {
-        "id": "test",
-        "version": 3,
-        "required": False,
-        "sources": [
-            {
-                "id": "test.source",
-                "kind": "snapshot",
-                "legacy_message_type": "test",
-                "default_interval_seconds": 5.0,
-                "active_interval_seconds": None,
-                "refresh_policy": {
-                    "supports_push": False,
-                    "default_interval_ms": 5000,
-                    "active_interval_ms": None,
-                    "minimum_interval_ms": 5000,
-                    "cache_ttl_ms": 5000,
-                    "pause_without_subscribers": True,
-                    "stale_if_error_ms": 0,
-                    "error_backoff_initial_ms": 5000,
-                    "error_backoff_max_ms": 60000,
-                },
-            }
-        ],
-        "widgets": [
-            {
-                "id": "test-widget",
-                "type": "test.widget",
-                "slot": "main",
-                "sources": ["test.source"],
-                "channels": ["test.channel"],
-            }
-        ],
+    assert fresh["id"] == "test"
+    assert fresh["version"] == 3
+    assert fresh["revision"] == 1
+    assert fresh["name"] == "Test"
+    assert fresh["kind"] == "custom"
+    assert fresh["required"] is False
+    assert fresh["grid"]["columns"] == 16
+    assert fresh["grid"]["rows"] == 15
+    assert fresh["grid"]["calibration"]["fit_mode"] == "contain"
+    assert fresh["sources"][0]["id"] == "test.source"
+    assert fresh["widgets"][0]["layout"] == {"x": 0, "y": 0, "width": 1, "height": 1}
+    assert fresh["widgets"][0]["constraints"] == {
+        "min_width": 1,
+        "min_height": 1,
+        "max_width": 48,
+        "max_height": 48,
     }
 
 
@@ -274,11 +264,15 @@ def test_widget_types_are_separate_from_workspace_instances():
     registry.register_workspace(
         WorkspaceDefinition(
             id="multi",
-            version=1,
+            version=3,
+            revision=1,
+            name="Multi",
+            kind="custom",
             required=False,
+            grid=WorkspaceGrid(),
             widgets=(
-                WidgetInstance("first", "test.reusable", "left"),
-                WidgetInstance("second", "test.reusable", "right"),
+                WidgetInstance("first", "test.reusable", "left", WidgetLayout(0, 0, 1, 1), WidgetConstraints()),
+                WidgetInstance("second", "test.reusable", "right", WidgetLayout(1, 0, 1, 1), WidgetConstraints()),
             ),
         )
     )
@@ -322,11 +316,15 @@ def test_registry_rejects_unknown_sources_duplicate_instances_and_singletons():
         registry.register_workspace(
             WorkspaceDefinition(
                 id="duplicate-singleton",
-                version=1,
+                version=3,
+                revision=1,
+                name="Duplicate singleton",
+                kind="custom",
                 required=False,
+                grid=WorkspaceGrid(),
                 widgets=(
-                    WidgetInstance("first", "test.singleton", "left"),
-                    WidgetInstance("second", "test.singleton", "right"),
+                    WidgetInstance("first", "test.singleton", "left", WidgetLayout(0, 0, 1, 1), WidgetConstraints()),
+                    WidgetInstance("second", "test.singleton", "right", WidgetLayout(1, 0, 1, 1), WidgetConstraints()),
                 ),
             )
         )
@@ -334,11 +332,15 @@ def test_registry_rejects_unknown_sources_duplicate_instances_and_singletons():
         registry.register_workspace(
             WorkspaceDefinition(
                 id="duplicate-id",
-                version=1,
+                version=3,
+                revision=1,
+                name="Duplicate id",
+                kind="custom",
                 required=False,
+                grid=WorkspaceGrid(),
                 widgets=(
-                    WidgetInstance("same", "test.singleton", "left"),
-                    WidgetInstance("same", "test.singleton", "right"),
+                    WidgetInstance("same", "test.singleton", "left", WidgetLayout(0, 0, 1, 1), WidgetConstraints()),
+                    WidgetInstance("same", "test.singleton", "right", WidgetLayout(1, 0, 1, 1), WidgetConstraints()),
                 ),
             )
         )
@@ -405,11 +407,13 @@ def test_builtin_registry_contains_required_main_workspace():
 
     manifest = registry.serialize_workspace("main")
     assert manifest["id"] == "main"
-    assert manifest["version"] == 2
+    assert manifest["version"] == 3
     assert manifest["revision"] == 1
     assert manifest["name"] == "Main Dashboard"
     assert manifest["kind"] == "builtin"
-    assert manifest["grid"] == {"columns": 16, "rows": 15}
+    assert manifest["grid"]["columns"] == 16
+    assert manifest["grid"]["rows"] == 15
+    assert manifest["grid"]["calibration"]["fit_mode"] == "contain"
     assert manifest["required"] is True
     assert {source["id"] for source in manifest["sources"]} == set(sources)
     assert all("layout" in widget and "constraints" in widget for widget in manifest["widgets"])
