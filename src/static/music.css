@@ -30,9 +30,9 @@ body {
     color: var(--ink);
     font-family: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
     background:
-        radial-gradient(1000px 640px at 50% 28%, rgba(var(--cover-rgb), 0.04), transparent 68%),
-        radial-gradient(880px 500px at 50% 110%, rgba(105, 124, 190, 0.03), transparent 72%),
-        linear-gradient(160deg, rgba(7, 9, 12, 0.14) 0%, rgba(5, 6, 7, 0.12) 48%, rgba(2, 3, 4, 0.16) 100%);
+        radial-gradient(1000px 640px at 50% 28%, rgba(var(--cover-rgb), 0.015), transparent 68%),
+        radial-gradient(880px 500px at 50% 110%, rgba(105, 124, 190, 0.01), transparent 72%),
+        linear-gradient(160deg, rgba(7, 9, 12, 0.06) 0%, rgba(5, 6, 7, 0.05) 48%, rgba(2, 3, 4, 0.07) 100%);
     -webkit-font-smoothing: antialiased;
     text-rendering: geometricPrecision;
 }
@@ -48,19 +48,22 @@ body {
 
 .cover-bg {
     position: fixed;
-    inset: -8%;
+    inset: -12%;
     z-index: 0;
     overflow: hidden;
     pointer-events: none;
     background-repeat: no-repeat;
     background-position: center;
     background-size: cover;
-    /* Ambient image is already lightly blurred by the backend. Avoid full-screen
-       CSS filter:blur which tanks H618 / Mali-G31. */
-    filter: none;
+    filter: brightness(0.3);
     opacity: 0;
-    transform: scale(1.04);
+    transform: scale(1.12);
     transition: opacity 0.6s ease;
+    animation: bg-rotate 90s linear infinite;
+}
+@keyframes bg-rotate {
+    from { transform: scale(1.12) rotate(0deg); }
+    to { transform: scale(1.12) rotate(360deg); }
 }
 .cover-bg::after {
     position: absolute;
@@ -68,10 +71,10 @@ body {
     content: "";
     /* Very light veil — keep the album color readable, not buried. */
     background:
-        linear-gradient(160deg, rgba(4, 7, 13, 0.08), rgba(6, 10, 16, 0.04) 46%, rgba(2, 4, 9, 0.1)),
-        radial-gradient(ellipse at 50% 42%, transparent 42%, rgba(0, 0, 0, 0.08) 100%);
+        linear-gradient(160deg, rgba(4, 7, 13, 0.18), rgba(6, 10, 16, 0.12) 46%, rgba(2, 4, 9, 0.22)),
+        radial-gradient(ellipse at 50% 42%, transparent 42%, rgba(0, 0, 0, 0.18) 100%);
 }
-.cover-bg.on { opacity: 0.92; }
+.cover-bg.on { opacity: 0.28; }
 
 .galaxy {
     position: fixed;
@@ -79,7 +82,7 @@ body {
     z-index: 0;
     overflow: hidden;
     pointer-events: none;
-    opacity: 0.31;
+    opacity: 0.06;
     background:
         radial-gradient(1px 1px at 11% 22%, rgba(232, 238, 255, 0.36), transparent 1.4px),
         radial-gradient(1px 1px at 24% 70%, rgba(214, 226, 255, 0.24), transparent 1.4px),
@@ -103,8 +106,8 @@ body {
 }
 body.has-cover {
     background:
-        radial-gradient(1000px 640px at 50% 28%, rgba(var(--cover-rgb), 0.08), transparent 68%),
-        linear-gradient(160deg, rgba(7, 9, 12, 0.04), rgba(5, 6, 7, 0.03) 48%, rgba(2, 3, 4, 0.06));
+        radial-gradient(1000px 640px at 50% 28%, rgba(var(--cover-rgb), 0.03), transparent 68%),
+        linear-gradient(160deg, rgba(7, 9, 12, 0.015), rgba(5, 6, 7, 0.01) 48%, rgba(2, 3, 4, 0.02));
 }
 
 .galaxy::after {
@@ -132,7 +135,7 @@ body.has-cover {
         radial-gradient(ellipse at 22% 76%, var(--cover-1), transparent 42%),
         radial-gradient(ellipse at 81% 35%, var(--cover-2), transparent 43%);
     filter: blur(20px);
-    opacity: 0.36;
+    opacity: 0.08;
     transition: opacity 0.3s ease, transform 0.2s ease;
 }
 
@@ -141,7 +144,7 @@ body.has-cover {
     inset: 0;
     z-index: 1;
     pointer-events: none;
-    opacity: 0.11;
+    opacity: 0.02;
     mix-blend-mode: screen;
     background:
         linear-gradient(90deg, transparent 0%, rgba(239, 244, 255, 0.015) 42%, rgba(239, 244, 255, 0.07) 50%, rgba(239, 244, 255, 0.015) 58%, transparent 100%),
@@ -155,8 +158,8 @@ body.has-cover {
     z-index: 3;
     pointer-events: none;
     background:
-        radial-gradient(ellipse at 50% 43%, transparent 28%, rgba(0, 0, 0, 0.05) 66%, rgba(0, 0, 0, 0.18) 125%),
-        linear-gradient(180deg, rgba(0, 0, 0, 0.1), transparent 19%, transparent 74%, rgba(0, 0, 0, 0.14));
+        radial-gradient(ellipse at 50% 43%, transparent 28%, rgba(0, 0, 0, 0.12) 66%, rgba(0, 0, 0, 0.32) 125%),
+        linear-gradient(180deg, rgba(0, 0, 0, 0.2), transparent 19%, transparent 74%, rgba(0, 0, 0, 0.24));
 }
 
 .film-grain {
@@ -543,7 +546,7 @@ body.cinema .layer-lyric {
 	letter-spacing: 0.016em;
 	opacity: 1;
 	filter: none;
-	background: linear-gradient(111deg, rgba(var(--spectrum-block-rgb), 0.95), rgb(var(--spectrum-block-rgb)) 47%, rgba(var(--spectrum-block-rgb), 0.88));
+	background: linear-gradient(111deg, rgba(var(--spectrum-lyric-rgb), 0.95), rgb(var(--spectrum-lyric-rgb)) 47%, rgba(var(--spectrum-lyric-rgb), 0.88));
 	-webkit-background-clip: text;
 	background-clip: text;
 	-webkit-text-fill-color: transparent;
@@ -554,7 +557,7 @@ body.cinema .layer-lyric {
 	font-size: clamp(32px, 3.75vw, 52px);
 	font-weight: 520;
 	letter-spacing: 0.055em;
-	color: rgba(var(--spectrum-block-rgb), 0.62);
+	color: rgba(var(--spectrum-lyric-rgb), 0.62);
 	opacity: 0.78;
 	text-shadow: 0 5px 22px rgba(var(--spectrum-rgb), 0.5);
 }
@@ -887,6 +890,7 @@ body.performance-lite .cover-bg {
     filter: none;
     opacity: 0.72;
     transform: none;
+    animation: none;
 }
 body.performance-lite .cover-bg::after {
     background: rgba(5, 8, 13, 0.12);
@@ -932,16 +936,16 @@ body.performance-lite #specCanvas {
 }
 /* Solid text avoids the low-contrast clipped gradient on a bright flat cover. */
 body.performance-lite .lyric-slot.is-active {
-    color: rgb(var(--spectrum-block-rgb));
+    color: rgb(var(--spectrum-lyric-rgb));
     background: none;
-    -webkit-text-fill-color: rgb(var(--spectrum-block-rgb));
+    -webkit-text-fill-color: rgb(var(--spectrum-lyric-rgb));
     text-shadow: 0 4px 16px rgba(var(--spectrum-rgb), 0.85);
 }
 body.performance-lite .lyric-slot.is-active .lyric-scroll-inner {
     filter: none;
 }
 body.performance-lite .lyric-slot.is-next {
-    color: rgba(var(--spectrum-block-rgb), 0.72);
+    color: rgba(var(--spectrum-lyric-rgb), 0.72);
     text-shadow: 0 3px 12px rgba(var(--spectrum-rgb), 0.75);
 }
 

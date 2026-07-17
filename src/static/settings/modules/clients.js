@@ -133,6 +133,14 @@ export function connectSettingsWebSocket() {
                 page: 'settings',
                 device_id: getDeviceId(),
                 display_name: navigator.userAgent?.slice(0, 80) || '',
+                viewport: {
+                    width: Math.max(1, Math.round(window.innerWidth || document.documentElement.clientWidth || 1)),
+                    height: Math.max(1, Math.round(window.innerHeight || document.documentElement.clientHeight || 1)),
+                    workspace_width: Math.max(1, Math.round(window.innerWidth || document.documentElement.clientWidth || 1)),
+                    workspace_height: Math.max(1, Math.round(window.innerHeight || document.documentElement.clientHeight || 1)),
+                    device_pixel_ratio: Number(window.devicePixelRatio || 1) || 1,
+                    visual_viewport_scale: Number(window.visualViewport?.scale || 1) || 1,
+                },
             }));
         } catch (_error) {
             // The close handler will reconnect if the socket disappeared.

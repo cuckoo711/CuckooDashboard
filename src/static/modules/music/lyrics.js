@@ -166,7 +166,7 @@ function setLyricSlot(slotIndex, lyricIndex, role, force, options = {}) {
     const changed = force || slotState.idx !== lyricIndex || slotState.raw !== rawText || slotState.role !== role || slot.dataset.rawLyric !== rawText;
     const isActive = role === 'active';
     const longLine = isActive && rawText && countEffectiveChars(rawText) > 10;
-    const displayText = longLine ? '   ' + rawText + '   ' : rawText;
+    const displayText = longLine ? ' ' + rawText + '   ' : rawText;
     slot.classList.toggle('is-active', isActive);
     slot.classList.toggle('is-next', !isActive);
     slot.classList.toggle('marquee', Boolean(longLine));

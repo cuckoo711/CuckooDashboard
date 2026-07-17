@@ -69,12 +69,21 @@ function deriveSpectrum(theme) {
     );
 }
 
+function deriveSpectrumLyric(spectrum) {
+    const hsl = rgbToHsl(spectrum);
+    return hslToRgb(
+        hsl.h,
+        Math.max(0.5, Math.min(0.85, hsl.s * 1.2 + 0.12)),
+        0.82,
+    );
+}
+
 function deriveContrast(spectrum) {
     const hsl = rgbToHsl(spectrum);
     return hslToRgb(
         hsl.h + 1 / 12,
-        Math.max(0.34, Math.min(0.68, hsl.s * 1.18 + 0.08)),
-        hsl.l < 0.48 ? 0.72 : 0.30,
+        Math.max(0.45, Math.min(0.72, hsl.s * 0.8 + 0.2)),
+        0.88,
     );
 }
 
@@ -82,8 +91,9 @@ export function applyCoverPaletteFromData(data, token) {
     if (!data) return;
     const themeRgb = rgbArray(data.cover_theme_rgb || data.cover_palette_rgb);
     const spectrumRgb = rgbArray(data.spectrum_rgb, deriveSpectrum(themeRgb));
+    const spectrumLyricRgb = deriveSpectrumLyric(spectrumRgb);
     const blockRgb = rgbArray(data.spectrum_block_rgb || data.cover_inverse_rgb, deriveContrast(spectrumRgb));
-    const paintToken = (token || '') + '|theme=' + themeRgb.join(',') + '|spectrum=' + spectrumRgb.join(',') + '|block=' + blockRgb.join(',');
+    const paintToken = (token || '') + '|theme=' + themeRgb.join(',') + '|spectrum=' + spectrumRgb.join(',') + '|block=' + blockRgb.join(',') + '|lyric=' + spectrumLyricRgb.join(',');
     if (paintToken === state.lastPaletteToken) return;
     const toRgba = (source, alpha) => {
         const color = rgbArray(source, themeRgb);
@@ -95,6 +105,7 @@ export function applyCoverPaletteFromData(data, token) {
     state.blockTone = { r: blockRgb[0], g: blockRgb[1], b: blockRgb[2] };
     document.documentElement.style.setProperty('--cover-rgb', themeRgb.join(', '));
     document.documentElement.style.setProperty('--spectrum-rgb', spectrumRgb.join(', '));
+    document.documentElement.style.setProperty('--spectrum-lyric-rgb', spectrumLyricRgb.join(', '));
     document.documentElement.style.setProperty('--spectrum-block-rgb', blockRgb.join(', '));
     document.documentElement.style.setProperty('--cover-1', toRgba(data.cover_palette_1 || themeRgb, 0.13));
     document.documentElement.style.setProperty('--cover-2', toRgba(data.cover_palette_2 || themeRgb, 0.09));

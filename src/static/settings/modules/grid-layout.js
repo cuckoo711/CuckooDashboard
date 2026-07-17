@@ -126,13 +126,30 @@ function itemConstraints(item, constraintsByType = {}) {
     return {...(item?.constraints || {}), ...(constraintsByType[item?.type] || {})};
 }
 
+function constraintPair(constraints = {}) {
+    const minW = Math.max(1, constraintValue(constraints, ['minW', 'min_w', 'minWidth', 'min_width'], 1));
+    const minH = Math.max(1, constraintValue(constraints, ['minH', 'min_h', 'minHeight', 'min_height'], 1));
+    return {minW, minH};
+}
+
 function stableItems(items = []) {
+    // Largest-first packing significantly improves success on small grids.
     return items.map((item, index) => ({item, index})).sort((a, b) => {
+        const ac = itemConstraints(a.item);
+        const bc = itemConstraints(b.item);
+        const aMin = constraintPair(ac);
+        const bMin = constraintPair(bc);
+        const aArea = Math.max(normalizeRect(a.item).w * normalizeRect(a.item).h, aMin.minW * aMin.minH);
+        const bArea = Math.max(normalizeRect(b.item).w * normalizeRect(b.item).h, bMin.minW * bMin.minH);
+        if (bArea !== aArea) return bArea - aArea;
+        if (bMin.minH !== aMin.minH) return bMin.minH - aMin.minH;
+        if (bMin.minW !== aMin.minW) return bMin.minW - aMin.minW;
         const ar = normalizeRect(a.item);
         const br = normalizeRect(b.item);
         return ar.y - br.y || ar.x - br.x || String(a.item?.id ?? '').localeCompare(String(b.item?.id ?? '')) || a.index - b.index;
     });
 }
+
 
 function attachReflowMeta(items, ok, grid, errors = []) {
     Object.defineProperties(items, {
@@ -152,21 +169,45 @@ export function reflow(items = [], oldGrid = DEFAULT_GRID, newGrid = DEFAULT_GRI
         const item = entry.item;
         const rect = normalizeRect(item);
         const constraints = itemConstraints(item, constraintsByType);
-        const minWidth = constraintValue(constraints, ['minW', 'min_w', 'minWidth', 'min_width'], 1);
-        const minHeight = constraintValue(constraints, ['minH', 'min_h', 'minHeight', 'min_height'], 1);
+        const {minW: minWidth, minH: minHeight} = constraintPair(constraints);
         if (minWidth > target.columns || minHeight > target.rows) {
-            return {ok: false, items: attachReflowMeta(source, false, target, [`${item.id || '组件'} 的最小尺寸超出目标网格`]), grid: target};
+            return {
+                ok: false,
+                items: attachReflowMeta(
+                    source,
+                    false,
+                    target,
+                    [`${item.id || '组件'} 的最小尺寸 ${minWidth}×${minHeight} 超出目标网格 ${target.columns}×${target.rows}`],
+                ),
+                grid: target,
+            };
         }
-        const legal = isPlacementValid(rect, placed, target, {constraints});
-        if (legal) {
-            const next = {...item, x: rect.x, y: rect.y, w: rect.w, h: rect.h};
+        const desired = constrain(rect, target, constraints);
+        if (isPlacementValid(desired, placed, target, {constraints, ignoreId: item.id})) {
+            const next = {...item, x: desired.x, y: desired.y, w: desired.w, h: desired.h};
             result.push(next);
             placed.push(next);
             continue;
         }
-        const fit = firstFit(placed, rect, target, constraints);
+        // Progressive shrink so denser small screens can still host the layout.
+        let fit = null;
+        for (let h = desired.h; h >= minHeight && !fit; h -= 1) {
+            for (let w = desired.w; w >= minWidth; w -= 1) {
+                fit = firstFit(placed, {w, h}, target, constraints);
+                if (fit) break;
+            }
+        }
         if (!fit) {
-            return {ok: false, items: attachReflowMeta(source, false, target, [`无法在 ${target.columns} × ${target.rows} 网格中放置 ${item.id || '组件'}`]), grid: target};
+            return {
+                ok: false,
+                items: attachReflowMeta(
+                    source,
+                    false,
+                    target,
+                    [`无法在 ${target.columns} × ${target.rows} 网格中放置 ${item.id || '组件'}`],
+                ),
+                grid: target,
+            };
         }
         const next = {...item, x: fit.x, y: fit.y, w: fit.w, h: fit.h};
         result.push(next);
@@ -186,3 +227,51 @@ export function firstFit(items = [], size = {}, grid = DEFAULT_GRID, constraints
     }
     return null;
 }
+
+export function fitGridForItems(baseGrid = DEFAULT_GRID, items = [], constraintsByType = {}, {
+    minColumns = MIN_GRID,
+    minRows = MIN_GRID,
+    maxColumns = MAX_GRID,
+    maxRows = MAX_GRID,
+} = {}) {
+    // Estimate a lower bound from min footprints, then grow until pack succeeds.
+    let minArea = 0;
+    let minW = minColumns;
+    let minH = minRows;
+    for (const item of items) {
+        const constraints = itemConstraints(item, constraintsByType);
+        const pair = constraintPair(constraints);
+        minArea += pair.minW * pair.minH;
+        minW = Math.max(minW, pair.minW);
+        minH = Math.max(minH, pair.minH);
+    }
+    let columns = clamp(Math.max(integer(baseGrid.columns, DEFAULT_GRID.columns), minW, Math.ceil(Math.sqrt(minArea * 1.4))), minColumns, maxColumns);
+    let rows = clamp(Math.max(integer(baseGrid.rows, DEFAULT_GRID.rows), minH, Math.ceil(minArea / Math.max(1, columns))), minRows, maxRows);
+
+    let best = null;
+    for (let attempt = 0; attempt < 120; attempt += 1) {
+        const candidate = {columns, rows};
+        const packed = reflow(items, baseGrid, candidate, constraintsByType);
+        if (packed.ok) {
+            const score = columns * rows;
+            if (!best || score < best.score) {
+                best = {ok: true, grid: candidate, items: packed.items, errors: [], score};
+            }
+            // Try denser by shrinking the longer axis first.
+            if (columns >= rows && columns > minW) columns -= 1;
+            else if (rows > minH) rows -= 1;
+            else if (columns > minW) columns -= 1;
+            else break;
+            continue;
+        }
+        if (columns >= maxColumns && rows >= maxRows) {
+            return best || {ok: false, grid: candidate, items: packed.items, errors: packed.errors || []};
+        }
+        if (columns <= rows && columns < maxColumns) columns += 1;
+        else if (rows < maxRows) rows += 1;
+        else if (columns < maxColumns) columns += 1;
+        else rows = Math.min(maxRows, rows + 1);
+    }
+    return best || {ok: false, grid: {columns, rows}, items, errors: ['无法为组件推算可容纳网格']};
+}
+

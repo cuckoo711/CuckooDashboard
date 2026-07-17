@@ -1,7 +1,8 @@
 import {requestJson} from './api.js';
 import {$, escHtml} from './dom.js';
 import {getLatestClients} from './clients.js';
-import {constrain, firstFit, isPlacementValid, normalizeGrid, normalizeRect, recommendGrid, reflow, validate} from './grid-layout.js';
+import {constrain, firstFit, fitGridForItems, isPlacementValid, normalizeGrid, normalizeRect, recommendGrid, reflow, validate} from './grid-layout.js';
+
 import {setWorkspaceDirty, state} from './state.js';
 
 const GRID_MAX = 48;
@@ -105,28 +106,34 @@ function findOnlineClient(id) {
     return getLatestClients().find((client) => clientLookupKeys(client).includes(needle)) || null;
 }
 
+function pickPositive(...values) {
+    for (const value of values) {
+        const number = Number(value);
+        if (Number.isFinite(number) && number > 0) return number;
+    }
+    return 0;
+}
+
 function onlineClientSize(id) {
     const client = findOnlineClient(id);
     if (!client) {
         return null;
     }
     const viewport = client.viewport || client.screen || client.display || {};
-    // Prefer full browser viewport; workspace_* is content box only.
-    const width = Number(
-        client.viewport_width
-        ?? viewport.width
-        ?? client.width
-        ?? client.workspace_width
-        ?? viewport.workspace_width
-        ?? 0,
+    // Prefer full browser viewport; fall back to workspace content box if needed.
+    const width = pickPositive(
+        client.viewport_width,
+        viewport.width,
+        client.width,
+        client.workspace_width,
+        viewport.workspace_width,
     );
-    const height = Number(
-        client.viewport_height
-        ?? viewport.height
-        ?? client.height
-        ?? client.workspace_height
-        ?? viewport.workspace_height
-        ?? 0,
+    const height = pickPositive(
+        client.viewport_height,
+        viewport.height,
+        client.height,
+        client.workspace_height,
+        viewport.workspace_height,
     );
     if (!(width > 0) || !(height > 0)) {
         return null;
@@ -137,6 +144,7 @@ function onlineClientSize(id) {
         device_pixel_ratio: Number(client.device_pixel_ratio || viewport.device_pixel_ratio || 1) || 1,
     };
 }
+
 
 function clientOptionValue(client = {}) {
     return String(client.device_id || client.session_id || client.id || '');
@@ -309,35 +317,53 @@ function placeCard(card, rect, grid) {
     card.style.height = `calc(${rect.h / grid.rows * 100}% - 6px)`;
 }
 
+function previewAspectRatio(grid, calibration = {}) {
+    const width = Math.max(1, Number(calibration.width || calibration.reference_width || 16));
+    const height = Math.max(1, Number(calibration.height || calibration.reference_height || 9));
+    // Prefer physical target aspect. Fall back to logical grid only if missing.
+    if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+        return `${Math.round(width)} / ${Math.round(height)}`;
+    }
+    return `${Math.max(1, grid.columns)} / ${Math.max(1, grid.rows)}`;
+}
+
 function renderGrid() {
     const preview = $('#workspaceGridPreview');
     if (!preview) return;
     preview.replaceChildren();
     if (!workspaceState.draft) {
         preview.innerHTML = '<div class="workspace-grid-empty">选择工作区后编辑布局</div>';
+        preview.style.removeProperty('--workspace-columns');
+        preview.style.removeProperty('--workspace-rows');
+        preview.style.removeProperty('--workspace-aspect');
         return;
     }
     const grid = normalizeGrid(workspaceState.draft.grid);
+    const calibration = normalizeCalibration(workspaceState.draft.grid.calibration);
     preview.style.setProperty('--workspace-columns', grid.columns);
     preview.style.setProperty('--workspace-rows', grid.rows);
+    preview.style.setProperty('--workspace-aspect', previewAspectRatio(grid, calibration));
+    preview.title = `目标 ${Math.round(calibration.width)}×${Math.round(calibration.height)} · 网格 ${grid.columns}×${grid.rows}`;
     workspaceState.draft.widgets.forEach((widget) => {
         const card = document.createElement('article');
         const unavailable = widget.available === false || !workspaceState.catalog.some((item) => item.type === widget.type);
         card.className = `workspace-widget-card${unavailable ? ' is-unavailable' : ''}`;
         card.dataset.widgetId = widget.id;
         card.tabIndex = 0;
+        const rect = normalizeRect(widget);
         card.innerHTML = `<div class="workspace-widget-head"><strong>${escHtml(widgetTitle(widget))}</strong>`
             + `<button type="button" class="workspace-widget-remove" data-remove-widget="${escHtml(widget.id)}" title="移除组件" ${state.workspaceSaving ? 'disabled' : ''}>×</button></div>`
-            + `<span class="workspace-widget-type">${escHtml(widget.type)}</span>`
+            + `<span class="workspace-widget-type">${escHtml(widget.type)} · ${rect.w}×${rect.h}</span>`
             + (unavailable ? `<span class="workspace-widget-unavailable">不可用 · ${escHtml(widget.unavailable_reason || '扩展缺失')}</span>` : '')
             + '<span class="workspace-resize-handle" title="拖动缩放"></span>';
-        placeCard(card, normalizeRect(widget), grid);
+        placeCard(card, rect, grid);
         preview.appendChild(card);
     });
     if (!workspaceState.draft.widgets.length) {
         preview.innerHTML = '<div class="workspace-grid-empty">从右侧组件目录添加组件</div>';
     }
 }
+
 
 function renderCalibration() {
     const draft = workspaceState.draft;
@@ -427,20 +453,42 @@ function renderCalibration() {
 
 function applyRecommendedGrid(draft, nextGrid, calibration) {
     const oldGrid = normalizeGrid(draft.grid);
-    const result = reflow(
+    const baseGrid = normalizeGrid(nextGrid);
+    let result = reflow(
         draft.widgets,
         oldGrid,
-        nextGrid,
+        baseGrid,
         catalogConstraints(),
     );
+    let usedGrid = baseGrid;
     if (!result.ok) {
-        setMessage(result.errors?.join('；') || '目标网格无法容纳当前组件。', 'error');
-        return false;
+        // For small physical screens, grow the logical grid until components fit.
+        const fitted = fitGridForItems(baseGrid, draft.widgets, catalogConstraints());
+        if (!fitted.ok) {
+            setMessage(fitted.errors?.join('；') || result.errors?.join('；') || '目标网格无法容纳当前组件。', 'error');
+            return false;
+        }
+        result = {ok: true, items: fitted.items};
+        usedGrid = normalizeGrid(fitted.grid);
+        // Keep physical target size; only change logical cell count.
+        const cellW = Math.max(24, Math.round(Number(calibration.width || 1) / usedGrid.columns));
+        const cellH = Math.max(24, Math.round(Number(calibration.height || 1) / usedGrid.rows));
+        calibration = {
+            ...calibration,
+            targetCellWidth: cellW,
+            targetCellHeight: cellH,
+            density: 'compact',
+        };
+        setMessage(
+            `小屏已自动提高到 ${usedGrid.columns}×${usedGrid.rows} 网格（Cell ${cellW}×${cellH}）以容纳全部组件。`,
+            'success',
+        );
     }
     draft.widgets = result.items.map((item) => ({...item, ...normalizeRect(item)}));
-    draft.grid = {...draft.grid, ...nextGrid, calibration};
+    draft.grid = {...draft.grid, ...usedGrid, calibration};
     return true;
 }
+
 
 function applyCalibrationSize(size, {recommend = true} = {}) {
     const draft = workspaceState.draft;

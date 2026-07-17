@@ -19,6 +19,28 @@ function sendJson(socket, payload) {
     socket.send(JSON.stringify(withDeviceId(payload)));
 }
 
+function pageViewport() {
+    const width = Math.max(1, Math.round(Number(window.innerWidth || document.documentElement?.clientWidth || 1) || 1));
+    const height = Math.max(1, Math.round(Number(window.innerHeight || document.documentElement?.clientHeight || 1) || 1));
+    return {
+        width,
+        height,
+        workspace_width: width,
+        workspace_height: height,
+        device_pixel_ratio: Number(window.devicePixelRatio || 1) || 1,
+        visual_viewport_scale: Number(window.visualViewport?.scale || 1) || 1,
+    };
+}
+
+function sendPageReport(socket) {
+    sendJson(socket, {
+        type: 'report',
+        page: 'music',
+        display_name: navigator.userAgent?.slice(0, 80) || '',
+        viewport: pageViewport(),
+    });
+}
+
 export function updateSpectrumSubscription(force = false) {
     const socket = state.ws;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
@@ -65,11 +87,7 @@ export function connectWs() {
         state.wsReconnectTimer = 0;
         setConnBadge('已连接');
         // Keep the persistent browser terminal online even on the music stage.
-        sendJson(socket, {
-            type: 'report',
-            page: 'music',
-            display_name: navigator.userAgent?.slice(0, 80) || '',
-        });
+        sendPageReport(socket);
         try {
             sendJson(socket, {
                 type: 'subscribe',
@@ -81,6 +99,15 @@ export function connectWs() {
         try { sendJson(socket, { type: 'subscribe', channel: 'lyric', active: true, page: 'music' }); } catch (_error) {}
         updateSpectrumSubscription(true);
         sendJson(socket, { type: 'init', page: 'music' });
+        // Re-report on resize so Settings can calibrate against live geometry.
+        if (!state._viewportReportBound) {
+            state._viewportReportBound = true;
+            const report = () => {
+                if (state.ws?.readyState === WebSocket.OPEN) sendPageReport(state.ws);
+            };
+            window.addEventListener('resize', report, {passive: true});
+            window.visualViewport?.addEventListener?.('resize', report, {passive: true});
+        }
         console.log('[music-ws] connected as device', getDeviceId());
     };
     socket.onclose = () => {

@@ -410,7 +410,11 @@ class WebSocketHub:
                 session.workspace_id = workspace_id if page == "dashboard" else None
                 if viewport is not None:
                     session.set_viewport(viewport)
-                else:
+                # Keep the last known viewport for music/settings pages so
+                # Settings calibration can still use the display size.
+                # Only clear when the client explicitly reports an invalid/empty
+                # geometry object is not present *and* never reported before.
+                elif page == "dashboard":
                     session.clear_viewport()
                 # Presence should still work for music/settings even before/without
                 # dashboard subscription approval gating; only data/subscribe needs approval.

@@ -99,17 +99,21 @@ def test_client_navigation_supports_workspaces_and_legacy_music_page():
 
 def test_calibration_prefers_viewport_and_applies_on_target_change():
     source = (SETTINGS_MODULES / "workspaces.js").read_text(encoding="utf-8")
+    css = (STATIC / "settings.css").read_text(encoding="utf-8")
     for marker in (
         "function onlineClientSize(",
         "function recommendedGridForCalibration(",
+        "function previewAspectRatio(",
         "client.viewport_width",
         "client.viewport_height",
         "never reflow during render",
         "已按 ${nextCalibration.width}×${nextCalibration.height} 自动调整为",
         "recommendGrid({",
         "targetCellWidth: nextCalibration.targetCellWidth",
+        "--workspace-aspect",
     ):
         assert marker in source
+    assert "var(--workspace-aspect" in css
     paint = source.split("function renderCalibration")[1].split("function applyRecommendedGrid")[0]
     assert "renderEditor()" not in paint
     assert "applyRecommendedGrid(" not in paint

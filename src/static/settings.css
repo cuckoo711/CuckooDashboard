@@ -324,7 +324,26 @@ select option { color: #181326; background: #f5f1ff; }
 .workspace-revision { flex: 0 0 auto; min-height: 34px; padding-top: 9px; color: var(--muted-2); font-family: monospace; font-size: 10px; }
 .workspace-edit-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, .32fr); gap: 13px; }
 .workspace-preview-column, .workspace-catalog-column { min-width: 0; }
-.workspace-grid-preview { position: relative; overflow: hidden; width: 100%; aspect-ratio: calc(var(--workspace-columns, 16) / var(--workspace-rows, 15)); min-height: 360px; border: 1px solid var(--border-strong); border-radius: 10px; background-color: rgba(7, 5, 14, .68); background-image: linear-gradient(to right, rgba(193,168,224,.09) 1px, transparent 1px), linear-gradient(to bottom, rgba(193,168,224,.09) 1px, transparent 1px); background-size: calc(100% / var(--workspace-columns, 16)) calc(100% / var(--workspace-rows, 15)); touch-action: none; user-select: none; }
+.workspace-grid-preview {
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    /* Physical target aspect (e.g. 1024/600). Logical columns/rows only control grid cells. */
+    aspect-ratio: var(--workspace-aspect, 16 / 9);
+    min-height: 280px;
+    max-height: min(68vh, 720px);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    background-color: rgba(7, 5, 14, .68);
+    background-image:
+        linear-gradient(to right, rgba(193,168,224,.09) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(193,168,224,.09) 1px, transparent 1px);
+    background-size:
+        calc(100% / var(--workspace-columns, 16))
+        calc(100% / var(--workspace-rows, 15));
+    touch-action: none;
+    user-select: none;
+}
 .workspace-calibration-panel { margin: 12px 0 10px; padding: 11px; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; background: rgba(255,255,255,.025); }
 .workspace-calibration-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; font-size:12px; }
 .workspace-calibration-head span { color:var(--muted-2); font-family:monospace; font-size:10px; }

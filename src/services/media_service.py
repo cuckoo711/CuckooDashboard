@@ -451,12 +451,12 @@ def _build_ambient_cover(data: bytes, mime: str) -> tuple[bytes, str, dict]:
             img = ImageOps.exif_transpose(src)
             palette = _extract_palette_from_image(img)
             ambient = img.convert("RGB")
-        ambient.thumbnail((480, 480), resample)
-        # Mild blur only — enough to soften album edges without washing out the art.
-        ambient = ambient.filter(ImageFilter.GaussianBlur(radius=3))
-        ambient = ImageEnhance.Color(ambient).enhance(1.15)
-        ambient = ImageEnhance.Contrast(ambient).enhance(1.05)
-        ambient = ImageEnhance.Brightness(ambient).enhance(1.05)
+        ambient.thumbnail((240, 240), resample)
+        # Heavy blur — generalized ambient wash, no recognizable edges.
+        ambient = ambient.filter(ImageFilter.GaussianBlur(radius=18))
+        ambient = ImageEnhance.Color(ambient).enhance(1.2)
+        ambient = ImageEnhance.Contrast(ambient).enhance(1.1)
+        ambient = ImageEnhance.Brightness(ambient).enhance(1.1)
         out = io.BytesIO()
         ambient.save(out, format="JPEG", quality=82, progressive=False)
         return out.getvalue(), "image/jpeg", palette
