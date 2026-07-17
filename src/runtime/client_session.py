@@ -87,6 +87,8 @@ class ClientSession:
 
     socket: Any
     client_id: str
+    device_id: str | None = None
+    device_status: str | None = None
     page: str = "unknown"
     workspace_id: str | None = None
     viewport_width: float | None = None
@@ -226,8 +228,14 @@ class ClientSession:
             workspace_id = self.workspace_id
             if workspace_id is None and self.page == "dashboard":
                 workspace_id = "main"
+            stable_id = self.device_id or self.client_id
             return {
-                "id": self.client_id,
+                # Prefer the persistent browser device id as the fixed identity.
+                # Keep session_id for navigation/screenshot targeting of this socket.
+                "id": stable_id,
+                "session_id": self.client_id,
+                "device_id": self.device_id,
+                "device_status": self.device_status,
                 "page": self.page,
                 "workspace_id": workspace_id,
                 **self.viewport_payload(),

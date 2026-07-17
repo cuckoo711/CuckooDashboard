@@ -6,9 +6,14 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 
+import warnings
+
 import requests
+from urllib3.exceptions import InsecureRequestWarning
 
 from providers.local_platform.token_cache import load_cached_token, save_cached_token
+
+warnings.filterwarnings("ignore", category=InsecureRequestWarning)
 
 logger = logging.getLogger("cuckoo.providers.local_platform")
 

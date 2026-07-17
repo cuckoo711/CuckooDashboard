@@ -423,16 +423,27 @@ def test_workspace_manifest_route_uses_runtime_registry_and_returns_json_404():
     app = create_app({"TESTING": True})
     registry = app.extensions["workspace_registry"]
     client = app.test_client()
+    device_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    client.post(
+        "/api/device/session",
+        json={"device_id": device_id, "page": "dashboard"},
+        headers={"Origin": "http://localhost"},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    client.patch(
+        f"/api/settings/devices/{device_id}",
+        json={"status": "approved", "workspace_id": "main"},
+        headers={"Origin": "http://localhost"},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    headers = {"X-Dashboard-Device": device_id}
 
-    response = client.get("/api/workspaces/main")
+    response = client.get("/api/workspaces/main", headers=headers)
     assert response.status_code == 200
     assert response.get_json() == registry.serialize_workspace("main")
     assert response.headers["Cache-Control"] == "no-store"
 
-    missing = client.get("/api/workspaces/unknown")
-    assert missing.status_code == 404
+    missing = client.get("/api/workspaces/unknown", headers=headers)
+    assert missing.status_code == 403
     assert missing.headers["Cache-Control"] == "no-store"
-    assert missing.get_json() == {
-        "error": "workspace_not_found",
-        "workspace_id": "unknown",
-    }
+    assert missing.get_json()["error"]["code"] == "workspace_not_assigned"

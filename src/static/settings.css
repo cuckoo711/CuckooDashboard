@@ -407,3 +407,23 @@ select option { color: #181326; background: #f5f1ff; }
     .settings-footer { align-items: stretch; flex-direction: column; gap: 8px; }
     .footer-actions { display: grid; grid-template-columns: 1fr 1fr; }
 }
+
+
+/* Display terminals */
+.devices-panel { margin-top: 16px; }
+.devices-list { display: flex; flex-direction: column; gap: 10px; }
+.device-row { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; background: rgba(255,255,255,.03); }
+.device-main { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.device-id { font-family: monospace; color: var(--accent-strong); font-size: 12px; min-width: 110px; }
+.device-status, .device-online { padding: 2px 7px; border-radius: 999px; border: 1px solid var(--border); font-size: 11px; color: var(--muted); }
+.device-status.status-pending { color: #e6c78f; border-color: rgba(240,201,142,.35); background: rgba(240,201,142,.08); }
+.device-status.status-approved { color: var(--green); border-color: rgba(112,196,173,.35); background: rgba(112,196,173,.1); }
+.device-status.status-disabled { color: var(--red); border-color: rgba(224,128,140,.35); background: rgba(224,128,140,.08); }
+.device-online.is-online { color: var(--green); border-color: rgba(112,196,173,.35); }
+.device-controls { display: grid; grid-template-columns: minmax(120px,1.2fr) minmax(90px,.7fr) minmax(80px,.6fr) minmax(140px,1.4fr) auto; gap: 8px; align-items: end; }
+.device-controls label { display: flex; flex-direction: column; gap: 4px; color: var(--muted-2); font-size: 11px; min-width: 0; }
+.device-actions { display: flex; gap: 6px; align-items: center; }
+@media (max-width: 820px) {
+  .device-controls { grid-template-columns: 1fr 1fr; }
+  .device-actions { grid-column: 1 / -1; }
+}

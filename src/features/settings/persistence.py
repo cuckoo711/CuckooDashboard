@@ -44,6 +44,48 @@ def secret_action(value: Any, field: str) -> tuple[str, str | None]:
     return action, None
 
 
+def secret_changed(update: Any, field: str) -> bool:
+    """Return True when a secret payload requests a real vault mutation."""
+    action, _value = secret_action(update, field)
+    return action in {"set", "clear"}
+
+
+def provider_secret_updates_requested(
+    provider_schema: Mapping[str, Any],
+    secrets: Mapping[str, Any],
+    *,
+    config_key: str,
+) -> bool:
+    """Detect whether the Settings client asked to mutate any provider secrets."""
+    for spec in provider_schema.get("fields", []):
+        if not isinstance(spec, Mapping) or not isinstance(spec.get("key"), str):
+            continue
+        key = spec["key"]
+        path = f"providers.{config_key}.{key}"
+        if spec.get("type") == "secret":
+            if secret_changed(secrets.get(path), f"secrets.{path}"):
+                return True
+            continue
+        if spec.get("type") != "object_list":
+            continue
+        updates = secrets.get(path)
+        if not isinstance(updates, list):
+            continue
+        for idx, update in enumerate(updates):
+            if not isinstance(update, Mapping):
+                continue
+            fields = update.get("fields", {})
+            if not isinstance(fields, Mapping):
+                continue
+            for field_key, field_update in fields.items():
+                if secret_changed(
+                    field_update,
+                    f"secrets.{path}[{idx}].{field_key}",
+                ):
+                    return True
+    return False
+
+
 def apply_secret_update(update: Any, current: Any, field: str) -> str:
     action, value = secret_action(update, field)
     if action == "keep":

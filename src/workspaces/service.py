@@ -356,6 +356,10 @@ class WorkspaceService:
                 ("max_height", constraints.max_height),
             ):
                 self._integer(value, f"{prefix}.constraints.{field}", minimum=1)
+            # max_* is a type capability ceiling up to GRID_MAX and may exceed the
+            # current grid; only enforce the effective ceiling for the live layout.
+            effective_max_width = min(constraints.max_width, grid.columns)
+            effective_max_height = min(constraints.max_height, grid.rows)
             if (
                 constraints.min_width > constraints.max_width
                 or constraints.min_height > constraints.max_height
@@ -364,9 +368,14 @@ class WorkspaceService:
                     "minimum constraints cannot exceed maximum constraints",
                     f"{prefix}.constraints",
                 )
+            if constraints.min_width > grid.columns or constraints.min_height > grid.rows:
+                raise WorkspaceValidationError(
+                    "widget minimum size exceeds workspace grid",
+                    f"{prefix}.constraints",
+                )
             if not (
-                constraints.min_width <= layout.width <= constraints.max_width
-                and constraints.min_height <= layout.height <= constraints.max_height
+                constraints.min_width <= layout.width <= effective_max_width
+                and constraints.min_height <= layout.height <= effective_max_height
             ):
                 raise WorkspaceValidationError(
                     "widget layout violates constraints", f"{prefix}.layout"

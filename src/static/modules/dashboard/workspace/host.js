@@ -226,26 +226,34 @@ export class WorkspaceHost {
             for (const field of ['min_width', 'min_height', 'max_width', 'max_height']) {
                 if (!isInteger(constraints[field], 1)) errors.push(`${label}.constraints.${field} must be a positive integer`);
             }
+            // max_* is a type capability ceiling (up to GRID_MAX) and may exceed the
+            // current workspace grid; clamp against the live grid only for layout checks.
             if (isInteger(constraints.min_width, 1) && isInteger(constraints.max_width, 1)
                 && constraints.min_width > constraints.max_width) errors.push(`${label}.constraints width range is invalid`);
             if (isInteger(constraints.min_height, 1) && isInteger(constraints.max_height, 1)
                 && constraints.min_height > constraints.max_height) errors.push(`${label}.constraints height range is invalid`);
-            if (isInteger(columns, 1) && isInteger(constraints.max_width, 1) && constraints.max_width > columns) {
-                errors.push(`${label}.constraints.max_width exceeds grid columns`);
+            const effectiveMaxWidth = isInteger(columns, 1) && isInteger(constraints.max_width, 1)
+                ? Math.min(constraints.max_width, columns)
+                : constraints.max_width;
+            const effectiveMaxHeight = isInteger(rows, 1) && isInteger(constraints.max_height, 1)
+                ? Math.min(constraints.max_height, rows)
+                : constraints.max_height;
+            if (isInteger(columns, 1) && isInteger(constraints.min_width, 1) && constraints.min_width > columns) {
+                errors.push(`${label}.constraints.min_width exceeds grid columns`);
             }
-            if (isInteger(rows, 1) && isInteger(constraints.max_height, 1) && constraints.max_height > rows) {
-                errors.push(`${label}.constraints.max_height exceeds grid rows`);
+            if (isInteger(rows, 1) && isInteger(constraints.min_height, 1) && constraints.min_height > rows) {
+                errors.push(`${label}.constraints.min_height exceeds grid rows`);
             }
             if (isInteger(layout.width, 1) && isInteger(constraints.min_width, 1) && layout.width < constraints.min_width) {
                 errors.push(`${label}.layout.width is below its constraint`);
             }
-            if (isInteger(layout.width, 1) && isInteger(constraints.max_width, 1) && layout.width > constraints.max_width) {
+            if (isInteger(layout.width, 1) && isInteger(effectiveMaxWidth, 1) && layout.width > effectiveMaxWidth) {
                 errors.push(`${label}.layout.width exceeds its constraint`);
             }
             if (isInteger(layout.height, 1) && isInteger(constraints.min_height, 1) && layout.height < constraints.min_height) {
                 errors.push(`${label}.layout.height is below its constraint`);
             }
-            if (isInteger(layout.height, 1) && isInteger(constraints.max_height, 1) && layout.height > constraints.max_height) {
+            if (isInteger(layout.height, 1) && isInteger(effectiveMaxHeight, 1) && layout.height > effectiveMaxHeight) {
                 errors.push(`${label}.layout.height exceeds its constraint`);
             }
             if (isInteger(layout.x, 0) && isInteger(layout.y, 0)

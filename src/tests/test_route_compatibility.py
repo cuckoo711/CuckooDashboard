@@ -38,11 +38,14 @@ _EXPECTED = {
     ("/api/player/<action>", frozenset({"POST"})),
     ("/api/providers", frozenset({"GET"})),
     ("/api/providers/<provider_id>/<resource>", frozenset({"GET"})),
+    ("/api/device/session", frozenset({"POST"})),
     ("/api/settings", frozenset({"GET", "POST"})),
     ("/api/settings/reload-clients", frozenset({"POST"})),
     ("/api/settings/clients", frozenset({"GET"})),
     ("/api/settings/clients/<client_id>/navigate", frozenset({"POST"})),
     ("/api/settings/clients/<client_id>/screenshot", frozenset({"POST"})),
+    ("/api/settings/devices", frozenset({"GET"})),
+    ("/api/settings/devices/<device_id>", frozenset({"PATCH", "PUT"})),
     ("/api/settings/reveal", frozenset({"POST"})),
 }
 

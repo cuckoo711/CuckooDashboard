@@ -11,9 +11,11 @@ and returns a quiet spectrum frame so the UI can degrade gracefully.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import Any
+
 
 from core.config import load_config, set_config_value
 
@@ -40,12 +42,52 @@ except Exception as exc:  # pragma: no cover
     _HAS_NUMPY = False
     logger.info("[spectrum] numpy unavailable: %s", exc)
 
+
+def _install_ole32_finder() -> None:
+    """Make soundcard importable when ctypes cannot resolve short system DLL names.
+
+    ``soundcard`` uses CFFI ``dlopen('ole32')``. On some Windows Python builds,
+    ``ctypes.util.find_library('ole32')`` returns ``None`` while the same loader
+    succeeds with the full system module name ``ole32.dll``. Prefer the portable
+    system name instead of a hardcoded filesystem path, and never ship or load a
+    bundled system DLL from the project tree.
+    """
+    try:
+        import ctypes
+        import ctypes.util
+    except Exception:
+        return
+
+    original = getattr(ctypes.util, "find_library", None)
+    if original is None:
+        return
+    if getattr(original, "__cuckoo_ole32_patched__", False):
+        return
+
+    def find_library(name: str):  # type: ignore[no-untyped-def]
+        key = str(name or "").strip().lower()
+        if key in {"ole32", "ole32.dll"}:
+            resolved = original("ole32.dll") or original("ole32")
+            if resolved:
+                return resolved
+            # CFFI/Windows can load system modules by basename even when the
+            # FindLibrary helper is incomplete. Returning the module name is
+            # portable and avoids absolute System32 hardcoding.
+            return "ole32.dll"
+        return original(name)
+
+    find_library.__cuckoo_ole32_patched__ = True  # type: ignore[attr-defined]
+    ctypes.util.find_library = find_library  # type: ignore[assignment]
+
+
 try:
+    _install_ole32_finder()
     import soundcard as sc
     _HAS_SOUNDCARD = True
-except Exception:
+except Exception as exc:
     sc = None  # type: ignore
     _HAS_SOUNDCARD = False
+    logger.info("[spectrum] soundcard unavailable: %s", exc)
 
 try:
     import sounddevice as sd
@@ -444,6 +486,7 @@ def _ensure_soundcard():
     if _HAS_SOUNDCARD and sc is not None:
         return True
     try:
+        _install_ole32_finder()
         import soundcard as _sc
         sc = _sc
         _HAS_SOUNDCARD = True
@@ -584,6 +627,67 @@ def _enum_soundcard_loopbacks() -> list[dict[str, Any]]:
             return []
 
 
+def _enum_sounddevice_loopback_inputs() -> list[dict[str, Any]]:
+    """Expose capture-capable loopback/mix endpoints through sounddevice.
+
+    sounddevice 0.5.x does not synthesize a WASAPI loopback stream from an
+    output endpoint. Instead, PortAudio exposes real Stereo Mix, What-U-Hear,
+    and virtual mix endpoints as input devices. Those are directly capturable
+    by ``sd.InputStream`` and must be offered even when soundcard cannot load.
+    """
+    if not _HAS_SOUNDDEVICE:
+        return []
+    mix_keywords = (
+        "立体声混音", "stereo mix", "what u hear", "wave out mix",
+        "loopback", "混音", "mix (", "mix)", "wdm2vst",
+    )
+    try:
+        items: list[dict[str, Any]] = []
+        for index, device in enumerate(sd.query_devices()):
+            max_in = int(device.get("max_input_channels") or 0)
+            if max_in <= 0:
+                continue
+            name = str(device.get("name") or f"device-{index}")
+            lower = name.lower()
+            if not any(token in lower or token in name for token in mix_keywords):
+                continue
+            if any(token in lower or token in name for token in ("microphone", "麦克风", "mic ")):
+                continue
+            host = _hostapi_name(int(device.get("hostapi") or -1))
+            host_lower = host.lower()
+            virtual = any(token in lower for token in ("wdm2vst", "cable", "vb-audio", "virtual"))
+            is_stereo_mix = "stereo mix" in lower or "立体声混音" in name
+            items.append({
+                "id": f"sd:{index}",
+                "label": f"{'★ ' if is_stereo_mix else ''}Loopback · {name} [{host}]",
+                "kind": "loopback",
+                "backend": "sounddevice",
+                "name": name,
+                "index": index,
+                "recommended": is_stereo_mix,
+                "group": "loopback",
+                "virtual": virtual,
+                "_priority": (
+                    0 if is_stereo_mix and "wdm-ks" in host_lower else
+                    1 if is_stereo_mix else
+                    2 if "wasapi" in host_lower else
+                    3 if "directsound" in host_lower else
+                    4
+                ),
+            })
+        items.sort(key=lambda item: (
+            item["_priority"],
+            1 if item.get("virtual") else 0,
+            item.get("label") or "",
+        ))
+        for item in items:
+            item.pop("_priority", None)
+        return items
+    except Exception as exc:
+        logger.warning("[spectrum] sounddevice loopback enumeration failed: %s", exc)
+        return []
+
+
 def list_capture_devices(*, include_advanced: bool = False) -> list[dict[str, Any]]:
     """Enumerate selectable capture devices for settings UI.
 
@@ -603,6 +707,11 @@ def list_capture_devices(*, include_advanced: bool = False) -> list[dict[str, An
     }]
 
     loopback_items = _enum_soundcard_loopbacks()
+    if not loopback_items:
+        # soundcard may be installed but unusable in a non-native shell because
+        # its Media Foundation binding cannot load ole32. PortAudio still
+        # exposes capture-capable Stereo Mix and virtual mix endpoints.
+        loopback_items = _enum_sounddevice_loopback_inputs()
     devices.extend(loopback_items)
 
     if not loopback_items:
@@ -756,7 +865,7 @@ def _find_sounddevice_candidates(device_key: str = "auto") -> list[tuple[int, st
             "立体声混音", "stereo mix", "what u hear", "wave out mix",
             "loopback", "混音", "mix (", "mix)", "wdm2vst",
         )
-        mme_mix, ds_mix, wasapi_mix = [], [], []
+        mme_mix, ds_mix, wasapi_mix, ks_mix = [], [], [], []
         for i, dev in enumerate(devices):
             max_in = int(dev.get("max_input_channels") or 0)
             if max_in <= 0:
@@ -767,16 +876,18 @@ def _find_sounddevice_candidates(device_key: str = "auto") -> list[tuple[int, st
                 continue
             host = _hostapi_name(int(dev.get("hostapi") or 0))
             host_l = host.lower()
-            if "wdm-ks" in host_l:
-                continue
             item = (i, f"{name} [{host}]", min(_CHANNELS, max_in), int(dev.get("default_samplerate") or _SAMPLE_RATE))
+            if "wdm-ks" in host_l:
+                if any(token in low or token in name for token in ("stereo mix", "立体声混音", "what u hear", "wave out mix", "loopback")):
+                    ks_mix.append(item)
+                continue
             if "mme" in host_l:
                 mme_mix.append(item)
             elif "directsound" in host_l:
                 ds_mix.append(item)
             elif "wasapi" in host_l:
                 wasapi_mix.append(item)
-        return mme_mix + ds_mix + wasapi_mix
+        return ks_mix + wasapi_mix + ds_mix + mme_mix
     except Exception as exc:
         logger.warning("[spectrum] sounddevice enum failed: %s", exc)
         return []
@@ -872,7 +983,7 @@ def _capture_with_soundcard_in_com(n_bins: int, device_key: str = "auto") -> boo
 
 
 def _capture_with_sounddevice(n_bins: int, device_key: str = "auto") -> bool:
-    """Legacy fallback: mix devices via sounddevice. Often silent on this host."""
+    """Capture a sounddevice Stereo Mix, loopback, or virtual mix endpoint."""
     if not _HAS_SOUNDDEVICE:
         return False
     candidates = _find_sounddevice_candidates(device_key)
@@ -895,20 +1006,23 @@ def _capture_with_sounddevice(n_bins: int, device_key: str = "auto") -> bool:
                 pass
 
         try:
-            with sd.InputStream(
-                samplerate=int(samplerate or _SAMPLE_RATE),
-                channels=max(1, int(channels or _CHANNELS)),
-                dtype="float32",
-                blocksize=_BLOCKSIZE,
-                device=device_idx,
-                callback=_callback,
-            ):
-                logger.info("[spectrum] sounddevice opened: %s", device_name)
+            stream_options: dict[str, Any] = {
+                "samplerate": int(samplerate or _SAMPLE_RATE),
+                "blocksize": _BLOCKSIZE,
+                "device": device_idx,
+                "channels": channels,
+                "dtype": "float32",
+                "callback": _callback,
+            }
+            with sd.InputStream(**stream_options):
+
+                capture_label = device_name + " (sounddevice loopback)"
+                logger.info("[spectrum] sounddevice opened: %s", capture_label)
                 with _lock:
                     _state["available"] = True
                     _state["enabled"] = True
                     _state["error"] = None
-                    _state["device"] = device_name + " (fallback)"
+                    _state["device"] = capture_label
                 local_rate = float(samplerate or _SAMPLE_RATE)
                 silent_frames = 0
                 while not _stop_event.is_set() and _capture_should_continue():
@@ -946,7 +1060,7 @@ def _capture_with_sounddevice(n_bins: int, device_key: str = "auto") -> bool:
                         "ok": True,
                         "available": True,
                         "enabled": True,
-                        "device": device_name + " (fallback)",
+                        "device": capture_label,
                         "error": None,
                         "ts": time.time(),
                         "offsets": load_music_offsets(),
@@ -992,11 +1106,12 @@ def _capture_loop():
         opened = False
         device_key = str(offsets.get("capture_device") or "auto")
 
-        # Prefer true WASAPI loopback via soundcard (unless sd: explicitly selected)
+        # Prefer true WASAPI loopback via soundcard (default speaker = DitooMic).
+        # Fall back to sounddevice Stereo Mix / virtual Mix endpoints when
+        # soundcard cannot open, or when the user explicitly selected sd:<index>.
         if _HAS_SOUNDCARD and not device_key.startswith("sd:"):
             opened = _capture_with_soundcard(n_bins, device_key=device_key)
 
-        # Fallback / explicit sounddevice selection
         if not opened and not _stop_event.is_set() and _capture_should_continue():
             opened = _capture_with_sounddevice(n_bins, device_key=device_key)
 

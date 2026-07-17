@@ -17,6 +17,7 @@ from contracts.subscription import (
     SubscriptionRequest,
 )
 from core.config import load_config, set_config_value
+from devices.service import DeviceValidationError
 from features.appearance.service import get_font_payload
 from runtime.client_session import (
     ClientSession,
@@ -90,8 +91,10 @@ class WebSocketHub:
         subscription_broker: SubscriptionBroker | None = None,
         transport: WebSocketTransport | None = None,
         is_owner_available=None,
+        device_service: Any = None,
     ) -> None:
         self.workspace_registry = workspace_registry or create_builtin_workspace_registry()
+        self.device_service = device_service
         if subscription_broker is not None:
             refresh_scheduler = refresh_scheduler or subscription_broker.scheduler
             source_cache = source_cache or subscription_broker.cache
@@ -223,7 +226,13 @@ class WebSocketHub:
         self.set_vibe(_load_vibe_state())
 
     def list_clients(self) -> list[dict[str, Any]]:
-        return [session.list_payload() for session in self.transport.sessions()]
+        # Settings is a management surface, not a display terminal. Keep it out of
+        # the online-board / online-device listings so operators only see real dashboards.
+        return [
+            session.list_payload()
+            for session in self.transport.sessions()
+            if str(session.page or "").strip().lower() != "settings"
+        ]
 
     def navigate_client(
         self,
@@ -317,10 +326,54 @@ class WebSocketHub:
             self._recalc_vibe_locked()
         logger.info("[ws] client disconnected (total: %s)", len(self.transport.sessions()))
 
+    def _bind_device(self, session: ClientSession, msg: Mapping[str, Any]) -> bool:
+        """Attach a persistent browser device id to the live WS session."""
+        raw_device_id = msg.get("device_id")
+        if raw_device_id in (None, ""):
+            return True
+        service = self.device_service
+        if service is None:
+            return True
+        try:
+            device = service.register({
+                "device_id": raw_device_id,
+                "display_name": msg.get("display_name") or "",
+                "page": msg.get("page") or session.page or "",
+                "viewport": msg.get("viewport") if isinstance(msg.get("viewport"), Mapping) else None,
+            })
+        except DeviceValidationError as exc:
+            self._send_protocol_error(session, "invalid_device", str(exc))
+            return False
+        session.device_id = str(device.get("id") or "")
+        session.device_status = str(device.get("status") or "")
+        if device.get("status") != "approved":
+            self._send(
+                session,
+                {
+                    "type": "device_status",
+                    "data": service.session_payload(device),
+                },
+            )
+            return False
+        assigned = str(device.get("workspace_id") or "main")
+        # Preserve the page-reported workspace/page selection for music/settings,
+        # but bind dashboard sessions onto the approved workspace assignment.
+        if session.page in {None, "", "unknown", "dashboard"} and str(msg.get("page") or "") in {"", "dashboard"}:
+            session.workspace_id = assigned
+        return True
+
     def _on_message(self, session: ClientSession, msg: dict[str, Any]) -> None:
         try:
             msg_type = msg.get("type")
+            # Always attempt to attach device identity before page bookkeeping so
+            # music/settings clients remain visible as online terminals.
+            if msg_type in {"report", "init", "subscribe"}:
+                bound = self._bind_device(session, msg)
+                if not bound and msg_type != "report":
+                    return
             if msg_type == "vibe":
+                if session.device_status and session.device_status != "approved":
+                    return
                 session.vibe = bool(msg.get("active"))
                 with self._lock:
                     vibe = self._recalc_vibe_locked()
@@ -340,7 +393,10 @@ class WebSocketHub:
                     except ViewportContractError as exc:
                         self._send_protocol_error(session, "invalid_viewport", str(exc))
                         return
-                    workspace_id = str(msg.get("workspace_id") or "main").strip() or "main"
+                    if session.device_status == "approved" and session.workspace_id:
+                        workspace_id = session.workspace_id
+                    else:
+                        workspace_id = str(msg.get("workspace_id") or "main").strip() or "main"
                 elif isinstance(msg.get("viewport"), Mapping):
                     try:
                         viewport = normalize_viewport_payload(
@@ -351,24 +407,32 @@ class WebSocketHub:
                         self._send_protocol_error(session, "invalid_viewport", str(exc))
                         return
                 session.page = page
-                session.workspace_id = workspace_id
+                session.workspace_id = workspace_id if page == "dashboard" else None
                 if viewport is not None:
                     session.set_viewport(viewport)
                 else:
                     session.clear_viewport()
-                self.subscription_broker.report_session(
-                    session,
-                    page=page,
-                    workspace_id=workspace_id,
-                )
-                if page == "music" or (
-                    page == "dashboard"
-                    and session.wire_mode == "legacy"
-                    and session.source_subscriptions is None
+                # Presence should still work for music/settings even before/without
+                # dashboard subscription approval gating; only data/subscribe needs approval.
+                if session.device_status in {None, "", "approved"}:
+                    self.subscription_broker.report_session(
+                        session,
+                        page=page,
+                        workspace_id=workspace_id,
+                    )
+                # Lyric interest remains page-driven for legacy clients that have
+                # not yet attached a device_id (local/dev sockets, unit tests).
+                if session.device_status not in {"pending", "disabled"} and (
+                    page == "music"
+                    or (
+                        page == "dashboard"
+                        and session.wire_mode == "legacy"
+                        and session.source_subscriptions is None
+                    )
                 ):
                     session.lyric = True
                 logger.info(
-                    "[ws] client %s reports page: %s%s%s",
+                    "[ws] client %s reports page: %s%s%s device=%s",
                     session.client_id,
                     page,
                     f" ({workspace_id})" if workspace_id else "",
@@ -377,8 +441,12 @@ class WebSocketHub:
                         if viewport is not None
                         else ""
                     ),
+                    session.device_id or "-",
                 )
             elif msg_type == "subscribe":
+                if session.device_status and session.device_status != "approved":
+                    self._send_protocol_error(session, "device_pending", "终端尚未审批")
+                    return
                 channel = str(msg.get("channel") or "")
                 if channel == "spectrum":
                     active = bool(msg.get("active"))
@@ -405,6 +473,9 @@ class WebSocketHub:
                 elif "sources" in msg:
                     self._unsubscribe_sources(session, msg.get("sources"))
             elif msg_type == "init":
+                if session.device_status and session.device_status != "approved":
+                    self._send_protocol_error(session, "device_pending", "终端尚未审批")
+                    return
                 self._send_all_data(session)
             elif msg_type == "ping":
                 self._send(session, {"type": "pong", "ts": msg.get("ts")})

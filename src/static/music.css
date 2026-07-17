@@ -578,7 +578,7 @@ body.cinema .layer-lyric {
 /* Active long lines: put the residual glow on the moving span so the outer
    mask only clips text overflow, not a large soft halo hard-cut. */
 .lyric-slot.is-active .lyric-scroll-inner {
-    filter: drop-shadow(0 0 10px rgba(var(--cover-rgb), 0.14));
+    filter: drop-shadow(0 0 10px rgba(var(--spectrum-rgb), 0.18));
 }
 .lyric-slot.marquee {
     width: min(100%, 10.8em);
@@ -878,7 +878,7 @@ body.beat .lyric-slot.is-active {
     text-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
 }
 body.beat .lyric-slot.is-active .lyric-scroll-inner {
-    filter: drop-shadow(0 0 14px rgba(var(--cover-rgb), 0.22));
+    filter: drop-shadow(0 0 14px rgba(var(--spectrum-rgb), 0.28));
 }
 
 /* Low-power render path: H618/Panfrost gets one small spectrum canvas only. */

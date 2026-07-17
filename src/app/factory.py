@@ -15,6 +15,8 @@ from extensions.manager import ExtensionManager
 from extensions.repository import ExtensionStateRepository
 from features.appearance.routes import blueprint as appearance_blueprint
 from features.dashboard.routes import blueprint as dashboard_blueprint
+from features.devices.routes import public_blueprint as devices_public_blueprint
+from features.devices.routes import settings_blueprint as devices_settings_blueprint
 from features.extensions.routes import blueprint as extensions_blueprint
 from features.media.routes import blueprint as media_blueprint
 from features.music.routes import blueprint as music_blueprint
@@ -63,6 +65,10 @@ def create_app(
         ":memory:" if app.config.get("TESTING") else str(DATA_DIR / "extensions.db"),
     )
     app.config.setdefault("EXTENSION_API_VERSION", 1)
+    app.config.setdefault(
+        "DEVICE_DATABASE",
+        ":memory:" if app.config.get("TESTING") else str(DATA_DIR / "devices.db"),
+    )
 
     if runtime is None:
         mutation_lock = threading.RLock()
@@ -82,6 +88,7 @@ def create_app(
             workspace_registry=workspace_registry,
             workspace_repository=workspace_repository,
             workspace_database=app.config["WORKSPACE_DATABASE"],
+            device_database=app.config["DEVICE_DATABASE"],
             extension_manager=extension_manager,
         )
     else:
@@ -94,7 +101,9 @@ def create_app(
 
     register_security_hooks(app)
     app.register_blueprint(dashboard_blueprint)
+    app.register_blueprint(devices_public_blueprint)
     app.register_blueprint(settings_blueprint)
+    app.register_blueprint(devices_settings_blueprint)
     app.register_blueprint(settings_workspaces_blueprint)
     app.register_blueprint(settings_extensions_blueprint)
     app.register_blueprint(appearance_blueprint)

@@ -4,6 +4,7 @@ import { fetchDashboardData, fetchMedia, fetchSystem } from './api.js';
 import { applyFont, applyTheme } from './appearance.js';
 import { refreshOffPeakBadgeConfig } from './clock.js';
 import { noteAlive, refreshHealth, updateLatency } from './connection.js';
+import { getDeviceId } from './device.js';
 import { navigatePage, softReload } from './navigation.js';
 import { state } from './state.js';
 import { applyServerVibeState } from './vibe.js';
@@ -151,6 +152,12 @@ export function routeMessage(message, bus = activeBus, subscriptions = activeSub
             }
             break;
         }
+        case 'device_status':
+        case 'device_updated':
+            if (message.data && message.data.approved === false) {
+                window.location.reload();
+            }
+            break;
         case 'vibe_state':
             applyServerVibeState(message.data || {});
             break;
@@ -199,6 +206,7 @@ export function sendWorkspaceViewport(socket = state.websocket.socket) {
             type: 'report',
             page: 'dashboard',
             workspace_id: activeWorkspaceId,
+            device_id: getDeviceId(),
             viewport: getWorkspaceViewport(),
         }));
         return true;
@@ -258,6 +266,14 @@ function sendWorkspaceState(socket) {
     activeSubscriptionClient.attach(socket, { replay: false });
     activeSubscriptionClient.sendReplace();
     sendWorkspaceViewport(socket);
+    try {
+        socket.send(JSON.stringify({
+            type: 'init',
+            device_id: getDeviceId(),
+            page: 'dashboard',
+            workspace_id: activeWorkspaceId,
+        }));
+    } catch (_error) {}
 }
 
 export function setWorkspaceUpdateHandler(handler) {

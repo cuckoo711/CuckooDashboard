@@ -1,6 +1,7 @@
 import {$, escHtml} from './dom.js';
 import {requestJson} from './api.js';
 import {showMessage} from './state.js';
+import {getDeviceId} from '/static/modules/shared/device-id.js';
 
 const PAGE_LABELS = {dashboard: '看板', music: '音乐舞台', settings: '设置页', unknown: '未知'};
 let settingsWebSocket = null;
@@ -17,8 +18,13 @@ function targetOptions(client) {
     return workspaceOptions + `<option value="page:music" ${current === 'page:music' ? 'selected' : ''}>音乐舞台</option>`;
 }
 
+function isDisplayClient(client) {
+    const page = String(client?.page || '').toLowerCase();
+    return page !== 'settings';
+}
+
 function renderClientsList(clients) {
-    latestClients = Array.isArray(clients) ? clients : [];
+    latestClients = (Array.isArray(clients) ? clients : []).filter(isDisplayClient);
     const container = $('#clientsList');
     if (!container) return;
     if (!latestClients.length) {
@@ -29,11 +35,14 @@ function renderClientsList(clients) {
         const page = client.page || 'unknown';
         const workspace = clientWorkspaces.find((item) => item.id === client.workspace_id);
         const label = page === 'dashboard' && workspace ? workspace.name : (PAGE_LABELS[page] || page);
-        return '<div class="client-row" data-client-id="' + escHtml(client.id) + '">' +
-            '<span class="client-id">' + escHtml(client.id) + '</span>' +
-            '<span class="client-page">当前：' + escHtml(label) + '</span>' +
+        const stableId = client.device_id || client.id || '';
+        const sessionId = client.session_id || client.id || '';
+        const status = client.device_status ? ` · ${client.device_status}` : '';
+        return '<div class="client-row" data-client-id="' + escHtml(sessionId) + '" data-device-id="' + escHtml(stableId) + '">' +
+            '<span class="client-id" title="稳定设备 ID">' + escHtml(stableId) + '</span>' +
+            '<span class="client-page">当前：' + escHtml(label + status) + '</span>' +
             '<select class="client-target-select" aria-label="选择客户端目标">' + targetOptions(client) + '</select>' +
-            '<button type="button" class="small-btn client-screenshot-btn" data-client-id="' + escHtml(client.id) + '">截图</button>' +
+            '<button type="button" class="small-btn client-screenshot-btn" data-client-id="' + escHtml(sessionId) + '">截图</button>' +
             '<button type="button" class="small-btn client-nav-btn">发送</button>' +
             '</div>';
     }).join('');
@@ -99,11 +108,16 @@ export function connectSettingsWebSocket() {
     settingsWebSocket.onopen = () => {
         settingsWebSocketRetry = 1000;
         try {
-            settingsWebSocket.send(JSON.stringify({type: 'report', page: 'settings'}));
+            settingsWebSocket.send(JSON.stringify({
+                type: 'report',
+                page: 'settings',
+                device_id: getDeviceId(),
+                display_name: navigator.userAgent?.slice(0, 80) || '',
+            }));
         } catch (_error) {
             // The close handler will reconnect if the socket disappeared.
         }
-        console.log('[settings-ws] connected');
+        console.log('[settings-ws] connected as device', getDeviceId());
     };
     settingsWebSocket.onmessage = (event) => {
         try {

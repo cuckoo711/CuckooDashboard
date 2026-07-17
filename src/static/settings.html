@@ -417,6 +417,18 @@
             </div>
         </section>
 
+        <section class="panel panel-wide devices-panel" id="devicesPanel">
+            <div class="panel-title">
+                <div><span class="section-mark"></span><h2>显示终端</h2></div>
+                <button type="button" class="small-btn" id="refreshDevicesBtn" title="刷新终端">刷新</button>
+            </div>
+            <p class="workspace-intro">浏览器首次访问会生成持久终端 ID。待审批终端只能看到等待页面；批准后可绑定工作区、缩放和备注。</p>
+            <div id="devicesList" class="devices-list">
+                <div class="empty-row">点击刷新读取显示终端</div>
+            </div>
+            <div id="deviceMessage" class="workspace-message">终端审批后才会加载看板数据。</div>
+        </section>
+
         <section class="panel panel-wide clients-panel">
             <div class="panel-title">
                 <div><span class="section-mark"></span><h2>在线看板</h2></div>

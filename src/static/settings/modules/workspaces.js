@@ -4,14 +4,17 @@ import {getLatestClients} from './clients.js';
 import {constrain, firstFit, isPlacementValid, normalizeGrid, normalizeRect, recommendGrid, reflow, validate} from './grid-layout.js';
 import {setWorkspaceDirty, state} from './state.js';
 
+const GRID_MAX = 48;
+
 const BUILTIN_LAYOUT_DEFAULTS = Object.freeze({
-    'builtin.dashboard.system-info': {defaultSize: {w: 6, h: 5}, constraints: {min_width: 4, min_height: 4, max_width: 16, max_height: 15}},
-    'builtin.dashboard.network': {defaultSize: {w: 2, h: 3}, constraints: {min_width: 2, min_height: 2, max_width: 16, max_height: 15}},
-    'builtin.dashboard.uptime': {defaultSize: {w: 2, h: 2}, constraints: {min_width: 2, min_height: 2, max_width: 16, max_height: 15}},
-    'builtin.dashboard.disks': {defaultSize: {w: 8, h: 4}, constraints: {min_width: 4, min_height: 3, max_width: 16, max_height: 15}},
-    'builtin.dashboard.vibe': {defaultSize: {w: 8, h: 9}, constraints: {min_width: 6, min_height: 6, max_width: 16, max_height: 15}},
-    'builtin.dashboard.player': {defaultSize: {w: 8, h: 6}, constraints: {min_width: 6, min_height: 4, max_width: 16, max_height: 15}},
-    'builtin.dashboard.github': {defaultSize: {w: 8, h: 6}, constraints: {min_width: 6, min_height: 4, max_width: 16, max_height: 15}},
+    // max_* is a type capability ceiling against GRID_MAX, not the current draft grid.
+    'builtin.dashboard.system-info': {defaultSize: {w: 6, h: 5}, constraints: {min_width: 4, min_height: 4, max_width: GRID_MAX, max_height: GRID_MAX}},
+    'builtin.dashboard.network': {defaultSize: {w: 2, h: 3}, constraints: {min_width: 2, min_height: 2, max_width: GRID_MAX, max_height: GRID_MAX}},
+    'builtin.dashboard.uptime': {defaultSize: {w: 2, h: 2}, constraints: {min_width: 2, min_height: 2, max_width: GRID_MAX, max_height: GRID_MAX}},
+    'builtin.dashboard.disks': {defaultSize: {w: 8, h: 4}, constraints: {min_width: 4, min_height: 3, max_width: GRID_MAX, max_height: GRID_MAX}},
+    'builtin.dashboard.vibe': {defaultSize: {w: 8, h: 9}, constraints: {min_width: 6, min_height: 6, max_width: GRID_MAX, max_height: GRID_MAX}},
+    'builtin.dashboard.player': {defaultSize: {w: 8, h: 6}, constraints: {min_width: 6, min_height: 4, max_width: GRID_MAX, max_height: GRID_MAX}},
+    'builtin.dashboard.github': {defaultSize: {w: 8, h: 6}, constraints: {min_width: 6, min_height: 4, max_width: GRID_MAX, max_height: GRID_MAX}},
 });
 
 const workspaceState = {
@@ -88,27 +91,61 @@ function currentSettingsSize() {
     };
 }
 
+function clientLookupKeys(client = {}) {
+    return [
+        client.device_id,
+        client.session_id,
+        client.id,
+    ].filter(Boolean).map((value) => String(value));
+}
+
+function findOnlineClient(id) {
+    const needle = String(id || '');
+    if (!needle) return null;
+    return getLatestClients().find((client) => clientLookupKeys(client).includes(needle)) || null;
+}
+
 function onlineClientSize(id) {
-    const client = getLatestClients().find((item) => String(item.id) === String(id));
-    const viewport = client?.viewport || client?.screen || client?.display || {};
+    const client = findOnlineClient(id);
+    if (!client) {
+        return null;
+    }
+    const viewport = client.viewport || client.screen || client.display || {};
+    const width = Number(
+        client.workspace_width
+        ?? viewport.workspace_width
+        ?? client.viewport_width
+        ?? viewport.width
+        ?? client.width
+        ?? 0,
+    );
+    const height = Number(
+        client.workspace_height
+        ?? viewport.workspace_height
+        ?? client.viewport_height
+        ?? viewport.height
+        ?? client.height
+        ?? 0,
+    );
+    if (!(width > 0) || !(height > 0)) {
+        return null;
+    }
     return {
-        width: Number(
-            client?.workspace_width
-            ?? viewport.workspace_width
-            ?? viewport.width
-            ?? client?.viewport_width
-            ?? client?.width
-            ?? 1920
-        ) || 1920,
-        height: Number(
-            client?.workspace_height
-            ?? viewport.workspace_height
-            ?? viewport.height
-            ?? client?.viewport_height
-            ?? client?.height
-            ?? 1080
-        ) || 1080,
+        width: Math.max(1, Math.round(width)),
+        height: Math.max(1, Math.round(height)),
     };
+}
+
+function clientOptionValue(client = {}) {
+    return String(client.device_id || client.session_id || client.id || '');
+}
+
+function clientOptionLabel(client = {}) {
+    const id = clientOptionValue(client);
+    const page = client.page || 'dashboard';
+    const size = onlineClientSize(id);
+    const sizeLabel = size ? `${size.width}×${size.height}` : '尺寸未知';
+    return `${id} · ${page} · ${sizeLabel}`;
 }
 
 function normalizeCatalogItem(item) {
@@ -313,19 +350,48 @@ function renderCalibration() {
     if (density) density.value = calibration.density;
     if (fit) fit.value = calibration.fit;
     const preset = `${calibration.width}x${calibration.height}`;
-    if (target) target.value = ['settings', 'client', 'manual', '1920x1080', '2560x1080', '3440x1440', '3840x1080', '1080x1920'].includes(target.value)
-        && (target.value === 'manual' || target.value === 'settings' || target.value === 'client' || target.value === preset)
-        ? target.value : 'manual';
+    if (target) {
+        const allowed = new Set(['settings', 'client', 'manual', '1920x1080', '2560x1080', '3440x1440', '3840x1080', '1080x1920']);
+        if (!allowed.has(target.value)) target.value = 'manual';
+        if (target.value !== 'settings' && target.value !== 'client' && target.value !== 'manual' && target.value !== preset) {
+            // Keep named presets only when they still match current numbers.
+            target.value = 'manual';
+        }
+    }
     if (client) {
         const clients = getLatestClients();
-        const current = client.value;
+        const previous = client.value;
         client.innerHTML = clients.length
-            ? clients.map((item) => `<option value="${escHtml(item.id)}">${escHtml(item.id)} · ${escHtml(item.page || 'dashboard')}</option>`).join('')
+            ? clients.map((item) => {
+                const value = clientOptionValue(item);
+                return `<option value="${escHtml(value)}">${escHtml(clientOptionLabel(item))}</option>`;
+            }).join('')
             : '<option value="">暂无在线客户端</option>';
-        if (clients.some((item) => String(item.id) === current)) client.value = current;
+        if (previous && clients.some((item) => clientLookupKeys(item).includes(String(previous)))) {
+            // Preserve either device_id or session_id based previous selection.
+            const matched = findOnlineClient(previous);
+            client.value = matched ? clientOptionValue(matched) : previous;
+        } else if (clients.length) {
+            client.value = clientOptionValue(clients[0]);
+        }
+    }
+    // If the operator is currently targeting an online client, always keep the
+    // numeric fields synced to the selected device's live size.
+    if (target?.value === 'client') {
+        const live = onlineClientSize(client?.value);
+        if (live) {
+            if (width) width.value = live.width;
+            if (height) height.value = live.height;
+            if (summary) {
+                summary.textContent = `${live.width} × ${live.height} · Cell ${calibration.targetCellWidth} × ${calibration.targetCellHeight} · ${calibration.fit} · ${calibration.density}`;
+            }
+        } else if (summary) {
+            summary.textContent = `未拿到在线 client 尺寸 · Cell ${calibration.targetCellWidth} × ${calibration.targetCellHeight}`;
+        }
+    } else if (summary) {
+        summary.textContent = `${calibration.width} × ${calibration.height} · Cell ${calibration.targetCellWidth} × ${calibration.targetCellHeight} · ${calibration.fit} · ${calibration.density}`;
     }
     if (dimension) dimension.textContent = `${draft.grid.columns} × ${draft.grid.rows} 动态网格预览`;
-    if (summary) summary.textContent = `${calibration.width} × ${calibration.height} · Cell ${calibration.targetCellWidth} × ${calibration.targetCellHeight} · ${calibration.fit} · ${calibration.density}`;
 }
 
 function applyRecommendedGrid(draft, nextGrid, calibration) {
@@ -373,8 +439,19 @@ function handleCalibrationChange(event) {
         const value = event.target.value;
         let size = null;
         if (value === 'settings') size = currentSettingsSize();
-        else if (value === 'client') size = onlineClientSize($('#workspaceCalibrationClient')?.value);
-        else if (/^\d+x\d+$/.test(value)) {
+        else if (value === 'client') {
+            const select = $('#workspaceCalibrationClient');
+            if (select && !select.value) {
+                const first = getLatestClients()[0];
+                if (first) select.value = clientOptionValue(first);
+            }
+            size = onlineClientSize(select?.value);
+            if (!size) {
+                setMessage('未获取到在线 client 分辨率，请先刷新在线看板并确认客户端已上报视口。', 'error');
+                renderCalibration();
+                return;
+            }
+        } else if (/^\d+x\d+$/.test(value)) {
             const [width, height] = value.split('x').map(Number);
             size = {width, height};
         }
@@ -382,8 +459,17 @@ function handleCalibrationChange(event) {
         nextCalibration = {...nextCalibration, ...size};
         shouldRecommend = true;
     } else if (id === 'workspaceCalibrationClient') {
-        if ($('#workspaceCalibrationTarget')?.value !== 'client') return;
-        nextCalibration = {...nextCalibration, ...onlineClientSize(event.target.value)};
+        if ($('#workspaceCalibrationTarget')?.value !== 'client') {
+            const target = $('#workspaceCalibrationTarget');
+            if (target) target.value = 'client';
+        }
+        const size = onlineClientSize(event.target.value);
+        if (!size) {
+            setMessage('该在线 client 尚未上报有效分辨率。', 'error');
+            renderCalibration();
+            return;
+        }
+        nextCalibration = {...nextCalibration, ...size};
         shouldRecommend = true;
     } else if (id === 'workspaceCalibrationWidth' || id === 'workspaceCalibrationHeight') {
         nextCalibration = {
@@ -411,6 +497,15 @@ function handleCalibrationChange(event) {
     if (shouldRecommend) {
         const nextGrid = recommendGrid(nextCalibration, nextCalibration.density);
         if (!applyRecommendedGrid(draft, nextGrid, nextCalibration)) {
+            // Keep the numeric fields showing the attempted size so the user can see it.
+            draft.grid = {
+                ...draft.grid,
+                calibration: {
+                    ...normalizeCalibration(draft.grid.calibration),
+                    width: nextCalibration.width,
+                    height: nextCalibration.height,
+                },
+            };
             renderEditor();
             return;
         }

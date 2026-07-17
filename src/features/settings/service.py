@@ -396,7 +396,9 @@ def save_settings_payload(
             dashboard["font"] = _validate_font(dashboard_input["font"])
         if "font_size" in dashboard_input:
             dashboard["font_size"] = _validate_font_size(dashboard_input["font_size"])
-        if "dashboard.token" in secrets:
+        if "dashboard.token" in secrets and persistence.secret_changed(
+            secrets.get("dashboard.token"), "secrets.dashboard.token"
+        ):
             vault_globals["dashboard_token"] = persistence.global_secret_update(
                 secrets,
                 "dashboard.token",
@@ -404,7 +406,9 @@ def save_settings_payload(
             )
         dashboard.pop("token", None)
 
-    if "github_token" in secrets:
+    if "github_token" in secrets and persistence.secret_changed(
+        secrets.get("github_token"), "secrets.github_token"
+    ):
         vault_globals["github_token"] = persistence.global_secret_update(
             secrets,
             "github_token",
@@ -466,25 +470,34 @@ def save_settings_payload(
             persistence.apply_secret_update,
         )
         secret_state = persistence.extract_provider_secret_state(provider_schema, built)
-        if secret_state["fields"] or secret_state["objects"]:
+        # Provider configs always carry secret runtime values for validation, but
+        # the DPAPI vault should only be rewritten when the client actually
+        # sets/clears a secret. Keep actions must not bump credential_revision.
+        if persistence.provider_secret_updates_requested(
+            provider_schema, secrets, config_key=config_key
+        ):
             vault_provider_secrets[provider_name] = secret_state
         providers_config[config_key] = built
 
     next_config["config_version"] = CONFIG_VERSION
-    try:
-        persistence.persist_vault_changes(
-            vault_globals,
-            vault_provider_secrets,
-            expected_revision=raw_revision,
-        )
-    except VaultConflict as exc:
-        raise SettingsValidationError(
-            "凭据已被其他认证页面或刷新任务更新，请刷新设置页后重试"
-        ) from exc
-    except VaultError as exc:
-        raise SettingsValidationError(
-            "无法写入 Windows 凭据 Vault，请重新认证或检查当前用户权限"
-        ) from exc
+    # Only touch the DPAPI vault when secret fields actually change. Ordinary
+    # Settings edits (music, logging, themes, layout-related values) should not
+    # compete with auth/refresh revision updates.
+    if vault_globals or vault_provider_secrets:
+        try:
+            persistence.persist_vault_changes(
+                vault_globals,
+                vault_provider_secrets,
+                expected_revision=raw_revision,
+            )
+        except VaultConflict as exc:
+            raise SettingsValidationError(
+                "凭据已被其他认证页面或刷新任务更新，请刷新设置页后重试"
+            ) from exc
+        except VaultError as exc:
+            raise SettingsValidationError(
+                "无法写入 Windows 凭据 Vault，请重新认证或检查当前用户权限"
+            ) from exc
 
     save_config(next_config)
     if music_changed:

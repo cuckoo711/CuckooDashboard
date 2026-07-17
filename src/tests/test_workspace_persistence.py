@@ -271,13 +271,27 @@ def test_removing_vibe_removes_dashboard_aggregate_subscription():
 def test_public_and_settings_workspace_routes_cover_crud_security_and_conflicts(monkeypatch):
     app = create_app({"TESTING": True})
     client = app.test_client()
+    device_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    client.post(
+        "/api/device/session",
+        json={"device_id": device_id, "page": "dashboard"},
+        headers={"Origin": "http://localhost"},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    client.patch(
+        f"/api/settings/devices/{device_id}",
+        json={"status": "approved", "workspace_id": "main"},
+        headers={"Origin": "http://localhost"},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
     broadcasts = []
     monkeypatch.setattr(app.extensions["dashboard_runtime"].hub, "broadcast", broadcasts.append)
+    device_headers = {"X-Dashboard-Device": device_id}
 
-    public_list = client.get("/api/workspaces")
+    public_list = client.get("/api/workspaces", headers=device_headers)
     assert public_list.status_code == 200
     assert public_list.get_json()["workspaces"][0]["id"] == "main"
-    assert client.get("/api/workspaces/main").get_json()["version"] == 3
+    assert client.get("/api/workspaces/main", headers=device_headers).get_json()["version"] == 3
     assert client.get("/workspaces/main").status_code == 200
     assert client.get("/workspaces/missing").status_code == 404
 

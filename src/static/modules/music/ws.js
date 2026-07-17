@@ -1,4 +1,5 @@
 import { captureAndSendScreenshot } from '../shared/screenshot.js';
+import { getDeviceId, withDeviceId } from '../shared/device-id.js';
 import { websocketUrl } from '../shared/websocket.js';
 import { applyMusicOffsetData } from './controls.js';
 import { applyStageFont } from './font.js';
@@ -14,12 +15,16 @@ function setConnBadge(text, className = '') {
     element.className = 'badge' + (className ? ' ' + className : '');
 }
 
+function sendJson(socket, payload) {
+    socket.send(JSON.stringify(withDeviceId(payload)));
+}
+
 export function updateSpectrumSubscription(force = false) {
     const socket = state.ws;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     if (document.hidden) {
         if (state.spectrumSubscribed) {
-            socket.send(JSON.stringify({ type: 'subscribe', channel: 'spectrum', active: false }));
+            sendJson(socket, { type: 'subscribe', channel: 'spectrum', active: false, page: 'music' });
             state.spectrumSubscribed = false;
         }
         return;
@@ -29,7 +34,7 @@ export function updateSpectrumSubscription(force = false) {
     }
     const fps = state.visualProfile && state.visualProfile.spectrumFps || 24;
     if (!state.spectrumSubscribed || force) {
-        socket.send(JSON.stringify({ type: 'subscribe', channel: 'spectrum', active: true, fps }));
+        sendJson(socket, { type: 'subscribe', channel: 'spectrum', active: true, fps, page: 'music' });
         state.spectrumSubscribed = true;
     }
 }
@@ -59,17 +64,24 @@ export function connectWs() {
         if (state.wsReconnectTimer) clearTimeout(state.wsReconnectTimer);
         state.wsReconnectTimer = 0;
         setConnBadge('已连接');
-        socket.send(JSON.stringify({ type: 'report', page: 'music' }));
+        // Keep the persistent browser terminal online even on the music stage.
+        sendJson(socket, {
+            type: 'report',
+            page: 'music',
+            display_name: navigator.userAgent?.slice(0, 80) || '',
+        });
         try {
-            socket.send(JSON.stringify({
+            sendJson(socket, {
                 type: 'subscribe',
                 sources: ['media.playback'],
                 replace: true,
-            }));
+                page: 'music',
+            });
         } catch (_error) {}
-        try { socket.send(JSON.stringify({ type: 'subscribe', channel: 'lyric', active: true })); } catch (_error) {}
+        try { sendJson(socket, { type: 'subscribe', channel: 'lyric', active: true, page: 'music' }); } catch (_error) {}
         updateSpectrumSubscription(true);
-        socket.send(JSON.stringify({ type: 'init' }));
+        sendJson(socket, { type: 'init', page: 'music' });
+        console.log('[music-ws] connected as device', getDeviceId());
     };
     socket.onclose = () => {
         state.spectrumSubscribed = false;

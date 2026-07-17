@@ -1,6 +1,12 @@
+import { getDeviceId } from './device-id.js';
+
 export function readDashboardToken() {
     try { return localStorage.getItem('dashboardToken') || ''; }
     catch (_error) { return ''; }
+}
+
+export function readDashboardDeviceId() {
+    return getDeviceId();
 }
 
 export function createSecureFetch(options = {}) {
@@ -14,6 +20,8 @@ export function createSecureFetch(options = {}) {
         headers.set('X-Requested-With', header);
         const token = readDashboardToken();
         if (token) headers.set('X-Dashboard-Token', token);
+        const deviceId = readDashboardDeviceId();
+        if (deviceId) headers.set('X-Dashboard-Device', deviceId);
         next.headers = headers;
         return fetch(url, next).then(
             (response) => {

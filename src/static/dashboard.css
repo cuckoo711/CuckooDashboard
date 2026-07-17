@@ -572,3 +572,5 @@
             display:none; align-items:center; gap:3px; margin-left:6px;
         }
         .gh-hint.visible { display:inline-flex; }
+
+.device-gate { max-width: min(560px, 90

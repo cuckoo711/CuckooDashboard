@@ -8,6 +8,7 @@ from flask import Blueprint, current_app, jsonify, request, send_from_directory
 
 from app.security import require_post_protection
 from features.dashboard.service import get_dashboard_data
+from features.devices.access import require_device_access
 from runtime.lifecycle import get_runtime
 from services.github_service import get_github_data
 from services.health_service import get_health_snapshot
@@ -27,6 +28,11 @@ def index():
 @blueprint.route("/api/data")
 def api_data():
     """返回今日聚合数据、可配置 Vibe 卡片数据和 GitHub 贡献。"""
+    ok, payload, status = require_device_access()
+    if not ok:
+        response = jsonify(payload)
+        response.headers["Cache-Control"] = "no-store"
+        return response, status
     data = get_dashboard_data()
     data["github"] = get_github_data()
     return jsonify(data)

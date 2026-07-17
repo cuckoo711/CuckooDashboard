@@ -67,3 +67,41 @@ def test_service_uses_current_grid_for_bounds_and_rejects_v2_payloads():
     manifest["version"] = 2
     with pytest.raises(WorkspaceValidationError, match="version must be 3"):
         service.update("wide", manifest)
+
+
+def test_widget_capability_max_can_exceed_current_grid_but_layout_is_clamped():
+    """max_width/max_height are type ceilings (GRID_MAX), not the live grid size."""
+    registry = create_builtin_workspace_registry()
+    service = WorkspaceService(
+        WorkspaceRepository(":memory:"),
+        registry,
+        seed_workspace=registry.get_workspace("main"),
+    )
+    blank = service.create_blank("Compact", workspace_id="compact")
+    manifest = service.serialize(blank)
+    manifest["grid"] = {
+        "columns": 12,
+        "rows": 12,
+        "calibration": manifest["grid"]["calibration"],
+    }
+    definition = registry.get_widget("builtin.dashboard.network")
+    manifest["widgets"] = [
+        {
+            "id": "network",
+            "type": definition.type,
+            "owner": "cuckoo.core.dashboard",
+            "slot": "main",
+            "layout": {"x": 0, "y": 0, "width": 2, "height": 3},
+            # Type capability max intentionally exceeds current 12x12 grid.
+            "constraints": definition.constraints.to_payload(),
+            "sources": list(definition.sources),
+            "channels": list(definition.channels),
+            "available": True,
+        }
+    ]
+    updated = service.update("compact", manifest)
+    assert updated.grid.columns == 12
+    widget = updated.widgets[0]
+    assert widget.constraints.max_width == 48
+    assert widget.layout.width == 2
+    assert widget.layout.width <= updated.grid.columns

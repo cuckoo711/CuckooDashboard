@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 
 from core.config import DATA_DIR
+from devices.repository import DeviceRepository
+from devices.service import DeviceService
 from providers.auth import AuthRefreshScheduler, refresh_scheduler as provider_refresh_scheduler
 from runtime.refresh_scheduler import RefreshScheduler
 from runtime.source_cache import SourceCache
@@ -33,6 +35,9 @@ class DashboardRuntime:
         workspace_repository: WorkspaceRepository | None = None,
         workspace_service: WorkspaceService | None = None,
         workspace_database: str | None = None,
+        device_repository: DeviceRepository | None = None,
+        device_service: DeviceService | None = None,
+        device_database: str | None = None,
         extension_manager=None,
         source_cache: SourceCache | None = None,
         refresh_scheduler: RefreshScheduler | None = None,
@@ -62,6 +67,13 @@ class DashboardRuntime:
                 ),
             )
             self.websocket_transport = websocket_transport or WebSocketTransport()
+            self.device_repository = device_repository or DeviceRepository(
+                device_database or str(DATA_DIR / "devices.db")
+            )
+            self.device_service = device_service or DeviceService(
+                self.device_repository,
+                workspace_exists=self._workspace_exists,
+            )
             self.websocket = WebSocketHub(
                 workspace_registry=self.workspace_registry,
                 source_cache=self.source_cache,
@@ -73,6 +85,7 @@ class DashboardRuntime:
                     if self.extension_manager is not None
                     else None
                 ),
+                device_service=self.device_service,
             )
         else:
             # Preserve the historical injected-websocket contract: do not attach
@@ -123,11 +136,32 @@ class DashboardRuntime:
                     else None
                 ),
             )
+        if not hasattr(self, "device_repository"):
+            self.device_repository = device_repository or DeviceRepository(
+                device_database or str(DATA_DIR / "devices.db")
+            )
+        if not hasattr(self, "device_service") or self.device_service is None:
+            self.device_service = device_service or DeviceService(
+                self.device_repository,
+                workspace_exists=self._workspace_exists,
+            )
+        if getattr(self.websocket, "device_service", None) is None:
+            try:
+                self.websocket.device_service = self.device_service
+            except Exception:
+                pass
         self.auth_scheduler = auth_scheduler or provider_refresh_scheduler
         self._lock = threading.RLock()
         self._started = False
         if app is not None:
             self.init_app(app)
+
+    def _workspace_exists(self, workspace_id: str) -> bool:
+        try:
+            self.workspace_service.get_workspace(str(workspace_id))
+            return True
+        except Exception:
+            return False
 
     def _workspace_in_use(self, workspace_id: str) -> bool:
         list_clients = getattr(self.websocket, "list_clients", None)
@@ -152,6 +186,8 @@ class DashboardRuntime:
         app.extensions["workspace_registry"] = self.workspace_registry
         app.extensions["workspace_repository"] = self.workspace_repository
         app.extensions["workspace_service"] = self.workspace_service
+        app.extensions["device_repository"] = self.device_repository
+        app.extensions["device_service"] = self.device_service
         if self.source_cache is not None:
             app.extensions["source_cache"] = self.source_cache
         if self.refresh_scheduler is not None:
@@ -195,6 +231,7 @@ class DashboardRuntime:
             stop_media_service(timeout=timeout)
             stop_system_service(timeout=timeout)
             self.workspace_service.close()
+            self.device_repository.close()
             if self.extension_manager is not None:
                 self.extension_manager.state_repository.close()
             self._started = False

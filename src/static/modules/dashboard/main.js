@@ -1,7 +1,8 @@
 import { initAppearance } from './appearance.js';
 import { fetchWorkspaceManifest } from './api.js';
 import { startClock } from './clock.js';
-import { startConnectionMonitoring } from './connection.js';
+import { secureFetch, startConnectionMonitoring } from './connection.js';
+import { handshakeDevice, showDeviceGate } from './device.js';
 import { bindDashboardActions } from './events.js';
 import { initLyrics } from './lyrics.js';
 import { initNavigation } from './navigation.js';
@@ -22,6 +23,7 @@ let workspaceRequestSequence = 0;
 let lyricsInitialized = false;
 let vibeInitialized = false;
 let websocketStarted = false;
+let approvedWorkspaceId = null;
 
 export function workspaceIdFromPath(pathname = window.location.pathname) {
     const normalized = String(pathname || '/');
@@ -52,6 +54,20 @@ function showWorkspaceError(root, workspaceId, error) {
 function clearWorkspaceError(root) {
     delete root.dataset.workspaceError;
     root.querySelector(':scope > .workspace-error')?.remove();
+}
+
+function applyDeviceScale(session) {
+    if (!session?.approved) return;
+    const scaleMode = session.scale_mode || 'auto';
+    const scale = Number(session.scale || 1);
+    document.documentElement.dataset.deviceScaleMode = scaleMode;
+    if (scaleMode === 'fixed' && Number.isFinite(scale) && scale > 0) {
+        document.documentElement.style.setProperty('--device-scale', String(scale));
+        document.body.style.zoom = String(scale);
+    } else {
+        document.documentElement.style.removeProperty('--device-scale');
+        document.body.style.zoom = '';
+    }
 }
 
 function initializeMountedFeatures(summary) {
@@ -110,7 +126,29 @@ export async function reloadWorkspace(host, workspaceId) {
 export async function bootstrapDashboard() {
     const root = document.getElementById('workspaceHost');
     if (!root) throw new Error('Dashboard workspace host is missing');
-    const workspaceId = workspaceIdFromPath();
+
+    const pathWorkspaceId = workspaceIdFromPath();
+    let session;
+    try {
+        session = await handshakeDevice(secureFetch, {
+            page: 'dashboard',
+            viewport: {
+                width: window.innerWidth || 1,
+                height: window.innerHeight || 1,
+            },
+        });
+    } catch (error) {
+        console.error('[device] handshake failed:', error);
+        showDeviceGate(root, { reason: 'device_pending' });
+        return null;
+    }
+    if (!session?.approved) {
+        showDeviceGate(root, session);
+        return null;
+    }
+
+    applyDeviceScale(session);
+    approvedWorkspaceId = String(session.workspace_id || pathWorkspaceId || 'main');
     const extensionSummary = await loadRuntimeExtensions({ registry: componentRegistry });
     if (extensionSummary.catalogError || extensionSummary.failed.length) {
         console.warn('[extensions] runtime loading completed with errors:', extensionSummary);
@@ -121,7 +159,7 @@ export async function bootstrapDashboard() {
         bus: dashboardDataBus,
         subscriptions: dashboardSubscriptionClient,
     });
-    const summary = await reloadWorkspace(host, workspaceId);
+    const summary = await reloadWorkspace(host, approvedWorkspaceId);
 
     bindDashboardActions();
     startConnectionMonitoring();
@@ -132,8 +170,8 @@ export async function bootstrapDashboard() {
         summary.sources,
         dashboardDataBus,
         summary.channels,
-        workspaceId,
-        () => reloadWorkspace(host, workspaceId),
+        approvedWorkspaceId,
+        () => reloadWorkspace(host, approvedWorkspaceId),
         dashboardSubscriptionClient,
     );
     websocketStarted = true;

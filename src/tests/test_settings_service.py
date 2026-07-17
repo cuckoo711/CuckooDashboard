@@ -85,6 +85,46 @@ def test_public_global_payload_masks_vault_secrets(base_config, memory_vault):
     assert "github-secret" not in serialized
 
 
+def test_keep_secret_actions_do_not_write_vault_or_require_revision(monkeypatch, base_config, memory_vault):
+    """Ordinary Settings saves should not collide with auth refresh revisions."""
+    saved: dict = {}
+    monkeypatch.setattr(service, "load_config", lambda: copy.deepcopy(base_config))
+    monkeypatch.setattr(service, "save_config", lambda value: saved.update(copy.deepcopy(value)))
+    monkeypatch.setattr(runtime, "apply_runtime_config", lambda: (["test"], []))
+    monkeypatch.setattr(service, "get_settings_payload", lambda: {
+        "config": {},
+        "providers": [],
+        "options": {},
+        "credential_revision": 99,
+    })
+    memory_vault.state["revision"] = 9  # newer than the stale client revision
+    result = service.save_settings_payload({
+        "config": {
+            "theme": "dark",
+            "music": {
+                "spectrum_enabled": True,
+                "auto_calibrate": True,
+                "capture_device": "auto",
+                "spectrum_offset_ms": 40,
+                "beat_lead_ms": 20,
+                "bins": 48,
+                "render_fps": 0,
+                "render_bars": 0,
+            },
+            "providers": {},
+        },
+        "secrets": {
+            "dashboard.token": {"action": "keep"},
+            "github_token": {"action": "keep"},
+        },
+        # Intentionally stale: must be ignored when no secret mutation happens.
+        "credential_revision": 1,
+    })
+    assert result["ok"] is True
+    assert memory_vault.state["revision"] == 9
+    assert saved["theme"] == "dark"
+
+
 def test_save_moves_global_secrets_to_vault_and_keeps_yaml_clean(monkeypatch, base_config, memory_vault):
     saved: dict = {}
     monkeypatch.setattr(service, "load_config", lambda: copy.deepcopy(base_config))
