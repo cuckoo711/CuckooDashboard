@@ -78,3 +78,86 @@ def test_runtime_start_stop_is_idempotent_and_runs_shutdown_hooks(monkeypatch):
     assert scheduler.starts == 2
     assert scheduler.stops == 2
     assert stopped == ["spectrum", "media", "system"] * 2
+
+
+def test_runtime_orders_extension_lifecycle_around_websocket(monkeypatch):
+    events = []
+    monkeypatch.setattr(lifecycle_module, "shutdown_spectrum", lambda timeout=5: None)
+    monkeypatch.setattr(lifecycle_module, "stop_media_service", lambda timeout=5: None)
+    monkeypatch.setattr(lifecycle_module, "stop_system_service", lambda timeout=5: None)
+
+    class Hub(_Hub):
+        def start(self):
+            events.append("websocket:start")
+            return super().start()
+
+        def stop(self, timeout=5):
+            events.append("websocket:stop")
+            return super().stop(timeout)
+
+    class Scheduler(_Scheduler):
+        def start(self):
+            events.append("auth:start")
+            super().start()
+
+        def stop(self, timeout=5):
+            events.append("auth:stop")
+            super().stop(timeout)
+
+    class SourceScheduler(_Scheduler):
+        def start(self):
+            events.append("refresh:start")
+            super().start()
+            return True
+
+        def stop(self, timeout=5):
+            events.append("refresh:stop")
+            super().stop(timeout)
+
+    class StateRepository:
+        def close(self):
+            events.append("extensions:repository-close")
+
+    class Extensions:
+        state_repository = StateRepository()
+
+        def is_owner_available(self, _owner):
+            return True
+
+        def owner_allows_new_widgets(self, _owner):
+            return True
+
+        def owner_unavailable_reason(self, _owner):
+            return None
+
+        def start_all(self, _runtime):
+            events.append("extensions:start")
+
+        def stop_all(self, _runtime, timeout=5):
+            events.append("extensions:stop")
+
+        def health(self):
+            return {"effective": 0}
+
+    runtime = DashboardRuntime(
+        websocket=Hub(),
+        auth_scheduler=Scheduler(),
+        refresh_scheduler=SourceScheduler(),
+        extension_manager=Extensions(),
+    )
+    runtime.start()
+    runtime.stop(timeout=0)
+
+    assert events[:4] == [
+        "extensions:start",
+        "refresh:start",
+        "websocket:start",
+        "auth:start",
+    ]
+    assert events[4:8] == [
+        "websocket:stop",
+        "refresh:stop",
+        "auth:stop",
+        "extensions:stop",
+    ]
+    assert events[-1] == "extensions:repository-close"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contracts.workspace import (
     DataSourceDescriptor,
+    DataSourceRefreshPolicy,
     WidgetConstraints,
     WidgetDefinition,
     WidgetInstance,
@@ -16,7 +17,7 @@ from services.github_service import get_github_data
 from services.media_service import get_media_info
 from services.system_service import get_system_info
 from workspaces.data_sources import DataSourceDefinition
-from workspaces.registry import WorkspaceRegistry
+from workspaces.registry import CORE_OWNER_ID, RegistryOwner, WorkspaceRegistry
 
 
 def _source(
@@ -33,6 +34,10 @@ def _source(
             legacy_message_type=legacy_message_type,
             default_interval_seconds=default_interval_seconds,
             active_interval_seconds=active_interval_seconds,
+            refresh_policy=DataSourceRefreshPolicy.from_legacy_intervals(
+                default_interval_seconds,
+                active_interval_seconds,
+            ),
         ),
         getter=getter,
     )
@@ -41,10 +46,20 @@ def _source(
 def create_builtin_workspace_registry() -> WorkspaceRegistry:
     """Create a fresh registry containing the required built-in main workspace."""
     registry = WorkspaceRegistry()
-    registry.register_data_source(_source("system.snapshot", get_system_info, "system", 1))
-    registry.register_data_source(_source("media.playback", get_media_info, "media", 1))
+    registry.register_owner(
+        RegistryOwner(CORE_OWNER_ID, version="1.0.0", locked=True)
+    )
     registry.register_data_source(
-        _source("github.contributions", get_github_data, "github", 1)
+        _source("system.snapshot", get_system_info, "system", 1),
+        owner_id=CORE_OWNER_ID,
+    )
+    registry.register_data_source(
+        _source("media.playback", get_media_info, "media", 1),
+        owner_id=CORE_OWNER_ID,
+    )
+    registry.register_data_source(
+        _source("github.contributions", get_github_data, "github", 1),
+        owner_id=CORE_OWNER_ID,
     )
     registry.register_data_source(
         _source(
@@ -53,7 +68,8 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
             "dashboard_data",
             60,
             active_interval_seconds=20,
-        )
+        ),
+        owner_id=CORE_OWNER_ID,
     )
 
     widget_definitions = (
@@ -123,7 +139,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
         ),
     )
     for definition in widget_definitions:
-        registry.register_widget(definition)
+        registry.register_widget(definition, owner_id=CORE_OWNER_ID)
 
     registry.register_workspace(
         WorkspaceDefinition(
@@ -142,6 +158,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
                     "main",
                     WidgetLayout(0, 0, 6, 5),
                     WidgetConstraints(4, 4, 16, 15),
+                    owner=CORE_OWNER_ID,
                 ),
                 WidgetInstance(
                     "network",
@@ -149,6 +166,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
                     "main",
                     WidgetLayout(6, 0, 2, 3),
                     WidgetConstraints(2, 2, 16, 15),
+                    owner=CORE_OWNER_ID,
                 ),
                 WidgetInstance(
                     "uptime",
@@ -156,6 +174,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
                     "main",
                     WidgetLayout(6, 3, 2, 2),
                     WidgetConstraints(2, 2, 16, 15),
+                    owner=CORE_OWNER_ID,
                 ),
                 WidgetInstance(
                     "disks",
@@ -163,6 +182,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
                     "main",
                     WidgetLayout(0, 5, 8, 4),
                     WidgetConstraints(4, 3, 16, 15),
+                    owner=CORE_OWNER_ID,
                 ),
                 WidgetInstance(
                     "token-card",
@@ -170,6 +190,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
                     "main",
                     WidgetLayout(8, 0, 8, 9),
                     WidgetConstraints(6, 6, 16, 15),
+                    owner=CORE_OWNER_ID,
                 ),
                 WidgetInstance(
                     "player",
@@ -177,6 +198,7 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
                     "main",
                     WidgetLayout(0, 9, 8, 6),
                     WidgetConstraints(6, 4, 16, 15),
+                    owner=CORE_OWNER_ID,
                 ),
                 WidgetInstance(
                     "github",
@@ -184,8 +206,10 @@ def create_builtin_workspace_registry() -> WorkspaceRegistry:
                     "main",
                     WidgetLayout(8, 9, 8, 6),
                     WidgetConstraints(6, 4, 16, 15),
+                    owner=CORE_OWNER_ID,
                 ),
             ),
-        )
+        ),
+        owner_id=CORE_OWNER_ID,
     )
     return registry

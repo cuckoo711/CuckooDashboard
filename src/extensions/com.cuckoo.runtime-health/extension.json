@@ -1,0 +1,23 @@
+{
+  "manifest_version": 1,
+  "id": "com.cuckoo.runtime-health",
+  "version": "1.0.0",
+  "api_version": 1,
+  "metadata": {
+    "name": "运行健康",
+    "description": "展示 Dashboard 核心服务与 Provider 的健康摘要。",
+    "author": "Cuckoo",
+    "license": "MIT"
+  },
+  "backend": {
+    "entrypoint": "backend:create_extension"
+  },
+  "frontend": {
+    "module": "frontend/index.js"
+  },
+  "contributions": {
+    "data_sources": ["com.cuckoo.runtime-health.snapshot"],
+    "widgets": ["com.cuckoo.runtime-health.card"]
+  },
+  "requires": []
+}

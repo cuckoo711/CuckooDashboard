@@ -1,6 +1,16 @@
 """Stable typed contracts shared across application layers."""
 
 from contracts.dashboard import DashboardAggregate, DashboardTotals, ProviderSnapshots, UsageSource
+from contracts.extension import (
+    ExtensionContract,
+    ExtensionContributionDeclaration,
+    ExtensionContributions,
+    ExtensionLoadContext,
+    ExtensionManifest,
+    ExtensionMetadata,
+    ExtensionRequirement,
+    ExtensionRuntimeContext,
+)
 from contracts.health import ServiceHealth
 from contracts.provider import (
     ApiUsageCapability,
@@ -23,8 +33,16 @@ from contracts.settings import (
     SettingsSaveRequest,
     SettingsSaveResult,
 )
+from contracts.subscription import (
+    SourceError,
+    SourceSnapshot,
+    SourceSubscription,
+    SubscriptionContractError,
+    SubscriptionRequest,
+)
 from contracts.workspace import (
     DataSourceDescriptor,
+    DataSourceRefreshPolicy,
     WidgetConstraints,
     WidgetDefinition,
     WidgetInstance,
@@ -42,6 +60,15 @@ __all__ = [
     "DashboardAggregate",
     "DashboardTotals",
     "DataSourceDescriptor",
+    "DataSourceRefreshPolicy",
+    "ExtensionContract",
+    "ExtensionContributionDeclaration",
+    "ExtensionContributions",
+    "ExtensionLoadContext",
+    "ExtensionManifest",
+    "ExtensionMetadata",
+    "ExtensionRequirement",
+    "ExtensionRuntimeContext",
     "ProviderCallOutcome",
     "ProviderPanel",
     "ProviderProtocol",
@@ -52,9 +79,14 @@ __all__ = [
     "SecretView",
     "ServiceHealth",
     "SettingsOptions",
+    "SourceError",
+    "SourceSnapshot",
+    "SourceSubscription",
     "SettingsPayload",
     "SettingsSaveRequest",
     "SettingsSaveResult",
+    "SubscriptionContractError",
+    "SubscriptionRequest",
     "TokenPlanCapability",
     "UsageSource",
     "WidgetConstraints",

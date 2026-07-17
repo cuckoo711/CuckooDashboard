@@ -297,6 +297,18 @@
             </div>
         </form>
 
+        <section class="panel panel-wide extensions-panel" id="extensionsPanel">
+            <div class="panel-title extension-panel-title">
+                <div><span class="section-mark"></span><h2>扩展管理</h2></div>
+                <button type="button" class="small-btn" id="extensionsRescanButton">重新扫描</button>
+            </div>
+            <p class="extension-trust-warning">仅启用你信任的本地扩展。启用后，扩展的 Python 与 JavaScript 代码拥有和 Dashboard 相同的本机权限；启停与新代码均在重启 Dashboard 后生效。</p>
+            <div id="extensionsList" class="extensions-list">
+                <div class="empty-row">正在读取扩展状态…</div>
+            </div>
+            <div id="extensionMessage" class="extension-message">扩展状态尚未加载</div>
+        </section>
+
         <section class="panel panel-wide workspaces-panel" id="workspacesPanel">
             <div class="panel-title workspace-panel-title">
                 <div><span class="section-mark"></span><h2>工作区与布局</h2></div>

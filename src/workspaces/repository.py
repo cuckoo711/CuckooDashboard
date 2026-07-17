@@ -17,7 +17,8 @@ from contracts.workspace import (
     WorkspaceGrid,
 )
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
+_CORE_OWNER_ID = "cuckoo.core.dashboard"
 
 
 class WorkspaceRepositoryError(RuntimeError):
@@ -77,12 +78,12 @@ class WorkspaceRepository:
     @staticmethod
     def _create_schema(connection: sqlite3.Connection) -> None:
         current_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if current_version not in {0, _SCHEMA_VERSION}:
+        if current_version not in {0, 1, _SCHEMA_VERSION}:
             raise WorkspaceRepositoryError(
                 f"unsupported workspace database schema: {current_version}"
             )
         connection.executescript(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS workspaces (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -102,6 +103,7 @@ class WorkspaceRepository:
                 widget_id TEXT NOT NULL,
                 type TEXT NOT NULL,
                 slot TEXT NOT NULL,
+                owner_id TEXT NOT NULL DEFAULT '{_CORE_OWNER_ID}',
                 layout_x INTEGER NOT NULL CHECK (layout_x >= 0),
                 layout_y INTEGER NOT NULL CHECK (layout_y >= 0),
                 layout_width INTEGER NOT NULL CHECK (layout_width > 0),
@@ -116,7 +118,16 @@ class WorkspaceRepository:
             );
             """
         )
-        if current_version == 0:
+        if current_version == 1:
+            connection.execute(
+                "ALTER TABLE workspace_widgets ADD COLUMN owner_id TEXT NOT NULL "
+                f"DEFAULT '{_CORE_OWNER_ID}'"
+            )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_workspace_widgets_owner "
+            "ON workspace_widgets(owner_id, workspace_id)"
+        )
+        if current_version < _SCHEMA_VERSION:
             connection.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     @contextmanager
@@ -248,6 +259,39 @@ class WorkspaceRepository:
                 raise WorkspaceConflictError("workspace revision conflict")
             return current
 
+    def list_widget_references(self, owner_id: str) -> list[dict[str, object]]:
+        """Return persisted workspace instances owned by one extension package."""
+        with self._lock:
+            connection = self._connect_locked()
+            rows = connection.execute(
+                """
+                SELECT w.id AS workspace_id, w.name AS workspace_name,
+                       ww.widget_id, ww.type
+                FROM workspace_widgets AS ww
+                JOIN workspaces AS w ON w.id = ww.workspace_id
+                WHERE ww.owner_id = ?
+                ORDER BY w.required DESC, w.name COLLATE NOCASE, ww.position
+                """,
+                (owner_id,),
+            ).fetchall()
+        grouped: dict[str, dict[str, object]] = {}
+        for row in rows:
+            workspace_id = str(row["workspace_id"])
+            entry = grouped.setdefault(
+                workspace_id,
+                {
+                    "workspace_id": workspace_id,
+                    "workspace_name": str(row["workspace_name"]),
+                    "widgets": [],
+                },
+            )
+            widgets = entry["widgets"]
+            assert isinstance(widgets, list)
+            widgets.append(
+                {"id": str(row["widget_id"]), "type": str(row["type"])}
+            )
+        return list(grouped.values())
+
     @staticmethod
     def _insert_workspace(connection: sqlite3.Connection, workspace: WorkspaceDefinition) -> None:
         grid = workspace.grid or WorkspaceGrid()
@@ -278,10 +322,10 @@ class WorkspaceRepository:
             connection.execute(
                 """
                 INSERT INTO workspace_widgets
-                    (workspace_id, position, widget_id, type, slot,
+                    (workspace_id, position, widget_id, type, slot, owner_id,
                      layout_x, layout_y, layout_width, layout_height,
                      min_width, min_height, max_width, max_height)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     workspace.id,
@@ -289,6 +333,7 @@ class WorkspaceRepository:
                     widget.id,
                     widget.type,
                     widget.slot,
+                    widget.owner or _CORE_OWNER_ID,
                     layout.x,
                     layout.y,
                     layout.width,
@@ -329,6 +374,7 @@ class WorkspaceRepository:
                     widget["max_width"],
                     widget["max_height"],
                 ),
+                owner=widget["owner_id"],
             )
             for widget in widget_rows
         )

@@ -8,16 +8,70 @@ export const BUILTIN_WIDGET_TYPES = Object.freeze([
     'builtin.dashboard.github',
 ]);
 
+const refreshPolicy = (defaultIntervalMs, activeIntervalMs = null) => ({
+    supports_push: false,
+    default_interval_ms: defaultIntervalMs,
+    active_interval_ms: activeIntervalMs,
+    minimum_interval_ms: activeIntervalMs ?? defaultIntervalMs,
+    cache_ttl_ms: defaultIntervalMs,
+    pause_without_subscribers: true,
+    stale_if_error_ms: 0,
+    error_backoff_initial_ms: defaultIntervalMs,
+    error_backoff_max_ms: 60000,
+});
+
 const sources = [
-    { id: 'system.snapshot', kind: 'snapshot', legacy_message_type: 'system', default_interval_seconds: 1, active_interval_seconds: null },
-    { id: 'dashboard.aggregate', kind: 'snapshot', legacy_message_type: 'dashboard_data', default_interval_seconds: 60, active_interval_seconds: 20 },
-    { id: 'media.playback', kind: 'snapshot', legacy_message_type: 'media', default_interval_seconds: 1, active_interval_seconds: null },
-    { id: 'github.contributions', kind: 'snapshot', legacy_message_type: 'github', default_interval_seconds: 1, active_interval_seconds: null },
+    {
+        id: 'system.snapshot',
+        kind: 'snapshot',
+        legacy_message_type: 'system',
+        default_interval_seconds: 1,
+        active_interval_seconds: null,
+        refresh_policy: refreshPolicy(1000),
+    },
+    {
+        id: 'dashboard.aggregate',
+        kind: 'snapshot',
+        legacy_message_type: 'dashboard_data',
+        default_interval_seconds: 60,
+        active_interval_seconds: 20,
+        refresh_policy: refreshPolicy(60000, 20000),
+    },
+    {
+        id: 'media.playback',
+        kind: 'snapshot',
+        legacy_message_type: 'media',
+        default_interval_seconds: 1,
+        active_interval_seconds: null,
+        refresh_policy: refreshPolicy(1000),
+    },
+    {
+        id: 'github.contributions',
+        kind: 'snapshot',
+        legacy_message_type: 'github',
+        default_interval_seconds: 1,
+        active_interval_seconds: null,
+        refresh_policy: refreshPolicy(1000),
+    },
 ];
+
+const CORE_OWNER_ID = 'cuckoo.core.dashboard';
+const TITLES = Object.freeze({
+    'builtin.dashboard.system-info': '系统信息',
+    'builtin.dashboard.network': '网络',
+    'builtin.dashboard.uptime': '运行时间',
+    'builtin.dashboard.disks': '磁盘',
+    'builtin.dashboard.vibe': 'Vibe Coding',
+    'builtin.dashboard.player': '播放器',
+    'builtin.dashboard.github': 'GitHub 贡献',
+});
 
 const widget = (id, type, sourcesList, channels, layout, constraints) => ({
     id,
     type,
+    title: TITLES[type] || type,
+    owner: CORE_OWNER_ID,
+    available: true,
     slot: 'main',
     sources: sourcesList,
     channels,

@@ -10,9 +10,10 @@ export function createUptimeComponent() {
             root.innerHTML = '<div class="card-head"><span class="card-head-l"><span class="bar"></span>已运行</span></div>'
                 + '<div class="card-body uptime-body"><span class="uptime-val" id="uptimeVal">--</span></div>';
             context.root.appendChild(root);
+            context.subscribe('system.snapshot', (data, meta) => this.update(data, meta));
             return root;
         },
-        onData(payload) {
+        update(payload) {
             const uptime = payload?.system?.uptime;
             const element = root?.querySelector('#uptimeVal');
             if (!element || uptime == null) return;

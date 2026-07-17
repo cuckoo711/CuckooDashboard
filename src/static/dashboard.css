@@ -143,6 +143,17 @@
         }
         .workspace-error strong { display:block; margin-bottom:6px; color:var(--crimson-light); font-size:calc(var(--fs-body) * 1.25); }
         .workspace-error span { color:var(--text2); }
+        .workspace-widget-unavailable {
+            min-width:0; min-height:0; padding:18px;
+            display:flex; flex-direction:column; justify-content:center; gap:9px;
+            border-style:dashed; color:var(--text2);
+        }
+        .workspace-widget-unavailable .card-title { color:var(--text); }
+        .workspace-widget-unavailable-detail { margin:0; line-height:1.5; }
+        .workspace-widget-unavailable code {
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+            color:var(--crimson-light); font-size:calc(var(--fs-small) * .92);
+        }
 
         /* ── Header ── */
         .hdr { grid-row:1; grid-column:1; display:grid; grid-template-columns:1fr auto 1fr; align-items:center; }

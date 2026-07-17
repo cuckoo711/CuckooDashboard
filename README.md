@@ -20,11 +20,20 @@
 ### Workspace Module Host
 - `main` and user-created workspaces are persisted in `data/workspaces.db` as revisioned Manifest v2 documents
 - Every workspace uses a fixed 16 × 15 content grid; Settings can add/remove, drag, resize, duplicate, rename, and delete workspaces
-- System info, network, uptime, disks, Vibe, player, and GitHub are registered single-instance built-in widget types
-- The four system widgets share one `system.snapshot`; each client subscribes only to the data sources/channels required by its current workspace
+- System info, network, uptime, disks, Vibe, player, and GitHub are single-instance widget types owned by the locked `cuckoo.core.dashboard` package
+- The four system widgets share one `system.snapshot`; every mounted card uses the host Widget SDK (`mount/update/destroy` plus `context.subscribe`) and the browser sends only its active card-level subscriptions
 - `/` remains the `main` alias, while custom workspaces have stable `/workspaces/<workspace_id>` URLs
 - Revision compare-and-swap prevents two Settings tabs from silently overwriting each other's layout changes
-- The browser keeps a static widget allowlist: manifests describe composition and layout but never supply executable code or arbitrary HTML
+- Widget rows persist their canonical extension owner; missing/disabled extensions produce removable placeholder cards instead of breaking the workspace
+
+### Trusted Local Extension Host
+- Strict Manifest v1 discovery scans bundled `src/extensions/` and administrator-managed `data/extensions/` directories without importing disabled code
+- Non-core extensions are disabled by default; Settings persists `desired_enabled` in `data/extensions.db`, while `effective_enabled` changes only after a Dashboard restart
+- Enabled backends can contribute validated Data Sources and Widget Definitions plus idempotent `start/stop` lifecycle hooks
+- Dashboard loads frontend modules only from the host-generated, same-origin Runtime Catalog; Workspace manifests never provide executable URLs or arbitrary HTML
+- Duplicate IDs, path escapes, API incompatibility, dependency cycles, undeclared contributions, and partial registrations are isolated per extension
+- `com.cuckoo.runtime-health` is a bundled, default-disabled example that displays the existing service health snapshot
+- This is a trusted-code system, not a sandbox: enabled Python/JavaScript has the same local permissions as Dashboard; online install, signatures, and hot unloading are not implemented
 
 ### Provider 数据系统
 - Provider 自动发现、能力声明与动态配置面板
@@ -135,7 +144,9 @@ python run_dashboard.py --dev   # Debug mode with auto-reload
 
 密码、Token 默认以掩码显示，点击“查看”才会读取明文；留空默认保持原值，使用“清空”按钮才会删除敏感配置。保存后会清理相关缓存并立即应用，大多数配置无需重启服务。
 
-同一页面的“工作区与布局”面板独立管理 `data/workspaces.db`：可新建空白工作区、复制现有工作区、添加或移除七种内置卡片，并在 16 × 15 预览网格中拖动和缩放。工作区保存与 YAML 配置保存互不混用；若另一标签页已先保存，旧 revision 会收到 `409`，本地草稿会保留以便人工处理。
+同一页面的“工作区与布局”面板独立管理 `data/workspaces.db`：可新建空白工作区、复制现有工作区、添加或移除当前可用卡片，并在 16 × 15 预览网格中拖动和缩放。工作区保存与 YAML 配置保存互不混用；若另一标签页已先保存，旧 revision 会收到 `409`，本地草稿会保留以便人工处理。
+
+“扩展管理”面板独立管理 `data/extensions.db`。复制到 `data/extensions/<extension_id>/` 的包首次发现时默认禁用；开关只修改 desired state，必须重启 Dashboard 才会 import/start 或停用。扩展仍被工作区引用、被其它已启用扩展依赖、Manifest 无效或 ID 冲突时，状态修改会被拒绝并显示原因。仅启用你完全信任的本地代码。
 
 ### 3. Desktop App (optional)
 
@@ -158,12 +169,14 @@ The desktop app reads `data/monitor.json` to determine which display to use, the
 | `/` | GET | `main` workspace Dashboard page |
 | `/workspaces/<workspace_id>` | GET | Dashboard shell for an existing persisted workspace |
 | `/music` | GET | Full-screen music stage (lyrics + optional loopback spectrum) |
-| `/ws` | WebSocket | Legacy pushes plus per-client workspace/source/channel reports, Vibe, updates, navigation and screenshots |
+| `/ws` | WebSocket | Card-level source subscriptions and `data.snapshot`, with legacy source/channel envelopes, Vibe, updates, navigation and screenshots preserved |
 | `/api/data` | GET | Aggregated daily usage, configurable Vibe card payload, and GitHub contributions |
 | `/api/health` | GET | Lightweight cached service health; does not refresh external data |
 | `/api/system` | GET | System hardware info (CPU/GPU/Memory/Disk/Network) |
 | `/api/workspaces` | GET | Public workspace summaries for navigation |
-| `/api/workspaces/<workspace_id>` | GET | Manifest v2 with revision, 16 × 15 layouts, widget constraints, data sources, and channels |
+| `/api/workspaces/<workspace_id>` | GET | Manifest v2 with revision, owner/availability, 16 × 15 layouts, constraints, sources, and channels |
+| `/api/runtime/extensions` | GET | Active extension frontend catalog; contains only host-generated same-origin module URLs |
+| `/runtime/extensions/<extension_id>/assets/<path>` | GET | Frontend assets for an active extension, contained inside its validated `frontend/` directory |
 | `/api/providers` | GET | Dynamically discovered Provider metadata, capabilities, and health |
 | `/api/providers/<provider>/status` | GET | Generic Provider health/status resource |
 | `/api/providers/<provider>/today` | GET | Standardized Provider daily-usage resource |
@@ -189,6 +202,9 @@ The desktop app reads `data/monitor.json` to determine which display to use, the
 | `/api/settings/workspaces` | GET/POST | List workspaces/catalog or create an empty workspace (local-only) |
 | `/api/settings/workspaces/<workspace_id>` | GET/PUT/DELETE | Read, revision-save, or delete a workspace (local-only) |
 | `/api/settings/workspaces/<workspace_id>/duplicate` | POST | Duplicate a workspace with a new stable ID (local-only) |
+| `/api/settings/extensions` | GET | List core/discovered/missing extensions with desired/effective/restart state (local-only) |
+| `/api/settings/extensions/<extension_id>` | PUT | Revision-CAS update of desired enablement; restart required (local-only) |
+| `/api/settings/extensions/rescan` | POST | Re-read local Manifests without importing or starting code (local-only) |
 | `/api/settings/clients/<client_id>/navigate` | POST | Navigate one online client to Music, `main`, or a custom workspace (local-only) |
 | `/api/settings/reveal` | POST | Reveal one explicitly requested secret field (local-only) |
 | `/auth/<provider>/` | GET | Provider-owned local authentication/account page |
@@ -202,9 +218,13 @@ Copy `config/config.example.yaml` to `config/config.yaml` and fill only non-sens
 
 ### Workspace Database
 
-Editable workspaces are stored separately in `data/workspaces.db` using SQLite schema version 1. The `workspaces` table stores identity, name, kind, required flag, Manifest contract version, grid size and revision; `workspace_widgets` stores ordered card placements and canonical resize constraints. The required `main` row is seeded only when absent, so application restarts and upgrades do not overwrite a saved layout.
+Editable workspaces are stored separately in `data/workspaces.db` using SQLite schema version 2. The `workspaces` table stores identity, name, kind, required flag, Manifest contract version, grid size and revision; `workspace_widgets` stores ordered card placements, canonical resize constraints, and the authoritative `owner_id`. Schema v1 rows migrate to the locked core owner because only core widgets existed before owner persistence. The required `main` row is seeded only when absent, so restarts and upgrades do not overwrite a saved layout.
 
-Workspace updates replace the parent metadata and all card rows in one `BEGIN IMMEDIATE` transaction. `PUT` and `DELETE` requests include the current revision; a missing delete revision is rejected, while a stale revision returns `409 workspace_conflict` and leaves the database unchanged. The database contains layout/runtime metadata only—credentials remain exclusively in the DPAPI Vault.
+Workspace updates replace the parent metadata and all card rows in one `BEGIN IMMEDIATE` transaction. `PUT` and `DELETE` requests include the current revision; a missing delete revision is rejected, while a stale revision returns `409 workspace_conflict` and leaves the database unchanged. If an extension disappears, its rows remain readable as unavailable placeholders and can be moved or removed without inventing a replacement definition.
+
+### Extension State Database
+
+`data/extensions.db` stores a global revision and one desired enablement row per extension. Runtime activation is a startup snapshot: `desired_enabled != effective_enabled` means a process restart is required. Reads do not create a missing database; the first state mutation creates it. The state database contains no extension code, secrets, or configuration values.
 
 ### Credential Vault
 
@@ -300,17 +320,26 @@ dashboard:
 │   │   ├── music/                # Music stage, spectrum and calibration routes
 │   │   ├── system/               # System-monitoring routes
 │   │   ├── workspaces/           # Public workspace-manifest routes
+│   │   ├── extensions/           # Runtime catalog and contained frontend assets
 │   │   ├── providers/            # Generic and Provider-owned route registration
 │   │   └── appearance/           # Theme/font routes and payload service
 │   ├── runtime/
-│   │   ├── lifecycle.py          # Idempotent start/stop for managed workers
-│   │   └── websocket.py          # WebSocketHub, clients, subscriptions and broadcasters
+│   │   ├── lifecycle.py          # Ordered start/stop for extensions, sources and transports
+│   │   ├── websocket.py          # Legacy-compatible protocol facade + lyric/spectrum channels
+│   │   ├── websocket_transport.py # Pure socket/session transport
+│   │   ├── client_session.py     # Per-connection state and serialized sends
+│   │   ├── subscription_broker.py # Subscription indexes, delivery cadence and wire adapters
+│   │   ├── refresh_scheduler.py  # Demand-aware single-flight source sampling/backoff
+│   │   └── source_cache.py       # Process-local fresh/stale source snapshots
 │   ├── contracts/                # Standard-library dataclass/TypedDict wire contracts
 │   │   ├── provider.py
 │   │   ├── dashboard.py
 │   │   ├── health.py
 │   │   ├── settings.py
+│   │   ├── extension.py          # Manifest, contributions and lifecycle contracts
+│   │   ├── schemas/              # Shared JSON Schema documents
 │   │   └── workspace.py          # Data-source, widget type/instance and workspace contracts
+│   ├── extensions/               # Discovery, desired-state DB, loader, manager and bundled packages
 │   ├── workspaces/               # Registry, built-ins, SQLite repository and workspace service
 │   │   ├── registry.py
 │   │   ├── data_sources.py
@@ -359,7 +388,7 @@ dashboard:
 
 ### Managed Runtime Lifecycle
 
-`DashboardRuntime` owns the WebSocket broadcasters and Provider credential-refresh scheduler. Startup and shutdown are idempotent. Shutdown closes clients, releases spectrum subscriptions, stops executors/schedulers, terminates the SMTC worker, and joins system/media/spectrum workers. The desktop launcher uses a managed Werkzeug server and performs the same cleanup when the PyWebView window exits.
+`DashboardRuntime` owns the ExtensionManager lifecycle, WebSocket broadcasters and Provider credential-refresh scheduler. Startup and shutdown are idempotent: enabled extensions start in dependency order before WebSocket workers, while shutdown stops WebSocket delivery first and then extensions in reverse dependency order. Shutdown also releases spectrum subscriptions, stops executors/schedulers, terminates the SMTC worker, and joins system/media/spectrum workers.
 
 System and media collectors retain their existing lazy-start behavior: they start only when first consumed, but now expose explicit shutdown hooks and can restart after a clean stop.
 
@@ -380,7 +409,9 @@ Each `DashboardRuntime` owns an isolated `WorkspaceRegistry`, `WorkspaceReposito
 
 The built-in widget set is `builtin.dashboard.system-info`, `builtin.dashboard.network`, `builtin.dashboard.uptime`, `builtin.dashboard.disks`, `builtin.dashboard.vibe`, `builtin.dashboard.player`, and `builtin.dashboard.github`. All are single-instance within one workspace. System widgets intentionally share `system.snapshot`; Vibe owns `dashboard.aggregate`; the player declares `media.playback` plus the optional `media.lyric` channel. Removing a card removes its otherwise-unused data-source/channel subscription.
 
-The Dashboard host renders the Header outside the workspace coordinate system and mounts cards inside a nested 16 × 15 CSS Grid using Manifest `layout` values. Settings uses the same server-authoritative constraints in a Pointer Events editor with collision rejection and first-fit placement. The browser registry remains a static allowlist, so persisted manifests cannot inject executable modules or arbitrary HTML.
+Every snapshot Data Source now exposes an additive Manifest v2 `refresh_policy` (`default/minimum/active` intervals, cache TTL, push capability, pause-without-subscribers and retry/stale limits). The old second-based interval fields remain serialized for Extension API v1 compatibility and must agree with the policy.
+
+The Dashboard host renders the Header outside the workspace coordinate system and mounts cards inside a nested 16 × 15 CSS Grid using Manifest `layout` values. Settings uses the same server-authoritative constraints in a Pointer Events editor with collision rejection and first-fit placement. The browser first registers the static core package, then imports active extension modules from the host-generated Runtime Catalog. Owner-scoped transactions enforce the declared widget allowlist; persisted manifests still cannot inject executable URLs or arbitrary HTML.
 
 ### Native ES Modules
 
@@ -388,18 +419,18 @@ Dashboard, Music and Settings use browser-native ES Modules without a bundler or
 
 ### WebSocket Real-Time Push
 
-The dashboard uses a single WebSocket connection (`/ws`) managed by `WebSocketHub`:
+The dashboard uses one WebSocket connection (`/ws`), but ordinary Data Source work is split into explicit layers:
 
-1. Legacy clients keep the original initial push (`vibe_state`, `dashboard_data`, GitHub, media, system, theme and font)
-2. Workspace clients declare stable source IDs with `subscribe.sources`; subsequent snapshots are filtered per client while the legacy wire types remain unchanged
-3. Registered snapshot sources are fetched once per due cycle and fanned out to every matching client; system/media/GitHub use the 1s cadence and Dashboard aggregate uses 20s/60s Vibe cadence
-4. Spectrum broadcaster honors each visible client's requested 12–60 FPS cadence
-5. Lyric broadcaster polls at 120ms but sends only when the active track/line changes; the Dashboard subscribes only when its manifest contains the player channel
-6. Dashboard reports include `workspace_id` (legacy dashboard reports default to `main`); Settings can navigate a client to `/`, `/workspaces/<id>`, or `/music`
-7. Workspace writes broadcast `workspace_updated`; only clients showing that workspace refetch the Manifest, replace source/channel subscriptions, and report the new revision/workspace state
-8. Clients can still add/replace/remove source subscriptions, subscribe to spectrum/lyrics, toggle Vibe, request initialization, ping and return screenshots
+1. `WebSocketTransport` owns sockets, JSON framing, per-session send locks and idempotent disconnect cleanup; it has no Workspace or getter knowledge
+2. The Widget SDK gives every card `mount/update/destroy` and a constrained `context.subscribe`; the browser sends stable card subscriptions as `{type: "subscribe", subscriptions: [...]}`
+3. `SubscriptionBroker` keeps session/source indexes, derives reference counts, replays cache, applies each subscription's delivery interval and emits canonical `{type: "data.snapshot", subscriptionId, channel, ...}` messages
+4. `RefreshScheduler` clamps requested cadence to each Data Source refresh policy, performs one single-flight getter call per source, caches the result, applies stale/error backoff, and pauses sources with no demand
+5. Existing `subscribe.sources`, `unsubscribe.sources`, `init`, `dashboard_data`, `github`, `media`, `system`, and extension `workspace_source` envelopes remain available to legacy clients
+6. Product Dashboard clients no longer activate every source on connection; `/music` explicitly requests only `media.playback`
+7. Spectrum remains a dedicated 12–60 FPS acquire/release path, while lyrics remain a 120ms change-only channel; neither is forced through the ordinary snapshot scheduler
+8. Dashboard reports still include `workspace_id`, workspace updates still trigger Manifest reconciliation, and Vibe/navigation/theme/font/ping/screenshot behavior is unchanged
 
-All disconnect paths use one cleanup operation so spectrum references are released exactly once. Dashboard media remains slim while the Music Stage receives the full media payload.
+Multiple cards or clients consuming the same source share one sample/cache entry while retaining independent delivery cadence. Dashboard media remains slim while the Music Stage receives the full media payload, and all disconnect paths release subscriptions and spectrum references exactly once.
 
 ### Provider Plugin System
 
@@ -437,7 +468,7 @@ node --check src/static/settings/modules/main.js
 node --test src/tests/grid-layout.test.mjs
 ```
 
-The test suite covers App Factory/Registry/SQLite isolation, workspace seed/CRUD/CAS rollback, the complete route and loopback security surface, managed runtime shutdown/restart, source-filtered WebSocket broadcasting and workspace navigation, Provider/Dashboard/Health/Settings/Workspace contracts, AST dependency boundaries, workspace Host/DataBus behavior, Manifest v2 fallback parity, ES Module import resolution/cycle detection, Node syntax checks, and pure grid placement/collision rules.
+The test suite covers App Factory/Registry/SQLite isolation, workspace seed/CRUD/CAS rollback, the complete route and loopback security surface, ordered runtime shutdown/restart, scheduler single-flight/cache/backoff, broker reference counting and legacy/canonical WebSocket compatibility, transport send serialization, Widget SDK subscription cleanup, Manifest v2 fallback parity, AST dependency boundaries, ES Module loading, and pure grid placement/collision rules.
 
 ## Security
 

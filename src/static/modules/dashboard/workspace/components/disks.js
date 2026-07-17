@@ -19,9 +19,10 @@ export function createDisksComponent() {
                 + '<div class="skeleton" style="height:9px;width:65%;margin-bottom:4px;"></div>'
                 + '<div class="skeleton" style="height:5px;width:100%;"></div></div>';
             context.root.appendChild(root);
+            context.subscribe('system.snapshot', (data, meta) => this.update(data, meta));
             return root;
         },
-        onData(payload) {
+        update(payload) {
             const element = root?.querySelector('#sysDisks');
             if (!element) return;
             const logical = [];

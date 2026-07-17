@@ -37,9 +37,10 @@ export function createVibeComponent() {
                 + '<div class="leg-row"><span class="leg-dot" style="background:var(--crimson)"></span>输出<b id="todayOut">--</b><span class="leg-pct" id="todayOutPct"></span></div>'
                 + '</div></div><div class="card-foot vibe-balances" id="vibeBalances" hidden></div>';
             context.root.appendChild(root);
+            context.subscribe('dashboard.aggregate', (data, meta) => this.update(data, meta));
             return root;
         },
-        onData(payload) {
+        update(payload) {
             if (root) handleDashboardData(payload || {});
         },
         destroy() {

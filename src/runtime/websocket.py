@@ -1,4 +1,4 @@
-"""Dashboard WebSocket client state and background broadcasters."""
+"""Dashboard WebSocket protocol facade over transport, subscriptions and realtime channels."""
 
 from __future__ import annotations
 
@@ -7,24 +7,31 @@ import json
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
-from typing import Any, Callable
+from collections.abc import Mapping, Sequence
+from typing import Any
 from urllib.parse import quote
 
+from contracts.subscription import (
+    SourceSubscription,
+    SubscriptionContractError,
+    SubscriptionRequest,
+)
 from core.config import load_config, set_config_value
 from features.appearance.service import get_font_payload
-from features.dashboard.service import get_dashboard_data
-from services.github_service import get_github_data
-from services.media_service import get_lyric_frame, get_media_info
+from runtime.client_session import ClientSession
+from runtime.refresh_scheduler import RefreshScheduler
+from runtime.source_cache import SourceCache
+from runtime.subscription_broker import SubscriptionBroker
+from runtime.websocket_transport import WebSocketTransport
+from services.media_service import get_lyric_frame
 from services.spectrum_service import (
     acquire_spectrum,
     get_spectrum_frame,
     load_music_offsets,
     release_spectrum,
 )
-from services.system_service import get_system_info
 from services.theme import load_theme_index, theme_response
+from workspaces.builtins import create_builtin_workspace_registry
 
 logger = logging.getLogger("cuckoo.runtime.websocket")
 
@@ -32,16 +39,7 @@ _LYRIC_POLL_INTERVAL_S = 0.12
 _SPECTRUM_FPS_MIN = 12
 _SPECTRUM_FPS_MAX = 60
 _SPECTRUM_FPS_DEFAULT = 24
-_LEGACY_SOURCE_ORDER = ("dashboard_data", "github", "media", "system")
-
-
-@dataclass(frozen=True)
-class _SourceSpec:
-    source_id: str
-    message_type: str
-    getter: Callable[[], Any]
-    default_interval: float
-    active_interval: float | None = None
+_SPECIAL_LYRIC_CHANNEL = "media.lyric"
 
 
 def _load_vibe_state() -> bool:
@@ -52,7 +50,7 @@ def _save_vibe_state(active: bool) -> None:
     set_config_value("vibe_active", bool(active))
 
 
-def _dashboard_media_payload(frame: dict) -> dict:
+def _dashboard_media_payload(frame: Mapping[str, Any]) -> dict[str, Any]:
     """Return the small media shape used by dashboard clients."""
     keep = {
         "status", "title", "artist", "album", "song_id",
@@ -77,182 +75,138 @@ def _clamp_spectrum_fps(value: Any) -> int:
 
 
 class WebSocketHub:
-    """Own all WebSocket clients, protocol handling and broadcaster workers."""
+    """Compatibility protocol facade; ordinary source work is delegated to the broker."""
 
-    def __init__(self, workspace_registry: Any = None) -> None:
+    def __init__(
+        self,
+        workspace_registry: Any = None,
+        *,
+        source_cache: SourceCache | None = None,
+        refresh_scheduler: RefreshScheduler | None = None,
+        subscription_broker: SubscriptionBroker | None = None,
+        transport: WebSocketTransport | None = None,
+        is_owner_available=None,
+    ) -> None:
+        self.workspace_registry = workspace_registry or create_builtin_workspace_registry()
+        if subscription_broker is not None:
+            refresh_scheduler = refresh_scheduler or subscription_broker.scheduler
+            source_cache = source_cache or subscription_broker.cache
+        self.source_cache = source_cache or SourceCache()
+        self.refresh_scheduler = refresh_scheduler or RefreshScheduler(
+            self.workspace_registry,
+            cache=self.source_cache,
+        )
+        self.subscription_broker = subscription_broker or SubscriptionBroker(
+            self.workspace_registry,
+            self.refresh_scheduler,
+            is_owner_available=is_owner_available,
+        )
+        self._owns_scheduler = refresh_scheduler is None and subscription_broker is None
+
+        self.transport = transport or WebSocketTransport()
+        self.transport.on_open = self._on_open
+        self.transport.on_message = self._on_message
+        self.transport.on_close = self._on_close
+
         self._lock = threading.RLock()
         self._lifecycle_lock = threading.RLock()
-        self._clients: list[Any] = []
-        self._states: dict[Any, dict[str, Any]] = {}
-        self._workspace_registry = workspace_registry
-        self._source_last_run: dict[str, float] = {}
         self._vibe = _load_vibe_state()
         self._stop_event = threading.Event()
         self._threads: dict[str, threading.Thread] = {}
-        self._executor: ThreadPoolExecutor | None = None
         self._lyric_last_push_key: tuple[str, int, str, str] | None = None
         self._started_at: float | None = None
 
     def register(self, sock: Any) -> None:
         """Register the ``/ws`` route or handle one accepted socket connection."""
-        # Application factories pass the Flask-Sock extension itself, while the
-        # registered route later calls this method with an accepted WebSocket.
-        if callable(getattr(sock, "route", None)) and not callable(getattr(sock, "receive", None)):
-            sock.route("/ws")(self.register)
-            return
-
-        self.start()
-        saved_vibe = _load_vibe_state()
-        client_id = hashlib.md5(str(id(sock)).encode()).hexdigest()[:8]
-        with self._lock:
-            if sock not in self._states:
-                self._clients.append(sock)
-            self._states[sock] = {
-                "vibe": saved_vibe,
-                "spectrum": False,
-                "spectrum_fps": _SPECTRUM_FPS_DEFAULT,
-                "spectrum_last_sent_at": 0.0,
-                "lyric": False,
-                "lyric_explicit": False,
-                "source_subscriptions": None,
-                "id": client_id,
-                "page": "unknown",
-                "workspace_id": None,
-            }
-            self._recalc_vibe_locked()
-            total = len(self._clients)
-        logger.info("[ws] client connected (total: %s, id: %s)", total, client_id)
-        self._send(sock, {"type": "connected", "id": client_id})
-        self._submit_initial_push(sock)
-
-        try:
-            while not self._stop_event.is_set() and bool(getattr(sock, "connected", True)):
-                raw = sock.receive(timeout=30)
-                if raw:
-                    self._handle_message(sock, client_id, raw)
-        except Exception:
-            pass
-        finally:
-            removed = self._remove_client(sock)
-            if removed:
-                logger.info("[ws] client disconnected (total: %s)", len(self.list_clients()))
+        is_extension = callable(getattr(sock, "route", None)) and not callable(
+            getattr(sock, "receive", None)
+        )
+        if not is_extension:
+            self.start()
+        self.transport.register(sock)
 
     def start(self) -> bool:
-        """Start all broadcaster threads once; stopped hubs may be started again."""
+        """Start transport and the lyric/spectrum workers idempotently."""
         with self._lifecycle_lock:
+            changed = False
+            if self._owns_scheduler:
+                changed = self.refresh_scheduler.start() or changed
+            changed = self.transport.start() or changed
             if any(thread.is_alive() for thread in self._threads.values()):
-                return False
+                return changed
             self._threads = {}
-            self._source_last_run = {}
             self._stop_event.clear()
-            self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ws-fetch")
-            workers = {
-                "broadcaster": self._broadcaster_loop,
+            for name, target in {
                 "spectrum": self._spectrum_loop,
                 "lyric": self._lyric_loop,
-            }
-            for name, target in workers.items():
+            }.items():
                 thread = threading.Thread(target=target, daemon=True, name=f"ws-{name}")
                 self._threads[name] = thread
                 thread.start()
             self._started_at = time.time()
+            self._apply_vibe_refresh_policy(self._vibe)
             return True
 
     def stop(self, timeout: float = 5) -> None:
-        """Stop workers, disconnect clients and shut down the fetch executor."""
+        """Close sessions and stop only the realtime workers owned by this facade."""
         timeout = max(0.0, float(timeout))
         with self._lifecycle_lock:
             self._stop_event.set()
-            sockets = self._client_sockets()
-            for sock in sockets:
-                try:
-                    close = getattr(sock, "close", None)
-                    if callable(close):
-                        close()
-                except Exception:
-                    pass
-                self._remove_client(sock)
-
+            self.transport.stop(timeout=timeout)
             deadline = time.monotonic() + timeout
-            for thread in list(self._threads.values()):
+            for thread in tuple(self._threads.values()):
                 if thread is threading.current_thread():
                     continue
-                remaining = max(0.0, deadline - time.monotonic())
-                thread.join(remaining)
+                thread.join(max(0.0, deadline - time.monotonic()))
             self._threads = {
                 name: thread for name, thread in self._threads.items() if thread.is_alive()
             }
-
-            executor = self._executor
-            self._executor = None
-            if executor is not None:
-                executor.shutdown(wait=False, cancel_futures=True)
+            if self._owns_scheduler:
+                self.refresh_scheduler.stop(timeout=timeout)
             if not self._threads:
                 self._started_at = None
 
-    def health(self) -> dict:
-        with self._lock:
-            clients = len(self._states)
-            spectrum_clients = sum(1 for state in self._states.values() if state.get("spectrum"))
-            lyric_clients = self._lyric_interest_count_locked()
+    def health(self) -> dict[str, Any]:
+        transport_health = self.transport.health()
+        sessions = self.transport.sessions()
         with self._lifecycle_lock:
             threads = {name: thread.is_alive() for name, thread in self._threads.items()}
-            running = bool(threads) and all(threads.values()) and not self._stop_event.is_set()
-            executor_alive = self._executor is not None
+            realtime_running = bool(threads) and all(threads.values()) and not self._stop_event.is_set()
+        running = bool(transport_health.get("running")) and realtime_running
         return {
             "status": "ok" if running else "stopped",
             "ok": running,
             "running": running,
-            "clients": clients,
-            "spectrum_clients": spectrum_clients,
-            "lyric_clients": lyric_clients,
+            "clients": len(sessions),
+            "spectrum_clients": sum(1 for session in sessions if session.spectrum),
+            "lyric_clients": sum(1 for session in sessions if self._state_wants_lyric(session)),
             "threads": threads,
-            "executor": executor_alive,
+            "executor": False,
             "started_at": self._started_at,
+            "transport": transport_health,
         }
 
-    def broadcast(self, msg: dict) -> None:
-        source_id = self._source_id_for_message_type(str(msg.get("type") or ""))
-        self._broadcast_message(msg, source_id=source_id)
+    def broadcast(self, msg: dict[str, Any]) -> None:
+        message_type = str(msg.get("type") or "")
+        source_id = self._source_id_for_message_type(message_type)
+        if source_id is not None and "data" in msg:
+            self.subscription_broker.publish_external(source_id, msg.get("data"))
+            return
+        self.transport.broadcast(msg)
 
     def broadcast_media(self, frame: dict, source_id: str | None = None) -> None:
-        source_id = source_id or self._source_id_for_message_type("media") or "media"
-        full_data = json.dumps({"type": "media", "data": frame}, ensure_ascii=False)
-        slim_data = json.dumps(
-            {"type": "media", "data": _dashboard_media_payload(frame)},
-            ensure_ascii=False,
-        )
-        dead = []
-        for sock in self._source_targets(source_id):
-            with self._lock:
-                page = (self._states.get(sock) or {}).get("page") or "unknown"
-            try:
-                sock.send(slim_data if page == "dashboard" else full_data)
-            except Exception:
-                dead.append(sock)
-        for sock in dead:
-            self._remove_client(sock)
+        resolved = source_id or self._source_id_for_message_type("media") or "media.playback"
+        self.subscription_broker.publish_external(resolved, frame)
 
     def broadcast_lyric(self, msg: dict) -> int:
-        data = json.dumps(msg, ensure_ascii=False)
-        dead = []
-        sent = 0
-        for sock in self._client_sockets():
-            with self._lock:
-                state = self._states.get(sock) or {}
-                interested = self._state_wants_lyric(state)
-            if not interested:
-                continue
-            try:
-                sock.send(data)
-                sent += 1
-            except Exception:
-                dead.append(sock)
-        for sock in dead:
-            self._remove_client(sock)
-        return sent
+        return self.transport.broadcast(msg, predicate=self._state_wants_lyric)
 
     def broadcast_settings_update(self) -> None:
+        for source_id in self._known_source_ids():
+            try:
+                self.subscription_broker.invalidate(source_id, refresh=True)
+            except Exception:
+                continue
         self.broadcast({"type": "config_updated", "data": {"ok": True}})
         try:
             self.broadcast({"type": "theme", "data": theme_response(load_theme_index())})
@@ -264,25 +218,8 @@ class WebSocketHub:
             pass
         self.set_vibe(_load_vibe_state())
 
-    def list_clients(self) -> list:
-        with self._lock:
-            return [
-                {
-                    "id": state.get("id", "?"),
-                    "page": state.get("page", "unknown"),
-                    "workspace_id": (
-                        state.get("workspace_id")
-                        or ("main" if state.get("page") == "dashboard" else None)
-                    ),
-                    "connected": bool(getattr(sock, "connected", False)),
-                    "sources": (
-                        None
-                        if state.get("source_subscriptions") is None
-                        else sorted(state.get("source_subscriptions") or ())
-                    ),
-                }
-                for sock, state in self._states.items()
-            ]
+    def list_clients(self) -> list[dict[str, Any]]:
+        return [session.list_payload() for session in self.transport.sessions()]
 
     def navigate_client(
         self,
@@ -292,7 +229,6 @@ class WebSocketHub:
         workspace_id: str | None = None,
         url: str | None = None,
     ) -> bool:
-        """Navigate one client while preserving the legacy dashboard/music protocol."""
         if workspace_id is not None:
             workspace_id = str(workspace_id).strip()
             if not workspace_id:
@@ -303,36 +239,24 @@ class WebSocketHub:
             return False
         elif url is None:
             url = "/" if page == "dashboard" else "/music"
-
-        target = self._find_client(client_id)
-        if target is None:
-            return False
-        message = {"type": "navigate", "page": page, "url": url}
+        message: dict[str, Any] = {"type": "navigate", "page": page, "url": url}
         if page == "dashboard":
             message["workspace_id"] = workspace_id or "main"
-        if not self._send(target, message):
-            self._remove_client(target)
-            return False
-        return True
+        return self.transport.send_to(client_id, message)
 
     def workspace_client_ids(self, workspace_id: str) -> list[str]:
-        """Return connected Dashboard client ids currently reporting one workspace."""
         workspace_id = str(workspace_id or "")
-        with self._lock:
-            return [
-                str(state.get("id") or "?")
-                for state in self._states.values()
-                if state.get("page") == "dashboard"
-                and (state.get("workspace_id") or "main") == workspace_id
-            ]
+        return [
+            session.client_id
+            for session in self.transport.sessions()
+            if session.page == "dashboard" and (session.workspace_id or "main") == workspace_id
+        ]
 
     def request_screenshot(self, client_id: str) -> str | None:
-        target = self._find_client(client_id)
-        if target is None:
+        if self.transport.get_session(client_id) is None:
             return None
         request_id = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
-        if not self._send(target, {"type": "screenshot", "request_id": request_id}):
-            self._remove_client(target)
+        if not self.transport.send_to(client_id, {"type": "screenshot", "request_id": request_id}):
             return None
         return request_id
 
@@ -345,9 +269,10 @@ class WebSocketHub:
         _save_vibe_state(active)
         with self._lock:
             self._vibe = active
-            for state in self._states.values():
-                state["vibe"] = active
-        self.broadcast({"type": "vibe_state", "data": {"active": active}})
+            for session in self.transport.sessions():
+                session.vibe = active
+        self._apply_vibe_refresh_policy(active)
+        self.transport.broadcast({"type": "vibe_state", "data": {"active": active}})
         return active
 
     def force_lyric_sync(self) -> None:
@@ -359,76 +284,66 @@ class WebSocketHub:
         except Exception as exc:
             logger.debug("[ws] forced lyric sync failed: %s", exc)
 
-    def _submit_initial_push(self, sock: Any) -> None:
-        with self._lifecycle_lock:
-            executor = self._executor
-        if executor is not None:
-            try:
-                executor.submit(self._send_all_data, sock)
-                return
-            except RuntimeError:
-                pass
-        threading.Thread(target=self._send_all_data, args=(sock,), daemon=True).start()
-
-    def _send_all_data(self, sock: Any) -> None:
-        def safe_send(msg_type: str, getter) -> None:
-            try:
-                self._send(sock, {"type": msg_type, "data": getter()})
-                logger.info("[ws] init: sent %s", msg_type)
-            except Exception as exc:
-                logger.error("[ws] init %s fetch error: %s", msg_type, exc)
-
+    def _on_open(self, session: ClientSession) -> None:
+        saved_vibe = _load_vibe_state()
+        session.vibe = saved_vibe
+        self.subscription_broker.register_session(
+            session,
+            send=lambda payload: self.transport.send(session, payload),
+            page=session.page,
+            workspace_id=session.workspace_id,
+            legacy_all=False,
+        )
         with self._lock:
-            state = self._states.get(sock) or {}
-            subscriptions = state.get("source_subscriptions")
-            selected = None if subscriptions is None else set(subscriptions)
+            self._recalc_vibe_locked()
+        logger.info(
+            "[ws] client connected (total: %s, id: %s)",
+            len(self.transport.sessions()),
+            session.client_id,
+        )
+        self._send(session, {"type": "connected", "id": session.client_id})
 
-        self._send(sock, {"type": "vibe_state", "data": {"active": _load_vibe_state()}})
-        for spec in self._ordered_source_specs():
-            if selected is not None and spec.source_id not in selected:
-                continue
-            safe_send(spec.message_type, spec.getter)
-        try:
-            self._send(sock, {"type": "theme", "data": theme_response(load_theme_index())})
-        except Exception:
-            pass
-        safe_send("font", get_font_payload)
-        logger.info("[ws] init: all data sent")
+    def _on_close(self, session: ClientSession) -> None:
+        self.subscription_broker.close_session(session)
+        had_spectrum = session.spectrum
+        session.spectrum = False
+        if had_spectrum:
+            release_spectrum()
+        with self._lock:
+            self._recalc_vibe_locked()
+        logger.info("[ws] client disconnected (total: %s)", len(self.transport.sessions()))
 
-    def _handle_message(self, sock: Any, client_id: str, raw: Any) -> None:
-        try:
-            msg = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            return
+    def _on_message(self, session: ClientSession, msg: dict[str, Any]) -> None:
         try:
             msg_type = msg.get("type")
             if msg_type == "vibe":
+                session.vibe = bool(msg.get("active"))
                 with self._lock:
-                    state = self._states.get(sock)
-                    if state is None:
-                        return
-                    state["vibe"] = bool(msg.get("active"))
                     vibe = self._recalc_vibe_locked()
                 _save_vibe_state(vibe)
+                self._apply_vibe_refresh_policy(vibe)
                 logger.info("[ws] vibe coding: %s", "ON" if vibe else "OFF")
             elif msg_type == "report":
                 page = str(msg.get("page") or "unknown")
                 workspace_id = None
                 if page == "dashboard":
                     workspace_id = str(msg.get("workspace_id") or "main").strip() or "main"
-                with self._lock:
-                    state = self._states.get(sock)
-                    if state is None:
-                        return
-                    state["page"] = page
-                    state["workspace_id"] = workspace_id
-                    if page == "music" or (
-                        page == "dashboard" and state.get("source_subscriptions") is None
-                    ):
-                        state["lyric"] = True
+                session.page = page
+                session.workspace_id = workspace_id
+                self.subscription_broker.report_session(
+                    session,
+                    page=page,
+                    workspace_id=workspace_id,
+                )
+                if page == "music" or (
+                    page == "dashboard"
+                    and session.wire_mode == "legacy"
+                    and session.source_subscriptions is None
+                ):
+                    session.lyric = True
                 logger.info(
                     "[ws] client %s reports page: %s%s",
-                    client_id,
+                    session.client_id,
                     page,
                     f" ({workspace_id})" if workspace_id else "",
                 )
@@ -436,260 +351,223 @@ class WebSocketHub:
                 channel = str(msg.get("channel") or "")
                 if channel == "spectrum":
                     active = bool(msg.get("active"))
-                    self._set_spectrum_interest(sock, active, msg.get("fps"))
-                    if active:
-                        if self._send(sock, {"type": "spectrum", "data": get_spectrum_frame()}):
-                            self._send(sock, {"type": "music_offset", "data": load_music_offsets()})
-                            with self._lock:
-                                state = self._states.get(sock)
-                                if state is not None:
-                                    state["spectrum_last_sent_at"] = time.monotonic()
+                    self._set_spectrum_interest(session, active, msg.get("fps"))
+                    if active and self._send(
+                        session,
+                        {"type": "spectrum", "data": get_spectrum_frame()},
+                    ):
+                        self._send(session, {"type": "music_offset", "data": load_music_offsets()})
+                        session.spectrum_last_sent_at = time.monotonic()
                 elif channel == "lyric":
-                    active = bool(msg.get("active"))
-                    with self._lock:
-                        state = self._states.get(sock)
-                        if state is not None:
-                            state["lyric"] = active
-                            state["lyric_explicit"] = True
-                    if active:
-                        self._send(sock, {"type": "lyric", "data": get_lyric_frame()})
+                    self._set_lyric_interest(session, bool(msg.get("active")), explicit=True)
+                elif "subscriptions" in msg:
+                    self._replace_card_subscriptions(session, msg)
                 elif "sources" in msg:
-                    self._subscribe_sources(sock, msg.get("sources"), replace=bool(msg.get("replace", True)))
+                    self._subscribe_sources(
+                        session,
+                        msg.get("sources"),
+                        replace=bool(msg.get("replace", True)),
+                    )
             elif msg_type == "unsubscribe":
-                if "sources" in msg:
-                    self._unsubscribe_sources(sock, msg.get("sources"))
+                if "subscriptions" in msg or "subscription_ids" in msg or "ids" in msg:
+                    self._unsubscribe_card_subscriptions(session, msg)
+                elif "sources" in msg:
+                    self._unsubscribe_sources(session, msg.get("sources"))
             elif msg_type == "init":
-                self._send_all_data(sock)
+                self._send_all_data(session)
             elif msg_type == "ping":
-                self._send(sock, {"type": "pong", "ts": msg.get("ts")})
+                self._send(session, {"type": "pong", "ts": msg.get("ts")})
             elif msg_type == "screenshot_data":
                 self.broadcast({
                     "type": "screenshot_result",
                     "request_id": msg.get("request_id"),
-                    "client_id": client_id,
+                    "client_id": session.client_id,
                     "data": msg.get("data"),
                     "timestamp": time.time(),
                 })
-                logger.info("[ws] screenshot received from %s", client_id)
+                logger.info("[ws] screenshot received from %s", session.client_id)
         except (KeyError, TypeError, ValueError):
             return
 
-    def _broadcaster_loop(self) -> None:
-        while not self._stop_event.is_set():
-            started = time.monotonic()
-            try:
-                if self._has_clients():
-                    with self._lifecycle_lock:
-                        executor = self._executor
-                    if executor is None:
-                        break
-                    self._broadcast_due_sources(started, executor=executor)
-            except Exception as exc:
-                logger.error("[ws] broadcaster error: %s", exc)
-            elapsed = time.monotonic() - started
-            self._stop_event.wait(max(0.0, 1.0 - elapsed))
-
-    def _broadcast_due_sources(
+    def _replace_card_subscriptions(
         self,
-        now: float | None = None,
-        executor: ThreadPoolExecutor | None = None,
+        session: ClientSession,
+        payload: Mapping[str, Any],
     ) -> None:
-        now = time.monotonic() if now is None else now
-        due: list[_SourceSpec] = []
-        active = self.get_vibe()
-        for spec in self._source_specs():
-            if not self._source_targets(spec.source_id):
-                continue
-            interval = spec.active_interval if active and spec.active_interval is not None else spec.default_interval
-            last_run = self._source_last_run.get(spec.source_id)
-            if last_run is not None and now - last_run + 1e-6 < interval:
-                continue
-            self._source_last_run[spec.source_id] = now
-            due.append(spec)
-
-        if executor is None:
-            for spec in due:
-                self._fetch_and_publish_source(spec)
+        raw = payload.get("subscriptions")
+        if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+            self._send_source_error(session, "invalid_subscriptions", "subscriptions must be an array")
             return
-
-        futures = {}
-        for spec in due:
-            try:
-                futures[executor.submit(spec.getter)] = spec
-            except Exception as exc:
-                logger.error("[ws] %s broadcast submit error: %s", spec.message_type, exc)
-        for future in as_completed(futures):
-            if self._stop_event.is_set():
-                break
-            spec = futures[future]
-            try:
-                self._publish_source_result(spec, future.result())
-            except Exception as exc:
-                logger.error("[ws] %s broadcast error: %s", spec.message_type, exc)
-
-    def _fetch_and_publish_source(self, spec: _SourceSpec) -> None:
+        replace = bool(payload.get("replace", True))
+        current = {} if replace else dict(session.subscriptions)
+        incoming: dict[str, dict[str, Any]] = {}
+        ordinary: list[Mapping[str, Any]] = []
+        seen_ids: set[str] = set()
         try:
-            self._publish_source_result(spec, spec.getter())
-        except Exception as exc:
-            logger.error("[ws] %s broadcast error: %s", spec.message_type, exc)
-
-    def _publish_source_result(self, spec: _SourceSpec, result: Any) -> None:
-        if spec.message_type == "media":
-            self.broadcast_media(result, source_id=spec.source_id)
-        else:
-            self._broadcast_message(
-                {"type": spec.message_type, "data": result},
-                source_id=spec.source_id,
-            )
-
-    def _broadcast_message(self, msg: dict, source_id: str | None = None) -> None:
-        data = json.dumps(msg, ensure_ascii=False)
-        dead = []
-        targets = self._client_sockets() if source_id is None else self._source_targets(source_id)
-        for sock in targets:
-            try:
-                sock.send(data)
-            except Exception:
-                dead.append(sock)
-        for sock in dead:
-            self._remove_client(sock)
-
-    def _source_targets(self, source_id: str) -> list[Any]:
-        with self._lock:
-            return [
-                sock
-                for sock in self._clients
-                if (
-                    (self._states.get(sock) or {}).get("source_subscriptions") is None
-                    or source_id in ((self._states.get(sock) or {}).get("source_subscriptions") or ())
+            for index, item in enumerate(raw):
+                if not isinstance(item, Mapping):
+                    raise SubscriptionContractError(
+                        "invalid_subscription",
+                        "subscription must be an object",
+                    )
+                subscription_id = str(
+                    item.get("id")
+                    or item.get("subscription_id")
+                    or item.get("subscriptionId")
+                    or f"subscription:{index}"
                 )
-            ]
+                if subscription_id in seen_ids:
+                    raise SubscriptionContractError(
+                        "duplicate_subscription_id",
+                        f"duplicate subscription id: {subscription_id}",
+                        subscription_id=subscription_id,
+                    )
+                seen_ids.add(subscription_id)
+                channel = str(
+                    item.get("channel")
+                    or item.get("source_id")
+                    or item.get("source")
+                    or ""
+                )
+                normalized = dict(item)
+                normalized["id"] = subscription_id
+                normalized["channel"] = channel
+                incoming[subscription_id] = normalized
+                if channel != _SPECIAL_LYRIC_CHANNEL:
+                    ordinary.append(normalized)
+            request = SubscriptionRequest.from_payload(
+                {"subscriptions": ordinary, "replace": replace}
+            )
+            self.subscription_broker.replace_subscriptions(
+                session,
+                request.subscriptions,
+                replace=replace,
+                replay=False,
+            )
+        except SubscriptionContractError as exc:
+            self._send(session, {"type": "source_error", "error": exc.to_error().to_payload()})
+            return
+        target = current
+        target.update(incoming)
+        session.subscriptions = target
+        session.wire_mode = "snapshot"
+        session.source_subscriptions = {
+            item.source_id for item in self.subscription_broker.subscriptions_for_session(session)
+        }
+        wants_lyric = any(
+            str(item.get("channel") or "") == _SPECIAL_LYRIC_CHANNEL
+            for item in target.values()
+        )
+        self._set_lyric_interest(session, wants_lyric, explicit=True)
 
-    def _subscribe_sources(self, sock: Any, sources: Any, replace: bool) -> None:
+    def _unsubscribe_card_subscriptions(
+        self,
+        session: ClientSession,
+        payload: Mapping[str, Any],
+    ) -> None:
+        ids = payload.get("subscription_ids", payload.get("ids", ()))
+        if isinstance(ids, str):
+            ids = (ids,)
+        raw = payload.get("subscriptions", ())
+        if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+            ids = tuple(ids) + tuple(
+                str(item.get("id") or item.get("subscriptionId") or "")
+                for item in raw
+                if isinstance(item, Mapping)
+            )
+        selected = {str(value) for value in ids if value is not None}
+        self.subscription_broker.unsubscribe(session, subscription_ids=tuple(selected))
+        session.subscriptions = {
+            key: value for key, value in session.subscriptions.items() if key not in selected
+        }
+        session.source_subscriptions = {
+            item.source_id for item in self.subscription_broker.subscriptions_for_session(session)
+        }
+        wants_lyric = any(
+            str(item.get("channel") or "") == _SPECIAL_LYRIC_CHANNEL
+            for item in session.subscriptions.values()
+        )
+        self._set_lyric_interest(session, wants_lyric, explicit=True)
+
+    def _subscribe_sources(self, session: ClientSession, sources: Any, replace: bool) -> None:
         requested = self._normalize_source_ids(sources)
         known = self._known_source_ids()
         selected = {source_id for source_id in requested if source_id in known}
-        with self._lock:
-            state = self._states.get(sock)
-            if state is None:
-                return
-            current = state.get("source_subscriptions")
-            if replace:
-                state["source_subscriptions"] = selected
-            else:
-                subscriptions = set() if current is None else set(current)
-                subscriptions.update(selected)
-                state["source_subscriptions"] = subscriptions
+        current = session.source_subscriptions
+        target = selected if replace else (set() if current is None else set(current)) | selected
+        subscriptions = tuple(
+            SourceSubscription(id=f"legacy:{source_id}", source_id=source_id)
+            for source_id in self._ordered_source_ids(target)
+        )
+        self.subscription_broker.replace_subscriptions(
+            session,
+            subscriptions,
+            replace=True,
+            replay=False,
+        )
+        session.wire_mode = "legacy"
+        session.source_subscriptions = set(target)
 
-    def _unsubscribe_sources(self, sock: Any, sources: Any) -> None:
-        requested = self._normalize_source_ids(sources)
+    def _unsubscribe_sources(self, session: ClientSession, sources: Any) -> None:
         known = self._known_source_ids()
-        selected = {source_id for source_id in requested if source_id in known}
+        selected = set(self._normalize_source_ids(sources)) & known
         if not selected:
             return
-        with self._lock:
-            state = self._states.get(sock)
-            if state is None:
-                return
-            current = state.get("source_subscriptions")
-            subscriptions = set(known) if current is None else set(current)
-            subscriptions.difference_update(selected)
-            state["source_subscriptions"] = subscriptions
+        current = set(known) if session.source_subscriptions is None else set(
+            session.source_subscriptions
+        )
+        current.difference_update(selected)
+        self._subscribe_sources(session, current, replace=True)
 
-    @staticmethod
-    def _normalize_source_ids(sources: Any) -> list[str]:
-        if isinstance(sources, str):
-            sources = [sources]
-        if not isinstance(sources, (list, tuple, set)):
-            return []
-        return [str(source_id) for source_id in sources if source_id is not None]
-
-    def _known_source_ids(self) -> set[str]:
-        return {spec.source_id for spec in self._source_specs()}
-
-    def _source_id_for_message_type(self, message_type: str) -> str | None:
-        for spec in self._source_specs():
-            if spec.message_type == message_type:
-                return spec.source_id
-        return None
-
-    def _ordered_source_specs(self) -> list[_SourceSpec]:
-        order = {message_type: index for index, message_type in enumerate(_LEGACY_SOURCE_ORDER)}
-        return sorted(
-            self._source_specs(),
-            key=lambda spec: (order.get(spec.message_type, len(order)), spec.source_id),
+    def _ensure_legacy_all(self, session: ClientSession) -> None:
+        if session.wire_mode != "legacy" or session.source_subscriptions is not None:
+            return
+        subscriptions = tuple(
+            SourceSubscription(id=f"legacy:{source_id}", source_id=source_id)
+            for source_id in self._ordered_source_ids(self._known_source_ids())
+        )
+        self.subscription_broker.replace_subscriptions(
+            session,
+            subscriptions,
+            replace=True,
+            replay=False,
         )
 
-    def _source_specs(self) -> list[_SourceSpec]:
-        if self._workspace_registry is None:
-            return [
-                _SourceSpec("dashboard.aggregate", "dashboard_data", get_dashboard_data, 60.0, 20.0),
-                _SourceSpec("github.contributions", "github", get_github_data, 1.0, 1.0),
-                _SourceSpec("media.playback", "media", get_media_info, 1.0, 1.0),
-                _SourceSpec("system.snapshot", "system", get_system_info, 1.0, 1.0),
-            ]
-
-        definitions: list[Any] = []
-        registry = self._workspace_registry
+    def _send_all_data(self, target: Any) -> None:
+        session = self._resolve_session(target)
+        if session is None:
+            return
+        self._send(session, {"type": "vibe_state", "data": {"active": _load_vibe_state()}})
+        self._ensure_legacy_all(session)
+        self.subscription_broker.init_session(
+            session,
+            refresh_missing=True,
+            wait_for_refresh=True,
+        )
         try:
-            iterator = getattr(registry, "iter_data_sources", None)
-            if callable(iterator):
-                definitions = list(iterator())
-            else:
-                ids = getattr(registry, "data_source_ids", None)
-                getter = getattr(registry, "get_data_source", None)
-                if callable(ids) and callable(getter):
-                    definitions = [getter(source_id) for source_id in ids()]
-        except Exception as exc:
-            logger.error("[ws] data source registry error: %s", exc)
-            return []
-
-        specs: list[_SourceSpec] = []
-        seen: set[str] = set()
-        for definition in definitions:
-            if definition is None:
-                continue
-            descriptor = self._definition_field(definition, "descriptor")
-            source_id = str(self._definition_field(descriptor, "id") or "")
-            message_type = str(self._definition_field(descriptor, "legacy_message_type") or "")
-            getter = self._definition_field(definition, "getter")
-            if not source_id or not message_type or not callable(getter) or source_id in seen:
-                continue
-            default_interval = self._positive_interval(
-                self._definition_field(descriptor, "default_interval_seconds"),
-                fallback=1.0,
-            )
-            active_value = self._definition_field(descriptor, "active_interval_seconds")
-            active_interval = (
-                None
-                if active_value is None
-                else self._positive_interval(active_value, fallback=default_interval)
-            )
-            specs.append(
-                _SourceSpec(
-                    source_id,
-                    message_type,
-                    getter,
-                    default_interval,
-                    active_interval,
-                )
-            )
-            seen.add(source_id)
-        return specs
-
-    @staticmethod
-    def _definition_field(value: Any, name: str) -> Any:
-        if isinstance(value, dict):
-            return value.get(name)
-        return getattr(value, name, None)
-
-    @staticmethod
-    def _positive_interval(value: Any, fallback: float) -> float:
+            self._send(session, {"type": "theme", "data": theme_response(load_theme_index())})
+        except Exception:
+            pass
         try:
-            interval = float(value)
-        except (TypeError, ValueError):
-            return fallback
-        return interval if interval > 0 else fallback
+            self._send(session, {"type": "font", "data": get_font_payload()})
+        except Exception:
+            pass
+
+    def _handle_message(self, target: Any, client_id: str, raw: Any) -> None:
+        del client_id
+        session = self._resolve_session(target)
+        if session is None:
+            return
+        try:
+            message = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+        except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+            return
+        if isinstance(message, dict):
+            self._on_message(session, message)
+
+    def _broadcast_due_sources(self, now: float | None = None, executor: Any = None) -> None:
+        del executor
+        self.refresh_scheduler.run_due(now=now, wait=True)
 
     def _spectrum_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -728,113 +606,151 @@ class WebSocketHub:
 
     def _broadcast_spectrum(self, msg: dict, now: float | None = None) -> int:
         now = time.monotonic() if now is None else now
-        targets = []
-        with self._lock:
-            for sock, state in self._states.items():
-                if not state.get("spectrum"):
-                    continue
-                fps = _clamp_spectrum_fps(state.get("spectrum_fps", _SPECTRUM_FPS_DEFAULT))
-                last_sent = float(state.get("spectrum_last_sent_at") or 0.0)
-                if now - last_sent + 1e-6 < 1.0 / fps:
-                    continue
-                state["spectrum_last_sent_at"] = now
-                targets.append(sock)
-        data = json.dumps(msg, ensure_ascii=False)
-        dead = []
         sent = 0
-        for sock in targets:
-            try:
-                sock.send(data)
+        for session in self.transport.sessions():
+            if not session.spectrum:
+                continue
+            fps = _clamp_spectrum_fps(session.spectrum_fps)
+            if now - session.spectrum_last_sent_at + 1e-6 < 1.0 / fps:
+                continue
+            session.spectrum_last_sent_at = now
+            if self._send(session, msg):
                 sent += 1
-            except Exception:
-                dead.append(sock)
-        for sock in dead:
-            self._remove_client(sock)
         return sent
 
-    def _set_spectrum_interest(self, sock: Any, active: bool, fps: Any = None) -> None:
-        with self._lock:
-            state = self._states.get(sock)
-            if state is None:
-                return
-            was_active = bool(state.get("spectrum"))
-            if active:
-                state["spectrum_fps"] = _clamp_spectrum_fps(
-                    fps if fps is not None else state.get("spectrum_fps", _SPECTRUM_FPS_DEFAULT)
-                )
-                state["spectrum_last_sent_at"] = 0.0
-            state["spectrum"] = bool(active)
-            requested_fps = state.get("spectrum_fps")
+    def _set_spectrum_interest(
+        self,
+        session: ClientSession,
+        active: bool,
+        fps: Any = None,
+    ) -> None:
+        was_active = bool(session.spectrum)
+        if active:
+            session.spectrum_fps = _clamp_spectrum_fps(
+                fps if fps is not None else session.spectrum_fps
+            )
+            session.spectrum_last_sent_at = 0.0
+        session.spectrum = bool(active)
         if was_active == bool(active):
             return
         if active:
             acquire_spectrum()
-            logger.info("[ws] spectrum subscribe ON (%sfps)", requested_fps)
+            logger.info("[ws] spectrum subscribe ON (%sfps)", session.spectrum_fps)
         else:
             release_spectrum()
             logger.info("[ws] spectrum subscribe OFF")
 
-    def _remove_client(self, sock: Any) -> bool:
-        """Remove a client exactly once and release its spectrum ref exactly once."""
-        with self._lock:
-            state = self._states.pop(sock, None)
-            if state is None:
-                return False
-            try:
-                self._clients.remove(sock)
-            except ValueError:
-                pass
-            had_spectrum = bool(state.get("spectrum"))
-            self._recalc_vibe_locked()
-        if had_spectrum:
-            release_spectrum()
-        return True
+    def _set_lyric_interest(
+        self,
+        session: ClientSession,
+        active: bool,
+        *,
+        explicit: bool,
+    ) -> None:
+        session.lyric = bool(active)
+        if explicit:
+            session.lyric_explicit = True
+        if active:
+            self._send(session, {"type": "lyric", "data": get_lyric_frame()})
 
     def _recalc_vibe_locked(self) -> bool:
-        if self._states:
-            self._vibe = any(bool(state.get("vibe")) for state in self._states.values())
+        sessions = self.transport.sessions()
+        if sessions:
+            self._vibe = any(bool(session.vibe) for session in sessions)
         else:
             self._vibe = _load_vibe_state()
         return self._vibe
 
-    def _client_sockets(self) -> list[Any]:
-        with self._lock:
-            return list(self._clients)
+    def _apply_vibe_refresh_policy(self, active: bool) -> None:
+        for source_id in self._known_source_ids():
+            try:
+                self.refresh_scheduler.set_source_active(source_id, bool(active))
+            except Exception:
+                continue
 
-    def _has_clients(self) -> bool:
-        with self._lock:
-            return bool(self._clients)
-
-    def _find_client(self, client_id: str) -> Any | None:
-        with self._lock:
-            for sock, state in self._states.items():
-                if state.get("id") == client_id:
-                    return sock
+    def _source_id_for_message_type(self, message_type: str) -> str | None:
+        for definition in self.workspace_registry.iter_data_sources():
+            if definition.descriptor.legacy_message_type == message_type:
+                return definition.descriptor.id
         return None
 
-    def _spectrum_target_fps(self) -> int:
-        with self._lock:
-            requested = [
-                _clamp_spectrum_fps(state.get("spectrum_fps", _SPECTRUM_FPS_DEFAULT))
-                for state in self._states.values()
-                if state.get("spectrum")
-            ]
-        return max(requested, default=0)
+    def _known_source_ids(self) -> set[str]:
+        return set(self.workspace_registry.data_source_ids())
 
-    def _lyric_interest_count(self) -> int:
-        with self._lock:
-            return self._lyric_interest_count_locked()
-
-    def _lyric_interest_count_locked(self) -> int:
-        return sum(1 for state in self._states.values() if self._state_wants_lyric(state))
+    def _ordered_source_ids(self, source_ids: set[str]) -> tuple[str, ...]:
+        order = {"dashboard_data": 0, "github": 1, "media": 2, "system": 3}
+        definitions = [
+            self.workspace_registry.get_data_source(source_id)
+            for source_id in source_ids
+        ]
+        return tuple(
+            definition.descriptor.id
+            for definition in sorted(
+                definitions,
+                key=lambda item: (
+                    order.get(item.descriptor.legacy_message_type, len(order)),
+                    item.descriptor.id,
+                ),
+            )
+        )
 
     @staticmethod
-    def _state_wants_lyric(state: dict[str, Any]) -> bool:
-        if state.get("lyric_explicit"):
-            return bool(state.get("lyric"))
-        if state.get("source_subscriptions") is not None:
-            return bool(state.get("lyric"))
-        return bool(state.get("lyric")) or state.get("page") in {"music", "dashboard"}
+    def _normalize_source_ids(sources: Any) -> list[str]:
+        if isinstance(sources, str):
+            sources = [sources]
+        if not isinstance(sources, (list, tuple, set)):
+            return []
+        return [str(source_id) for source_id in sources if source_id is not None]
+
+    def _resolve_session(self, target: Any) -> ClientSession | None:
+        if isinstance(target, ClientSession):
+            return target if self.transport.get_session(target.client_id) is target else None
+        if isinstance(target, str):
+            return self.transport.get_session(target)
+        for session in self.transport.sessions():
+            if session.socket is target:
+                return session
+        return None
+
+    def _send(self, target: Any, msg: dict[str, Any]) -> bool:
+        return self.transport.send(target, msg)
+
+    def _send_source_error(
+        self,
+        session: ClientSession,
+        code: str,
+        message: str,
+    ) -> None:
+        self._send(
+            session,
+            {
+                "type": "source_error",
+                "error": {"code": code, "message": message, "retryable": False},
+            },
+        )
+
+    def _spectrum_target_fps(self) -> int:
+        return max(
+            (
+                _clamp_spectrum_fps(session.spectrum_fps)
+                for session in self.transport.sessions()
+                if session.spectrum
+            ),
+            default=0,
+        )
+
+    def _lyric_interest_count(self) -> int:
+        return sum(
+            1 for session in self.transport.sessions() if self._state_wants_lyric(session)
+        )
+
+    @staticmethod
+    def _state_wants_lyric(session: ClientSession) -> bool:
+        if session.lyric_explicit:
+            return bool(session.lyric)
+        if session.source_subscriptions is not None or session.wire_mode == "snapshot":
+            return bool(session.lyric)
+        return bool(session.lyric) or session.page in {"music", "dashboard"}
 
     @staticmethod
     def _lyric_key(frame: dict) -> tuple[str, int, str, str]:
@@ -845,10 +761,5 @@ class WebSocketHub:
             str(frame.get("lyric") or ""),
         )
 
-    @staticmethod
-    def _send(sock: Any, msg: dict) -> bool:
-        try:
-            sock.send(json.dumps(msg, ensure_ascii=False))
-            return True
-        except Exception:
-            return False
+
+__all__ = ["WebSocketHub", "_clamp_spectrum_fps", "_dashboard_media_payload"]

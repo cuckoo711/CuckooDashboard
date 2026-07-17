@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cuckoo.local/schemas/extension-manifest.schema.json",
+  "title": "Cuckoo Extension Manifest v1",
+  "type": "object",
+  "required": ["manifest_version", "id", "version", "api_version", "metadata", "contributions"],
+  "properties": {
+    "manifest_version": {"const": 1},
+    "id": {"$ref": "#/$defs/extensionId"},
+    "version": {"$ref": "#/$defs/semver"},
+    "api_version": {"const": 1},
+    "metadata": {"$ref": "#/$defs/metadata"},
+    "backend": {"$ref": "#/$defs/backend"},
+    "frontend": {"$ref": "#/$defs/frontend"},
+    "contributions": {"$ref": "#/$defs/contributions"},
+    "requires": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/requirement"},
+      "uniqueItems": true,
+      "default": []
+    }
+  },
+  "patternProperties": {"^x-": true},
+  "additionalProperties": false,
+  "$defs": {
+    "extensionId": {
+      "type": "string",
+      "pattern": "^[a-z](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z](?:[a-z0-9-]*[a-z0-9])?)+$"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "default": ""},
+        "author": {"type": "string", "minLength": 1},
+        "homepage": {"type": "string", "format": "uri"},
+        "license": {"type": "string", "minLength": 1}
+      },
+      "patternProperties": {"^x-": true},
+      "additionalProperties": false
+    },
+    "backend": {
+      "type": "object",
+      "required": ["entrypoint"],
+      "properties": {
+        "entrypoint": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_.]*$"
+        }
+      },
+      "patternProperties": {"^x-": true},
+      "additionalProperties": false
+    },
+    "frontend": {
+      "type": "object",
+      "required": ["module"],
+      "properties": {
+        "module": {"type": "string", "pattern": "^frontend/(?:[^./][^/]*/)*[^/]+\\.(?:js|mjs)$"}
+      },
+      "patternProperties": {"^x-": true},
+      "additionalProperties": false
+    },
+    "contributions": {
+      "type": "object",
+      "properties": {
+        "data_sources": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true,
+          "default": []
+        },
+        "widgets": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true,
+          "default": []
+        }
+      },
+      "patternProperties": {"^x-": true},
+      "additionalProperties": false
+    },
+    "requirement": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": {"$ref": "#/$defs/extensionId"},
+        "min_version": {"$ref": "#/$defs/semver", "default": "0.0.0"}
+      },
+      "patternProperties": {"^x-": true},
+      "additionalProperties": false
+    }
+  }
+}

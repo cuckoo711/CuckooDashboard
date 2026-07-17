@@ -5,8 +5,12 @@ from __future__ import annotations
 import threading
 
 from core.config import DATA_DIR
-from providers.auth import AuthRefreshScheduler, refresh_scheduler
+from providers.auth import AuthRefreshScheduler, refresh_scheduler as provider_refresh_scheduler
+from runtime.refresh_scheduler import RefreshScheduler
+from runtime.source_cache import SourceCache
+from runtime.subscription_broker import SubscriptionBroker
 from runtime.websocket import WebSocketHub
+from runtime.websocket_transport import WebSocketTransport
 from services.media_service import stop_media_service
 from services.spectrum_service import shutdown_spectrum
 from services.system_service import stop_system_service
@@ -29,17 +33,62 @@ class DashboardRuntime:
         workspace_repository: WorkspaceRepository | None = None,
         workspace_service: WorkspaceService | None = None,
         workspace_database: str | None = None,
+        extension_manager=None,
+        source_cache: SourceCache | None = None,
+        refresh_scheduler: RefreshScheduler | None = None,
+        subscription_broker: SubscriptionBroker | None = None,
+        websocket_transport: WebSocketTransport | None = None,
     ) -> None:
         self.workspace_registry = (
             workspace_registry
             if workspace_registry is not None
             else create_builtin_workspace_registry()
         )
-        self.websocket = (
-            websocket
-            if websocket is not None
-            else WebSocketHub(workspace_registry=self.workspace_registry)
-        )
+        self.extension_manager = extension_manager
+
+        if websocket is None:
+            self.source_cache = source_cache or SourceCache()
+            self.refresh_scheduler = refresh_scheduler or RefreshScheduler(
+                self.workspace_registry,
+                cache=self.source_cache,
+            )
+            self.subscription_broker = subscription_broker or SubscriptionBroker(
+                self.workspace_registry,
+                self.refresh_scheduler,
+                is_owner_available=(
+                    self.extension_manager.is_owner_available
+                    if self.extension_manager is not None
+                    else None
+                ),
+            )
+            self.websocket_transport = websocket_transport or WebSocketTransport()
+            self.websocket = WebSocketHub(
+                workspace_registry=self.workspace_registry,
+                source_cache=self.source_cache,
+                refresh_scheduler=self.refresh_scheduler,
+                subscription_broker=self.subscription_broker,
+                transport=self.websocket_transport,
+                is_owner_available=(
+                    self.extension_manager.is_owner_available
+                    if self.extension_manager is not None
+                    else None
+                ),
+            )
+        else:
+            # Preserve the historical injected-websocket contract: do not attach
+            # runtime attributes to arbitrary fakes or externally-owned objects.
+            self.websocket = websocket
+            self.source_cache = source_cache or getattr(websocket, "source_cache", None)
+            self.refresh_scheduler = refresh_scheduler or getattr(
+                websocket, "refresh_scheduler", None
+            )
+            self.subscription_broker = subscription_broker or getattr(
+                websocket, "subscription_broker", None
+            )
+            self.websocket_transport = websocket_transport or getattr(
+                websocket, "transport", None
+            )
+
         # Compatibility alias used by feature route modules.
         self.hub = self.websocket
         if workspace_service is not None:
@@ -58,8 +107,23 @@ class DashboardRuntime:
                 self.workspace_registry,
                 seed_workspace=seed_workspace,
                 is_workspace_in_use=self._workspace_in_use,
+                is_owner_available=(
+                    self.extension_manager.is_owner_available
+                    if self.extension_manager is not None
+                    else None
+                ),
+                owner_allows_new_widgets=(
+                    self.extension_manager.owner_allows_new_widgets
+                    if self.extension_manager is not None
+                    else None
+                ),
+                owner_unavailable_reason=(
+                    self.extension_manager.owner_unavailable_reason
+                    if self.extension_manager is not None
+                    else None
+                ),
             )
-        self.auth_scheduler = auth_scheduler or refresh_scheduler
+        self.auth_scheduler = auth_scheduler or provider_refresh_scheduler
         self._lock = threading.RLock()
         self._started = False
         if app is not None:
@@ -88,35 +152,70 @@ class DashboardRuntime:
         app.extensions["workspace_registry"] = self.workspace_registry
         app.extensions["workspace_repository"] = self.workspace_repository
         app.extensions["workspace_service"] = self.workspace_service
+        if self.source_cache is not None:
+            app.extensions["source_cache"] = self.source_cache
+        if self.refresh_scheduler is not None:
+            app.extensions["refresh_scheduler"] = self.refresh_scheduler
+        if self.subscription_broker is not None:
+            app.extensions["subscription_broker"] = self.subscription_broker
+        if self.websocket_transport is not None:
+            app.extensions["websocket_transport"] = self.websocket_transport
+        if self.extension_manager is not None:
+            app.extensions["extension_manager"] = self.extension_manager
+            app.extensions["extension_state_repository"] = (
+                self.extension_manager.state_repository
+            )
         return self
 
     def start(self) -> bool:
-        """Start the WebSocket hub and provider refresh scheduler idempotently."""
+        """Start extensions, ordinary source scheduling, WebSocket and auth workers."""
         with self._lock:
-            websocket_started = self.websocket.start()
+            if self.extension_manager is not None:
+                self.extension_manager.start_all(self)
+            refresh_started = False
+            if self.refresh_scheduler is not None:
+                refresh_started = bool(self.refresh_scheduler.start())
+            websocket_started = bool(self.websocket.start())
             self.auth_scheduler.start()
-            changed = not self._started or websocket_started
+            changed = not self._started or refresh_started or websocket_started
             self._started = True
             return changed
 
     def stop(self, timeout: float = 5) -> None:
-        """Stop all runtime workers and lazy services idempotently."""
+        """Stop transports before data getters, then stop extensions and lazy services."""
         timeout = max(0.0, float(timeout))
         with self._lock:
             self.websocket.stop(timeout=timeout)
+            if self.refresh_scheduler is not None:
+                self.refresh_scheduler.stop(timeout=timeout)
             self.auth_scheduler.stop(timeout=timeout)
+            if self.extension_manager is not None:
+                self.extension_manager.stop_all(self, timeout=timeout)
             shutdown_spectrum(timeout=timeout)
             stop_media_service(timeout=timeout)
             stop_system_service(timeout=timeout)
             self.workspace_service.close()
+            if self.extension_manager is not None:
+                self.extension_manager.state_repository.close()
             self._started = False
 
     def health(self) -> dict:
-        return {
+        payload = {
             "started": self._started,
             "websocket": self.websocket.health(),
             "auth": self.auth_scheduler.health(),
         }
+        if self.refresh_scheduler is not None:
+            payload["refresh"] = self.refresh_scheduler.health()
+        if self.subscription_broker is not None:
+            payload["subscriptions"] = self.subscription_broker.health()
+        if self.source_cache is not None:
+            payload["source_cache"] = self.source_cache.health()
+        if self.websocket_transport is not None:
+            payload["transport"] = self.websocket_transport.health()
+        if self.extension_manager is not None:
+            payload["extensions"] = self.extension_manager.health()
+        return payload
 
 
 def get_runtime(app=None) -> DashboardRuntime:

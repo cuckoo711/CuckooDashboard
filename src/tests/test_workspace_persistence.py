@@ -78,7 +78,11 @@ def test_repository_is_lazy_configures_sqlite_and_reopens(tmp_path):
             )
         }
         assert {"workspaces", "workspace_widgets"} <= tables
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        widget_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(workspace_widgets)")
+        }
+        assert "owner_id" in widget_columns
     finally:
         connection.close()
 
@@ -89,6 +93,51 @@ def test_repository_is_lazy_configures_sqlite_and_reopens(tmp_path):
     repository.close()
     assert repository.connected is False
     assert repository.list_workspaces() == ()
+
+
+def test_schema_v1_migrates_existing_widgets_to_core_owner(tmp_path):
+    database = tmp_path / "legacy.db"
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE workspaces (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
+            required INTEGER NOT NULL, revision INTEGER NOT NULL,
+            version INTEGER NOT NULL, grid_columns INTEGER NOT NULL,
+            grid_rows INTEGER NOT NULL, created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE workspace_widgets (
+            workspace_id TEXT NOT NULL, position INTEGER NOT NULL,
+            widget_id TEXT NOT NULL, type TEXT NOT NULL, slot TEXT NOT NULL,
+            layout_x INTEGER NOT NULL, layout_y INTEGER NOT NULL,
+            layout_width INTEGER NOT NULL, layout_height INTEGER NOT NULL,
+            min_width INTEGER NOT NULL, min_height INTEGER NOT NULL,
+            max_width INTEGER NOT NULL, max_height INTEGER NOT NULL,
+            PRIMARY KEY (workspace_id, widget_id), UNIQUE (workspace_id, position)
+        );
+        INSERT INTO workspaces
+            (id, name, kind, required, revision, version, grid_columns, grid_rows)
+        VALUES ('legacy', 'Legacy', 'custom', 0, 1, 2, 16, 15);
+        INSERT INTO workspace_widgets
+            (workspace_id, position, widget_id, type, slot,
+             layout_x, layout_y, layout_width, layout_height,
+             min_width, min_height, max_width, max_height)
+        VALUES ('legacy', 0, 'system-info', 'builtin.dashboard.system-info', 'main',
+                0, 0, 6, 5, 4, 4, 16, 15);
+        PRAGMA user_version = 1;
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    workspace = WorkspaceRepository(database).get_workspace("legacy")
+
+    assert workspace.widgets[0].owner == "cuckoo.core.dashboard"
+    migrated = sqlite3.connect(database)
+    try:
+        assert migrated.execute("PRAGMA user_version").fetchone()[0] == 2
+    finally:
+        migrated.close()
 
 
 def test_seed_create_update_cas_delete_and_required_protection():

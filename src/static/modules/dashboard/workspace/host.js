@@ -1,3 +1,6 @@
+import { createSubscriptionClient } from './subscription-client.js';
+import { createWidgetContext, normalizeWidgetLifecycle, widgetChannels } from './widget-sdk.js';
+
 function sourceId(source) {
     if (typeof source === 'string') return source;
     if (!source || typeof source !== 'object') return '';
@@ -20,9 +23,15 @@ function manifestKey(manifest) {
         widgets: (manifest.widgets || []).map((widget) => ({
             id: widget.id,
             type: widget.type,
+            title: widget.title,
+            owner: widget.owner,
+            available: widget.available !== false,
+            unavailableReason: widget.unavailable_reason,
             slot: widget.slot,
             sources: sourceIds(widget.sources),
             channels: widget.channels || [],
+            config: widget.config || {},
+            refreshPolicy: widget.refresh_policy || widget.refreshPolicy || null,
             layout: widget.layout,
             constraints: widget.constraints,
         })),
@@ -33,11 +42,38 @@ function isInteger(value, minimum) {
     return Number.isInteger(value) && value >= minimum;
 }
 
+function createUnavailableComponent(widget, reason) {
+    let element = null;
+    return {
+        mount(context) {
+            const doc = context.root.ownerDocument || document;
+            element = doc.createElement('section');
+            element.className = 'card workspace-widget-unavailable';
+            const heading = doc.createElement('div');
+            heading.className = 'card-title';
+            heading.textContent = widget.title || widget.type || '不可用卡片';
+            const detail = doc.createElement('p');
+            detail.className = 'workspace-widget-unavailable-detail';
+            detail.textContent = `扩展卡片当前不可用：${reason || 'extension_unavailable'}`;
+            const type = doc.createElement('code');
+            type.textContent = widget.type || '';
+            element.appendChild(heading);
+            element.appendChild(detail);
+            element.appendChild(type);
+            context.root.appendChild(element);
+            return element;
+        },
+        update() {},
+        destroy() {
+            element?.remove();
+            element = null;
+        },
+    };
+}
+
 function cleanupMounted(entries) {
-    entries.slice().reverse().forEach(({ widget, instance, unsubscribers = [] }) => {
-        unsubscribers.forEach((unsubscribe) => {
-            try { unsubscribe(); } catch (_error) {}
-        });
+    entries.slice().reverse().forEach(({ widget, instance, abortController }) => {
+        try { abortController?.abort(); } catch (_error) {}
         try {
             instance.destroy();
         } catch (error) {
@@ -72,11 +108,14 @@ export function collectManifestChannels(manifest = {}) {
 }
 
 export class WorkspaceHost {
-    constructor({ root, registry, bus }) {
+    constructor({ root, registry, bus, subscriptions = null }) {
         if (!root || !registry || !bus) throw new TypeError('WorkspaceHost requires root, registry, and bus');
         this.root = root;
         this.registry = registry;
         this.bus = bus;
+        this.subscriptions = subscriptions || createSubscriptionClient({ bus });
+        this.ownsSubscriptions = !subscriptions;
+        this.subscriptionScope = null;
         this.mounted = [];
         this.key = '';
         this.workspaceId = '';
@@ -115,7 +154,7 @@ export class WorkspaceHost {
             if (typeof widget.id !== 'string' || !widget.id.trim()) errors.push(`${label} is missing id`);
             else if (ids.has(widget.id)) errors.push(`duplicate widget id: ${widget.id}`);
             else ids.add(widget.id);
-            if (!widget.type || !this.registry.has(widget.type)) errors.push(`unknown widget type: ${widget.type || '(empty)'}`);
+            if (typeof widget.type !== 'string' || !widget.type.trim()) errors.push(`${label} is missing type`);
             const registration = widget.type ? this.registry.get(widget.type) : null;
             if (registration?.singleInstance) {
                 if (singletonTypes.has(widget.type)) errors.push(`single-instance widget repeated: ${widget.type}`);
@@ -194,89 +233,122 @@ export class WorkspaceHost {
         const doc = this.root.ownerDocument || document;
         const stagingRoot = doc.createElement('div');
         const nextMounted = [];
+        const nextScope = this.subscriptions.createScope(`workspace:${manifest.id}`);
         try {
             manifest.widgets.forEach((widget) => {
                 const registration = this.registry.get(widget.type);
-                const instance = registration.create();
-                if (!instance || typeof instance.mount !== 'function'
-                    || typeof instance.onData !== 'function' || typeof instance.destroy !== 'function') {
-                    throw new TypeError(`Invalid component lifecycle: ${widget.type}`);
-                }
-                const context = {
-                    root: stagingRoot,
-                    host: this,
-                    bus: this.bus,
+                const unavailableReason = widget.available === false
+                    ? (widget.unavailable_reason || 'extension_unavailable')
+                    : (this.registry.unavailable?.(widget.type)
+                        || (!registration ? 'widget_frontend_unavailable' : null));
+                const rawInstance = unavailableReason
+                    ? createUnavailableComponent(widget, unavailableReason)
+                    : registration.create();
+                const instance = normalizeWidgetLifecycle(rawInstance, widget.type);
+                const abortController = new AbortController();
+                const contextState = createWidgetContext({
+                    workspaceId: manifest.id,
+                    instanceId: widget.id,
+                    container: stagingRoot,
+                    config: widget.config || {},
                     manifest,
                     widget,
                     slot: widget.slot,
-                    publish: (source, payload) => this.bus.publish(source, payload),
-                    subscribe: (source, handler) => this.bus.subscribe(source, handler),
-                };
+                    host: this,
+                    bus: this.bus,
+                    subscriptionScope: nextScope,
+                    subscriptionClient: this.subscriptions,
+                    abortController,
+                });
                 let element;
                 try {
-                    element = instance.mount(context);
+                    element = instance.mount(contextState.context);
+                    if (!unavailableReason && contextState.subscriptionCount() === 0) {
+                        widgetChannels(widget).forEach((channel) => {
+                            contextState.context.subscribe(
+                                channel,
+                                (data, meta) => instance.update(data, meta),
+                            );
+                        });
+                    }
                 } catch (error) {
+                    abortController.abort();
                     try { instance.destroy(); } catch (_error) {}
                     throw error;
                 }
                 if (!element || element.nodeType !== 1 || element.parentNode !== stagingRoot) {
+                    abortController.abort();
                     try { instance.destroy(); } catch (_error) {}
                     throw new TypeError(`Component mount must return its root element: ${widget.type}`);
                 }
                 element.dataset.workspaceWidgetId = widget.id;
                 element.style.gridColumn = `${widget.layout.x + 1} / span ${widget.layout.width}`;
                 element.style.gridRow = `${widget.layout.y + 1} / span ${widget.layout.height}`;
-                nextMounted.push({ widget, instance, element, unsubscribers: [] });
-            });
-            nextMounted.forEach((entry) => {
-                const subscriptions = [...new Set([
-                    ...sourceIds(entry.widget.sources),
-                    ...(entry.widget.channels || []),
-                ])];
-                entry.unsubscribers = subscriptions.map((source) => this.bus.subscribe(
-                    source,
-                    (payload) => entry.instance.onData(payload, source),
-                ));
+                nextMounted.push({
+                    widget,
+                    instance,
+                    element,
+                    abortController,
+                    available: !unavailableReason,
+                });
             });
         } catch (error) {
+            nextScope.abort();
             cleanupMounted(nextMounted);
             throw error;
         }
 
         const previousMounted = this.mounted;
+        const previousScope = this.subscriptionScope;
+        const previousChildren = Array.from(this.root.childNodes);
+        const previousColumns = this.root.style.gridTemplateColumns;
+        const previousRows = this.root.style.gridTemplateRows;
+        const previousWorkspaceId = this.root.dataset.workspaceId;
+        const previousRevision = this.root.dataset.workspaceRevision;
+        let replaced = false;
         try {
             this.root.replaceChildren(...Array.from(stagingRoot.childNodes));
+            replaced = true;
             this.root.style.gridTemplateColumns = `repeat(${manifest.grid.columns}, minmax(0,1fr))`;
             this.root.style.gridTemplateRows = `repeat(${manifest.grid.rows}, minmax(0,1fr))`;
             this.root.dataset.workspaceId = manifest.id;
             this.root.dataset.workspaceRevision = String(manifest.revision);
+            nextScope.commit({ replaceScope: previousScope });
         } catch (error) {
+            nextScope.abort();
+            if (replaced) {
+                this.root.replaceChildren(...previousChildren);
+                this.root.style.gridTemplateColumns = previousColumns;
+                this.root.style.gridTemplateRows = previousRows;
+                if (previousWorkspaceId === undefined) delete this.root.dataset.workspaceId;
+                else this.root.dataset.workspaceId = previousWorkspaceId;
+                if (previousRevision === undefined) delete this.root.dataset.workspaceRevision;
+                else this.root.dataset.workspaceRevision = previousRevision;
+            }
             cleanupMounted(nextMounted);
             throw error;
         }
 
-        nextMounted.forEach((entry) => {
-            const replaySources = [...new Set([
-                ...sourceIds(entry.widget.sources),
-                ...(entry.widget.channels || []),
-            ])];
-            replaySources.forEach((source) => {
-                if (!this.bus.hasLatest?.(source)) return;
-                try {
-                    entry.instance.onData(this.bus.latest(source), source);
-                } catch (error) {
-                    console.error(`[workspace] replay failed for ${entry.widget.id} (${source}):`, error);
-                }
-            });
-        });
-
         this.mounted = nextMounted;
+        this.subscriptionScope = nextScope;
         this.key = nextKey;
         this.workspaceId = manifest.id;
         this.revision = manifest.revision;
         this.grid = { ...manifest.grid };
-        this.sources = collectManifestSources(manifest);
-        this.channels = collectManifestChannels(manifest);
+        const widgetSourceIds = new Set(
+            manifest.widgets.flatMap((widget) => sourceIds(widget.sources)),
+        );
+        const workspaceSourceIds = sourceIds(manifest.sources)
+            .filter((source) => !widgetSourceIds.has(source));
+        this.sources = [...new Set([
+            ...workspaceSourceIds,
+            ...nextMounted.flatMap((entry) => (
+                entry.available ? sourceIds(entry.widget.sources) : []
+            )),
+        ])];
+        this.channels = [...new Set(nextMounted.flatMap((entry) => (
+            entry.available ? (entry.widget.channels || []) : []
+        )))];
         cleanupMounted(previousMounted);
         return this.summary();
     }
@@ -287,14 +359,23 @@ export class WorkspaceHost {
             revision: this.revision,
             grid: this.grid ? { ...this.grid } : null,
             widgetIds: this.mounted.map(({ widget }) => widget.id),
-            widgetTypes: this.mounted.map(({ widget }) => widget.type),
+            widgetTypes: this.mounted
+                .filter((entry) => entry.available)
+                .map(({ widget }) => widget.type),
+            unavailableWidgetIds: this.mounted
+                .filter((entry) => !entry.available)
+                .map(({ widget }) => widget.id),
             sources: [...this.sources],
             channels: [...this.channels],
+            subscriptions: this.subscriptions.subscriptions(),
         };
     }
 
     destroy() {
+        this.subscriptionScope?.dispose();
+        this.subscriptionScope = null;
         cleanupMounted(this.mounted.splice(0));
+        if (this.ownsSubscriptions) this.subscriptions.destroy();
         this.root.replaceChildren();
         this.root.style.gridTemplateColumns = '';
         this.root.style.gridTemplateRows = '';

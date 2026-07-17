@@ -83,10 +83,11 @@ export function createGitHubComponent() {
                 + '<div class="card-body gh-grid" id="ghGrid"><div class="skeleton" style="flex:1; width:100%;"></div></div>'
                 + '<div class="card-foot"><span class="card-foot-l" id="ghUser"></span><span class="card-foot-r" id="ghTotal"></span></div>';
             context.root.appendChild(root);
+            context.subscribe('github.contributions', (data, meta) => this.update(data, meta));
             return root;
         },
-        onData(payload, source) {
-            draw(payload, source);
+        update(payload, meta = {}) {
+            draw(payload, meta.channel);
         },
         destroy() {
             root?.remove();

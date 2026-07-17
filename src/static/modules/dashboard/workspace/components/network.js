@@ -15,9 +15,10 @@ export function createNetworkComponent() {
                 + '<div class="net-row"><span class="net-icon down">↓</span><span class="net-label">下载</span>'
                 + '<span class="net-value" id="netDown">-- <span class="net-unit">KB/s</span></span></div></div>';
             context.root.appendChild(root);
+            context.subscribe('system.snapshot', (data, meta) => this.update(data, meta));
             return root;
         },
-        onData(payload) {
+        update(payload) {
             const network = payload?.network;
             if (!root || !network) return;
             const upload = root.querySelector('#netUp');

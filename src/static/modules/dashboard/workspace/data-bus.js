@@ -1,55 +1,113 @@
+function requireChannel(value) {
+    if (typeof value !== 'string' || !value.trim()) {
+        throw new TypeError('DataBus channel must be a non-empty string');
+    }
+    return value.trim();
+}
+
+function idempotent(callback) {
+    let active = true;
+    return () => {
+        if (!active) return false;
+        active = false;
+        callback();
+        return true;
+    };
+}
+
 export class DataBus {
     constructor() {
         this.subscriptions = new Map();
+        this.observers = new Set();
         this.latestPayloads = new Map();
     }
 
-    subscribe(source, handler) {
-        if (typeof source !== 'string' || !source || typeof handler !== 'function') {
-            throw new TypeError('DataBus.subscribe requires a source and handler');
+    subscribe(channelValue, handler, { replayLatest = false, signal } = {}) {
+        const channel = requireChannel(channelValue);
+        if (typeof handler !== 'function') {
+            throw new TypeError('DataBus.subscribe requires a handler');
         }
-        let handlers = this.subscriptions.get(source);
+        if (signal?.aborted) return () => false;
+        let handlers = this.subscriptions.get(channel);
         if (!handlers) {
             handlers = new Set();
-            this.subscriptions.set(source, handlers);
+            this.subscriptions.set(channel, handlers);
         }
         handlers.add(handler);
-        return () => this.unsubscribe(source, handler);
+        const unsubscribe = idempotent(() => this.unsubscribe(channel, handler));
+        signal?.addEventListener('abort', unsubscribe, { once: true });
+        if (replayLatest && this.hasLatest(channel)) {
+            const latest = this.snapshot(channel);
+            handler(latest.data, channel, latest.meta);
+        }
+        return unsubscribe;
     }
 
-    publish(source, payload) {
-        this.latestPayloads.set(source, payload);
-        const handlers = this.subscriptions.get(source);
-        if (!handlers) return 0;
-        const subscribers = [...handlers];
-        subscribers.forEach((handler) => {
+    subscribeAll(handler, { signal } = {}) {
+        if (typeof handler !== 'function') throw new TypeError('DataBus.subscribeAll requires a handler');
+        if (signal?.aborted) return () => false;
+        this.observers.add(handler);
+        const unsubscribe = idempotent(() => this.observers.delete(handler));
+        signal?.addEventListener('abort', unsubscribe, { once: true });
+        return unsubscribe;
+    }
+
+    cache(channelValue, data, meta = {}) {
+        const channel = requireChannel(channelValue);
+        const snapshot = Object.freeze({ data, meta: Object.freeze({ ...meta, channel }) });
+        this.latestPayloads.set(channel, snapshot);
+        return snapshot;
+    }
+
+    publish(channelValue, data, meta = {}) {
+        const channel = requireChannel(channelValue);
+        const snapshot = this.cache(channel, data, meta);
+        const handlers = [...(this.subscriptions.get(channel) || [])];
+        const observers = [...this.observers];
+        handlers.forEach((handler) => {
             try {
-                handler(payload, source);
+                handler(data, channel, snapshot.meta);
             } catch (error) {
-                console.error(`[data-bus] subscriber failed for ${source}:`, error);
+                console.error(`[data-bus] subscriber failed for ${channel}:`, error);
             }
         });
-        return subscribers.length;
+        observers.forEach((handler) => {
+            try {
+                handler(data, channel, snapshot.meta);
+            } catch (error) {
+                console.error(`[data-bus] observer failed for ${channel}:`, error);
+            }
+        });
+        return handlers.length;
     }
 
-    hasLatest(source) {
-        return this.latestPayloads.has(source);
+    hasLatest(channel) {
+        return this.latestPayloads.has(channel);
     }
 
-    latest(source) {
-        return this.latestPayloads.get(source);
+    latest(channel) {
+        return this.latestPayloads.get(channel)?.data;
     }
 
-    unsubscribe(source, handler) {
-        const handlers = this.subscriptions.get(source);
+    latestMeta(channel) {
+        return this.latestPayloads.get(channel)?.meta;
+    }
+
+    snapshot(channel) {
+        return this.latestPayloads.get(channel) || null;
+    }
+
+    unsubscribe(channel, handler) {
+        const handlers = this.subscriptions.get(channel);
         if (!handlers) return false;
         const removed = handlers.delete(handler);
-        if (!handlers.size) this.subscriptions.delete(source);
+        if (!handlers.size) this.subscriptions.delete(channel);
         return removed;
     }
 
     clear() {
         this.subscriptions.clear();
+        this.observers.clear();
         this.latestPayloads.clear();
     }
 }

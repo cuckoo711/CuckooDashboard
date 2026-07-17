@@ -60,6 +60,13 @@ export function connectWs() {
         state.wsReconnectTimer = 0;
         setConnBadge('已连接');
         socket.send(JSON.stringify({ type: 'report', page: 'music' }));
+        try {
+            socket.send(JSON.stringify({
+                type: 'subscribe',
+                sources: ['media.playback'],
+                replace: true,
+            }));
+        } catch (_error) {}
         try { socket.send(JSON.stringify({ type: 'subscribe', channel: 'lyric', active: true })); } catch (_error) {}
         updateSpectrumSubscription(true);
         socket.send(JSON.stringify({ type: 'init' }));

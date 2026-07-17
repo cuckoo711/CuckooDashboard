@@ -80,8 +80,9 @@ def test_dashboard_html_keeps_shell_and_delegates_builtin_cards_to_workspace_hos
 def test_dashboard_builtin_type_allowlist_matches_backend_registry():
     workspace = STATIC / "modules" / "dashboard" / "workspace"
     registry_source = (workspace / "registry.js").read_text(encoding="utf-8")
+    core_package_source = (workspace / "core-package.js").read_text(encoding="utf-8")
     fallback_source = (workspace / "default-manifest.js").read_text(encoding="utf-8")
-    frontend_types = set(re.findall(r"\['(builtin\.[^']+)'\s*,\s*\{", registry_source))
+    frontend_types = set(re.findall(r"registerWidget\('(builtin\.[^']+)'", core_package_source))
     fallback_types = set(re.findall(r"widget\('[^']+',\s*'(builtin\.[^']+)'", fallback_source))
     backend_types = {
         widget.type
@@ -105,6 +106,7 @@ def test_frontend_fallback_manifest_matches_builtin_backend_manifest():
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -130,15 +132,19 @@ def test_dashboard_optional_channels_follow_workspace_manifest():
     dashboard = STATIC / "modules" / "dashboard"
     main_source = (dashboard / "main.js").read_text(encoding="utf-8")
     ws_source = (dashboard / "ws.js").read_text(encoding="utf-8")
+    music_ws = (STATIC / "modules" / "music" / "ws.js").read_text(encoding="utf-8")
 
     assert "types.has('builtin.dashboard.player')" in main_source
-    assert "channelIds.forEach" in ws_source
-    assert "'media.lyric': 'lyric'" in ws_source
-    assert ws_source.index("type: 'subscribe', sources: activeSources") < ws_source.index(
+    assert "activeSubscriptionClient.sendReplace()" in ws_source
+    assert ws_source.index("activeSubscriptionClient.sendReplace()") < ws_source.index(
         "type: 'report', page: 'dashboard', workspace_id: activeWorkspaceId"
     )
-    assert "bus.publish('media.lyric'" in ws_source
-    assert "channel: 'lyric', active: true" not in ws_source
+    assert "message.type === 'data.snapshot'" in ws_source
+    assert "subscriptions.routeSnapshot(message)" in ws_source
+    assert "publishSource('media.lyric'" in ws_source
+    assert "sources: activeSources" not in ws_source
+    assert "sources: ['media.playback']" in music_ws
+    assert music_ws.index("sources: ['media.playback']") < music_ws.index("type: 'init'")
 
 
 def test_dashboard_workspace_v2_layout_and_loading_contracts():
@@ -203,6 +209,9 @@ def test_dashboard_components_return_roots_and_vibe_owns_token_dom():
     for name in ("system-info.js", "network.js", "uptime.js", "disks.js", "player.js", "github.js", "vibe.js"):
         source = (components / name).read_text(encoding="utf-8")
         assert "context.root.appendChild(root);" in source, name
+        assert "context.subscribe(" in source, name
+        assert "update(" in source, name
+        assert "onData(" not in source, name
         assert "return root;" in source, name
     vibe = (components / "vibe.js").read_text(encoding="utf-8")
     assert "root.id = 'vibeCard'" in vibe
@@ -291,6 +300,7 @@ def test_all_authored_javascript_passes_node_syntax_check():
             [node, "--check", str(path)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         assert result.returncode == 0, f"{path}\n{result.stdout}\n{result.stderr}"
@@ -345,11 +355,21 @@ def test_workspace_data_bus_and_host_basic_behavior_with_node():
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
-async function load(file) {
+const modules = new Map();
+async function moduleFor(file) {
   const absolute = path.resolve(file);
+  if (modules.has(absolute)) return modules.get(absolute);
   const mod = new vm.SourceTextModule(fs.readFileSync(absolute, 'utf8'), { identifier: absolute });
-  await mod.link(() => { throw new Error('unexpected import'); });
-  await mod.evaluate();
+  modules.set(absolute, mod);
+  await mod.link((specifier, referencing) => {
+    if (!specifier.startsWith('.')) throw new Error('unexpected import ' + specifier);
+    return moduleFor(path.resolve(path.dirname(referencing.identifier), specifier));
+  });
+  return mod;
+}
+async function load(file) {
+  const mod = await moduleFor(file);
+  if (mod.status !== 'evaluated') await mod.evaluate();
   return mod.namespace;
 }
 class FakeElement {
@@ -460,12 +480,14 @@ global.document = fakeDocument;
   if (updates !== 9) throw new Error('active subscription');
 
   const stableNode = root.childNodes[0];
+  const stableSubscriptions = JSON.stringify(host.summary().subscriptions);
   let failed = false;
   try {
     host.mount({ ...manifest, revision: 4, widgets: [{ ...baseWidget, id: 'fail' }] });
   } catch (_error) { failed = true; }
-  if (!failed || root.childNodes[0] !== stableNode || host.summary().revision !== moved.revision) {
-    throw new Error('failed mount replaced stable workspace');
+  if (!failed || root.childNodes[0] !== stableNode || host.summary().revision !== moved.revision
+      || JSON.stringify(host.summary().subscriptions) !== stableSubscriptions) {
+    throw new Error('failed mount replaced stable workspace or subscriptions');
   }
   let rejected = false;
   try {
@@ -476,11 +498,17 @@ global.document = fakeDocument;
     });
   } catch (_error) { rejected = true; }
   if (!rejected) throw new Error('invalid constraints accepted');
-  rejected = false;
-  try {
-    host.mount({ ...manifest, revision: 6, widgets: [{ ...baseWidget, type: 'unknown.widget' }] });
-  } catch (_error) { rejected = true; }
-  if (!rejected) throw new Error('unknown type accepted');
+  const unavailable = host.mount({
+    ...manifest,
+    revision: 6,
+    widgets: [{ ...baseWidget, type: 'unknown.widget', available: false, unavailable_reason: 'extension_missing' }],
+  });
+  if (unavailable.revision !== 6 || unavailable.unavailableWidgetIds[0] !== 'one') {
+    throw new Error('unknown type placeholder failed');
+  }
+  if (JSON.stringify(unavailable.sources) !== JSON.stringify(['dashboard.aggregate'])) {
+    throw new Error('unavailable widget source was subscribed');
+  }
 
   host.destroy();
   bus.publish('system.snapshot', { value: 4 });

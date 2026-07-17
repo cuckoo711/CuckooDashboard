@@ -25,11 +25,13 @@ export function createPlayerComponent() {
                 + '<button class="lyric-offset-btn" data-action="adjust-lyric-offset" data-delta="0.5">+</button></span>'
                 + '<span class="card-foot-r" id="lyricArtist">--</span></div>';
             context.root.appendChild(root);
+            context.subscribe('media.playback', (data, meta) => this.update(data, meta));
+            context.subscribe('media.lyric', (data, meta) => this.update(data, meta));
             return root;
         },
-        onData(payload, source) {
+        update(payload, meta = {}) {
             if (!root) return;
-            if (source === 'media.lyric') applyLyricFrame(payload || {});
+            if (meta.channel === 'media.lyric') applyLyricFrame(payload || {});
             else drawLyric(payload);
         },
         destroy() {

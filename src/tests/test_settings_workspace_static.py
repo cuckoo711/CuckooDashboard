@@ -7,6 +7,31 @@ STATIC = Path(__file__).resolve().parents[1] / "static"
 SETTINGS_MODULES = STATIC / "settings" / "modules"
 
 
+def test_settings_page_contains_independent_extension_manager_controls():
+    html = (STATIC / "settings.html").read_text(encoding="utf-8")
+    form_end = html.index("</form>")
+    panel = html.index('id="extensionsPanel"')
+    assert panel > form_end
+    for marker in (
+        'id="extensionsList"',
+        'id="extensionsRescanButton"',
+        'id="extensionMessage"',
+        "启用后，扩展的 Python 与 JavaScript 代码拥有和 Dashboard 相同的本机权限",
+    ):
+        assert marker in html
+
+    source = (SETTINGS_MODULES / "extensions.js").read_text(encoding="utf-8")
+    for marker in (
+        "requestJson('/api/settings/extensions')",
+        "desired_enabled",
+        "extensionState.revision",
+        "restart_required",
+        "details.references",
+        "/api/settings/extensions/rescan",
+    ):
+        assert marker in source
+
+
 def test_settings_page_contains_independent_workspace_editor_controls():
     html = (STATIC / "settings.html").read_text(encoding="utf-8")
     form_end = html.index("</form>")

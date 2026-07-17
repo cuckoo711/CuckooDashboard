@@ -55,11 +55,17 @@ class WorkspaceService:
         *,
         seed_workspace: WorkspaceDefinition | None = None,
         is_workspace_in_use: Callable[[str], bool] | None = None,
+        is_owner_available: Callable[[str], bool] | None = None,
+        owner_allows_new_widgets: Callable[[str], bool] | None = None,
+        owner_unavailable_reason: Callable[[str], str | None] | None = None,
     ) -> None:
         self.repository = repository
         self.registry = registry
         self._seed_workspace = seed_workspace
         self._is_workspace_in_use = is_workspace_in_use
+        self._is_owner_available = is_owner_available
+        self._owner_allows_new_widgets = owner_allows_new_widgets
+        self._owner_unavailable_reason = owner_unavailable_reason
         self._seed_lock = threading.RLock()
         self._seeded = False
 
@@ -70,8 +76,9 @@ class WorkspaceService:
             if self._seeded:
                 return
             if self._seed_workspace is not None:
-                self.validate(self._seed_workspace)
-                self.repository.seed_workspace(self._seed_workspace)
+                seed = self._canonicalize_workspace(self._seed_workspace)
+                self.validate(seed)
+                self.repository.seed_workspace(seed)
             self._seeded = True
 
     def close(self) -> None:
@@ -90,10 +97,15 @@ class WorkspaceService:
     def widget_catalog(self) -> list[dict[str, Any]]:
         catalog = []
         for definition in self.registry.iter_widgets():
+            owner = self.registry.owner_of_widget(definition.type)
+            if not self._owner_is_available(owner) or not self._owner_accepts_new_widgets(owner):
+                continue
             catalog.append(
                 {
                     "type": definition.type,
                     "title": definition.title,
+                    "owner": owner,
+                    "available": True,
                     "sources": list(definition.sources),
                     "channels": list(definition.channels),
                     "single_instance": definition.single_instance,
@@ -150,7 +162,8 @@ class WorkspaceService:
             required=False,
             revision=1,
         )
-        self.validate(copy)
+        copy = self._canonicalize_workspace(copy, current=source)
+        self.validate(copy, current=source)
         return self.repository.create_workspace(copy)
 
     def update(
@@ -164,7 +177,8 @@ class WorkspaceService:
         revision = expected_revision if expected_revision is not None else payload.get("revision")
         revision = self._integer(revision, "revision", minimum=1)
         workspace = self._definition_from_payload(workspace_id, payload, current=current)
-        self.validate(workspace)
+        workspace = self._canonicalize_workspace(workspace, current=current)
+        self.validate(workspace, current=current)
         return self.repository.update_workspace(workspace, expected_revision=revision)
 
     def delete(
@@ -185,7 +199,12 @@ class WorkspaceService:
             expected_revision=expected_revision,
         )
 
-    def validate(self, workspace: WorkspaceDefinition) -> WorkspaceDefinition:
+    def validate(
+        self,
+        workspace: WorkspaceDefinition,
+        *,
+        current: WorkspaceDefinition | None = None,
+    ) -> WorkspaceDefinition:
         if not isinstance(workspace.id, str) or not _IDENTIFIER.fullmatch(workspace.id):
             raise WorkspaceValidationError("invalid workspace id", "id")
         self._trimmed(workspace.name, "name", maximum=120)
@@ -198,6 +217,7 @@ class WorkspaceService:
         if grid is None or grid.columns != 16 or grid.rows != 15:
             raise WorkspaceValidationError("grid must be 16 columns by 15 rows", "grid")
 
+        current_widgets = {item.id: item for item in (current.widgets if current else ())}
         widget_ids: set[str] = set()
         singleton_types: set[str] = set()
         occupied: list[tuple[str, WidgetLayout]] = []
@@ -208,30 +228,56 @@ class WorkspaceService:
             if widget.id in widget_ids:
                 raise WorkspaceValidationError("duplicate widget id", f"{prefix}.id")
             widget_ids.add(widget.id)
+            previous = current_widgets.get(widget.id)
             try:
                 definition = self.registry.get_widget(widget.type)
-            except KeyError as exc:
-                raise WorkspaceValidationError(
-                    f"unknown widget type: {widget.type}", f"{prefix}.type"
-                ) from exc
-            if definition.single_instance:
-                if widget.type in singleton_types:
+            except KeyError:
+                definition = None
+
+            if definition is None:
+                if (
+                    previous is None
+                    or previous.type != widget.type
+                    or previous.owner != widget.owner
+                    or previous.constraints != widget.constraints
+                ):
                     raise WorkspaceValidationError(
-                        f"single-instance widget repeated: {widget.type}", f"{prefix}.type"
+                        f"unknown widget type: {widget.type}", f"{prefix}.type"
                     )
-                singleton_types.add(widget.type)
+                constraints = widget.constraints
+            else:
+                canonical_owner = self.registry.owner_of_widget(widget.type)
+                if widget.owner not in {None, canonical_owner}:
+                    raise WorkspaceValidationError(
+                        "widget owner cannot be changed", f"{prefix}.owner"
+                    )
+                existing_same_owner = (
+                    previous is not None
+                    and previous.type == widget.type
+                    and previous.owner in {None, canonical_owner}
+                )
+                if not existing_same_owner and not self._owner_accepts_new_widgets(canonical_owner):
+                    raise WorkspaceValidationError(
+                        "widget owner is pending disable or unavailable", f"{prefix}.type"
+                    )
+                if definition.single_instance:
+                    if widget.type in singleton_types:
+                        raise WorkspaceValidationError(
+                            f"single-instance widget repeated: {widget.type}", f"{prefix}.type"
+                        )
+                    singleton_types.add(widget.type)
+                if widget.constraints != definition.constraints:
+                    raise WorkspaceValidationError(
+                        "widget constraints cannot be changed", f"{prefix}.constraints"
+                    )
+                constraints = definition.constraints
+
             self._trimmed(widget.slot, f"{prefix}.slot", maximum=64)
             layout = widget.layout
-            constraints = widget.constraints
             if layout is None:
                 raise WorkspaceValidationError("layout is required", f"{prefix}.layout")
             if constraints is None:
                 raise WorkspaceValidationError("constraints are required", f"{prefix}.constraints")
-            if constraints != definition.constraints:
-                raise WorkspaceValidationError(
-                    "widget constraints cannot be changed", f"{prefix}.constraints"
-                )
-            constraints = definition.constraints
             for field, value in (
                 ("x", layout.x),
                 ("y", layout.y),
@@ -277,20 +323,69 @@ class WorkspaceService:
     def serialize(self, workspace: WorkspaceDefinition | str) -> dict[str, Any]:
         if isinstance(workspace, str):
             workspace = self.get(workspace)
-        source_ids = list(workspace.sources)
+        source_ids: list[str] = []
+        for source_id in workspace.sources:
+            try:
+                owner = self.registry.owner_of_data_source(source_id)
+                self.registry.get_data_source(source_id)
+            except KeyError:
+                continue
+            if self._owner_is_available(owner) and source_id not in source_ids:
+                source_ids.append(source_id)
         if not source_ids:
             try:
-                source_ids.extend(self.registry.get_workspace(workspace.id).sources)
+                registered = self.registry.get_workspace(workspace.id)
             except KeyError:
-                pass
+                registered = None
+            if registered is not None:
+                for source_id in registered.sources:
+                    try:
+                        owner = self.registry.owner_of_data_source(source_id)
+                    except KeyError:
+                        continue
+                    if self._owner_is_available(owner) and source_id not in source_ids:
+                        source_ids.append(source_id)
+
         widgets: list[dict[str, Any]] = []
         for instance in workspace.widgets:
-            definition = self.registry.get_widget(instance.type)
-            for source_id in definition.sources:
-                if source_id not in source_ids:
-                    source_ids.append(source_id)
-            canonical_instance = replace(instance, constraints=definition.constraints)
-            widgets.append(canonical_instance.to_payload(definition, manifest_version=2))
+            try:
+                definition = self.registry.get_widget(instance.type)
+                owner = self.registry.owner_of_widget(instance.type)
+            except KeyError:
+                definition = None
+                owner = instance.owner or "unknown"
+            available = definition is not None and self._owner_is_available(owner)
+            if available and definition is not None:
+                for source_id in definition.sources:
+                    if source_id not in source_ids:
+                        source_ids.append(source_id)
+                canonical_instance = replace(
+                    instance,
+                    constraints=definition.constraints,
+                    owner=owner,
+                )
+                payload = canonical_instance.to_payload(definition, manifest_version=2)
+                payload["title"] = definition.title
+                widgets.append(payload)
+                continue
+
+            widgets.append(
+                {
+                    "id": instance.id,
+                    "type": instance.type,
+                    "title": instance.type,
+                    "slot": instance.slot,
+                    "owner": owner,
+                    "available": False,
+                    "unavailable_reason": self._unavailable_reason(owner),
+                    "sources": [],
+                    "channels": [],
+                    "layout": (instance.layout or WidgetLayout(0, 0, 1, 1)).to_payload(),
+                    "constraints": (
+                        instance.constraints or WidgetConstraints()
+                    ).to_payload(),
+                }
+            )
         return {
             "id": workspace.id,
             "version": 2,
@@ -306,8 +401,17 @@ class WorkspaceService:
             "widgets": widgets,
         }
 
-    @staticmethod
-    def serialize_summary(workspace: WorkspaceDefinition) -> dict[str, Any]:
+    def serialize_summary(self, workspace: WorkspaceDefinition) -> dict[str, Any]:
+        unavailable = 0
+        for widget in workspace.widgets:
+            try:
+                owner = self.registry.owner_of_widget(widget.type)
+                self.registry.get_widget(widget.type)
+            except KeyError:
+                unavailable += 1
+                continue
+            if not self._owner_is_available(owner):
+                unavailable += 1
         return {
             "id": workspace.id,
             "version": 2,
@@ -317,6 +421,7 @@ class WorkspaceService:
             "required": workspace.required,
             "grid": (workspace.grid or WorkspaceGrid()).to_payload(),
             "widget_count": len(workspace.widgets),
+            "unavailable_widget_count": unavailable,
         }
 
     def _definition_from_payload(
@@ -350,8 +455,15 @@ class WorkspaceService:
         if widgets_payload is not None:
             if not isinstance(widgets_payload, list):
                 raise WorkspaceValidationError("widgets must be an array", "widgets")
+            current_widgets = {widget.id: widget for widget in current.widgets}
             widgets = tuple(
-                self._widget_from_payload(widget, index)
+                self._widget_from_payload(
+                    widget,
+                    index,
+                    current_widget=current_widgets.get(
+                        str(widget.get("id") or "") if isinstance(widget, Mapping) else ""
+                    ),
+                )
                 for index, widget in enumerate(widgets_payload)
             )
         return WorkspaceDefinition(
@@ -365,7 +477,13 @@ class WorkspaceService:
             widgets=widgets,
         )
 
-    def _widget_from_payload(self, payload: Any, index: int) -> WidgetInstance:
+    def _widget_from_payload(
+        self,
+        payload: Any,
+        index: int,
+        *,
+        current_widget: WidgetInstance | None = None,
+    ) -> WidgetInstance:
         prefix = f"widgets[{index}]"
         if not isinstance(payload, Mapping):
             raise WorkspaceValidationError("widget must be an object", prefix)
@@ -377,13 +495,8 @@ class WorkspaceService:
             raise WorkspaceValidationError(
                 "constraints must be an object", f"{prefix}.constraints"
             )
+        widget_id = str(payload.get("id") or "")
         widget_type = str(payload.get("type") or "")
-        try:
-            definition = self.registry.get_widget(widget_type)
-        except KeyError as exc:
-            raise WorkspaceValidationError(
-                f"unknown widget type: {widget_type}", f"{prefix}.type"
-            ) from exc
         supplied_constraints = WidgetConstraints(
             self._integer(
                 constraints.get("min_width"),
@@ -406,12 +519,41 @@ class WorkspaceService:
                 minimum=1,
             ),
         )
-        if supplied_constraints != definition.constraints:
-            raise WorkspaceValidationError(
-                "widget constraints cannot be changed", f"{prefix}.constraints"
-            )
+        try:
+            definition = self.registry.get_widget(widget_type)
+        except KeyError:
+            definition = None
+
+        if definition is None:
+            if current_widget is None or current_widget.type != widget_type:
+                raise WorkspaceValidationError(
+                    f"unknown widget type: {widget_type}", f"{prefix}.type"
+                )
+            owner = str(payload.get("owner") or current_widget.owner or "")
+            if owner != (current_widget.owner or ""):
+                raise WorkspaceValidationError(
+                    "widget owner cannot be changed", f"{prefix}.owner"
+                )
+            if supplied_constraints != current_widget.constraints:
+                raise WorkspaceValidationError(
+                    "widget constraints cannot be changed", f"{prefix}.constraints"
+                )
+            canonical_constraints = supplied_constraints
+        else:
+            owner = self.registry.owner_of_widget(widget_type)
+            supplied_owner = payload.get("owner")
+            if supplied_owner is not None and str(supplied_owner) != owner:
+                raise WorkspaceValidationError(
+                    "widget owner cannot be changed", f"{prefix}.owner"
+                )
+            if supplied_constraints != definition.constraints:
+                raise WorkspaceValidationError(
+                    "widget constraints cannot be changed", f"{prefix}.constraints"
+                )
+            canonical_constraints = definition.constraints
+
         return WidgetInstance(
-            id=str(payload.get("id") or ""),
+            id=widget_id,
             type=widget_type,
             slot=str(payload.get("slot") or "main"),
             layout=WidgetLayout(
@@ -420,8 +562,68 @@ class WorkspaceService:
                 self._integer(layout.get("width"), f"{prefix}.layout.width", minimum=1),
                 self._integer(layout.get("height"), f"{prefix}.layout.height", minimum=1),
             ),
-            constraints=definition.constraints,
+            constraints=canonical_constraints,
+            owner=owner,
         )
+
+    def list_owner_references(self, owner_id: str) -> list[dict[str, object]]:
+        self._ensure_seeded()
+        return self.repository.list_widget_references(owner_id)
+
+    def _canonicalize_workspace(
+        self,
+        workspace: WorkspaceDefinition,
+        *,
+        current: WorkspaceDefinition | None = None,
+    ) -> WorkspaceDefinition:
+        canonical: list[WidgetInstance] = []
+        for instance in workspace.widgets:
+            try:
+                definition = self.registry.get_widget(instance.type)
+                owner = self.registry.owner_of_widget(instance.type)
+            except KeyError:
+                canonical.append(instance)
+                continue
+            canonical.append(
+                replace(
+                    instance,
+                    constraints=definition.constraints,
+                    owner=owner,
+                )
+            )
+        return replace(workspace, widgets=tuple(canonical))
+
+    def _owner_is_available(self, owner_id: str) -> bool:
+        if self._is_owner_available is not None:
+            try:
+                return bool(self._is_owner_available(owner_id))
+            except Exception:
+                return False
+        try:
+            self.registry.get_owner(owner_id)
+            return True
+        except KeyError:
+            return False
+
+    def _owner_accepts_new_widgets(self, owner_id: str) -> bool:
+        if not self._owner_is_available(owner_id):
+            return False
+        if self._owner_allows_new_widgets is None:
+            return True
+        try:
+            return bool(self._owner_allows_new_widgets(owner_id))
+        except Exception:
+            return False
+
+    def _unavailable_reason(self, owner_id: str) -> str:
+        if self._owner_unavailable_reason is not None:
+            try:
+                reason = self._owner_unavailable_reason(owner_id)
+            except Exception:
+                reason = None
+            if reason:
+                return str(reason)
+        return "extension_unavailable"
 
     @staticmethod
     def _integer(value: Any, field: str, *, minimum: int) -> int:

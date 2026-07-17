@@ -56,8 +56,10 @@ def test_app_and_feature_routes_do_not_import_concrete_providers():
 def test_contracts_only_depend_on_standard_library_or_other_contracts():
     allowed_roots = {
         "__future__",
-        "collections",
-        "dataclasses",
+            "collections",
+            "copy",
+            "dataclasses",
+
         "typing",
         "contracts",
     }

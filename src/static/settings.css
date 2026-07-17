@@ -267,6 +267,36 @@ select option { color: #181326; background: #f5f1ff; }
 .provider-object-row .secret-control input { min-width: 0; }
 .provider-object-row .row-field { min-width: 0; }
 
+/* ── 扩展管理 ── */
+.extensions-panel { margin-top: 16px; }
+.extension-panel-title { margin-bottom: 9px; }
+.extension-trust-warning { margin-bottom: 15px; padding: 10px 12px; border: 1px solid rgba(240,201,142,.28); border-radius: 9px; color: #e6c78f; background: rgba(240,201,142,.07); font-size: 11px; line-height: 1.55; }
+.extensions-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.extension-card { min-width: 0; padding: 13px; border: 1px solid rgba(255,255,255,.08); border-radius: 11px; background: rgba(255,255,255,.028); }
+.extension-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.extension-card-head > div { min-width: 0; }
+.extension-card h3 { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.extension-card code { display: block; overflow: hidden; margin-top: 4px; color: var(--muted-2); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.extension-card > p { min-height: 32px; margin-top: 9px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.extension-toggle { flex: 0 0 auto; }
+.extension-meta { display: flex; flex-wrap: wrap; gap: 5px 9px; margin-top: 9px; color: var(--muted-2); font-size: 9px; }
+.extension-meta small { width: 100%; color: var(--muted-2); }
+.extension-status-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.extension-status, .extension-restart, .extension-locked { padding: 3px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 9px; }
+.extension-status.active { color: var(--green); border-color: rgba(112,196,173,.35); background: rgba(112,196,173,.09); }
+.extension-status.error, .extension-status.missing { color: var(--red); border-color: rgba(224,128,140,.35); background: rgba(224,128,140,.08); }
+.extension-status.pending_enable, .extension-status.pending_disable, .extension-restart { color: #e6c78f; border-color: rgba(240,201,142,.32); background: rgba(240,201,142,.07); }
+.extension-locked { color: var(--accent-strong); border-color: rgba(166,145,209,.35); background: rgba(166,145,209,.09); }
+.extension-error { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; padding: 8px 9px; border: 1px solid rgba(224,128,140,.24); border-radius: 8px; color: var(--red); background: rgba(224,128,140,.06); font-size: 10px; line-height: 1.4; }
+.extension-error strong { font-family: monospace; }
+.extension-reference-list { margin: 3px 0 0 16px; color: var(--muted); }
+.extension-reference-list li { margin-top: 3px; }
+.extension-reference-list span { display: block; color: var(--muted-2); }
+.extension-message { margin-top: 12px; color: var(--muted); font-size: 11px; }
+.extension-message.success { color: var(--green); }
+.extension-message.warning { color: #e6c78f; }
+.extension-message.error { color: var(--red); }
+
 /* ── 工作区与布局 ── */
 .workspaces-panel { margin-top: 16px; }
 .workspace-panel-title { margin-bottom: 8px; }
@@ -300,9 +330,11 @@ select option { color: #181326; background: #f5f1ff; }
 .workspace-widget-card:hover, .workspace-widget-card:focus { border-color: var(--accent-strong); box-shadow: 0 7px 22px rgba(0,0,0,.34); }
 .workspace-widget-card.is-interacting { z-index: 2; cursor: grabbing; opacity: .88; }
 .workspace-widget-card.is-invalid { border-color: var(--red); background: rgba(96,38,50,.94); }
+.workspace-widget-card.is-unavailable { border-style: dashed; border-color: rgba(224,128,140,.58); background: linear-gradient(145deg, rgba(74,38,51,.94), rgba(34,22,36,.96)); }
 .workspace-widget-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 4px; }
 .workspace-widget-head strong { overflow: hidden; font-size: 10px; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-widget-type { display: block; overflow: hidden; margin-top: 4px; color: var(--muted-2); font-family: monospace; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-widget-unavailable { display: inline-block; margin-top: 5px; padding: 2px 5px; border-radius: 999px; color: var(--red); background: rgba(224,128,140,.12); font-size: 8px; }
 .workspace-widget-remove { display: grid; flex: 0 0 auto; width: 18px; height: 18px; padding: 0; place-items: center; border: 0; border-radius: 5px; color: var(--muted); line-height: 1; background: rgba(255,255,255,.07); }
 .workspace-widget-remove:hover { color: var(--red); background: rgba(224,128,140,.13); }
 .workspace-resize-handle { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; touch-action: none; }
@@ -341,6 +373,7 @@ select option { color: #181326; background: #f5f1ff; }
     .header-badges { justify-content: flex-start; }
     .layout-grid { grid-template-columns: 1fr; }
     .panel-wide { grid-column: auto; }
+    .extensions-list { grid-template-columns: 1fr; }
     .workspace-manager { grid-template-columns: 1fr; }
     .workspace-list { min-height: 0; }
     .workspace-edit-columns { grid-template-columns: 1fr; }

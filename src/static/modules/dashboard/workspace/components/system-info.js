@@ -38,9 +38,10 @@ export function createSystemInfoComponent() {
                 + '<div class="hw-main-item"><div class="skeleton" style="width:76px;height:76px;border-radius:50%;"></div><div class="skeleton" style="width:44px;height:9px;margin-top:6px;"></div></div>'
                 + '</div></div>';
             context.root.appendChild(root);
+            context.subscribe('system.snapshot', (data, meta) => this.update(data, meta));
             return root;
         },
-        onData(system) {
+        update(system) {
             if (!root || !system) return;
             const cpu = system.cpu || {};
             const memory = system.memory || {};

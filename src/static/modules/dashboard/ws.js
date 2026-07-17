@@ -8,6 +8,7 @@ import { navigatePage, softReload } from './navigation.js';
 import { state } from './state.js';
 import { applyServerVibeState } from './vibe.js';
 import { dashboardDataBus } from './workspace/data-bus.js';
+import { dashboardSubscriptionClient } from './workspace/subscription-client.js';
 
 const LEGACY_SOURCE_BY_TYPE = Object.freeze({
     system: 'system.snapshot',
@@ -16,13 +17,10 @@ const LEGACY_SOURCE_BY_TYPE = Object.freeze({
     dashboard_data: 'dashboard.aggregate',
 });
 
-const LEGACY_CHANNEL_BY_ID = Object.freeze({
-    'media.lyric': 'lyric',
-});
-
 let activeSources = [];
 let activeChannels = [];
 let activeBus = dashboardDataBus;
+let activeSubscriptionClient = dashboardSubscriptionClient;
 let activeWorkspaceId = 'main';
 let workspaceUpdateHandler = null;
 let fallbackTicks = 0;
@@ -35,20 +33,30 @@ function usesSource(source) {
     return activeSources.includes(source);
 }
 
-function publishDashboardAggregate(data, bus = activeBus) {
-    bus.publish('dashboard.aggregate', data);
-    if (data?.github) bus.publish('github.contributions', data.github);
+function publishSource(channel, data, meta = {}, bus = activeBus, subscriptions = activeSubscriptionClient) {
+    if (subscriptions?.bus === bus) return subscriptions.routeLegacy(channel, data, meta);
+    return bus.publish(channel, data, meta);
+}
+
+function publishDashboardAggregate(data, bus = activeBus, subscriptions = activeSubscriptionClient) {
+    publishSource('dashboard.aggregate', data, { legacyType: 'dashboard_data' }, bus, subscriptions);
+    if (data?.github) {
+        publishSource('github.contributions', data.github, {
+            legacyType: 'dashboard_data',
+            derivedFrom: 'dashboard.aggregate',
+        }, bus, subscriptions);
+    }
 }
 
 async function refreshSystem() {
     if (!usesSource('system.snapshot')) return;
-    try { activeBus.publish('system.snapshot', await fetchSystem()); }
+    try { publishSource('system.snapshot', await fetchSystem(), { delivery: 'rest' }); }
     catch (error) { console.error('Sys refresh error:', error); }
 }
 
 async function refreshMediaFallback() {
     if (!usesSource('media.playback')) return;
-    try { activeBus.publish('media.playback', await fetchMedia()); }
+    try { publishSource('media.playback', await fetchMedia(), { delivery: 'rest' }); }
     catch (error) { console.error('Media error:', error); }
 }
 
@@ -61,17 +69,27 @@ async function refreshDashboardFallback() {
     }
 }
 
-export function routeMessage(message, bus = activeBus) {
+export function routeMessage(message, bus = activeBus, subscriptions = activeSubscriptionClient) {
+    if (!message || typeof message !== 'object') return;
+    if (message.type === 'data.snapshot') {
+        subscriptions.routeSnapshot(message);
+        return;
+    }
     const source = LEGACY_SOURCE_BY_TYPE[message.type];
     if (source) {
-        if (message.type === 'dashboard_data') publishDashboardAggregate(message.data, bus);
-        else bus.publish(source, message.data);
+        if (message.type === 'dashboard_data') publishDashboardAggregate(message.data, bus, subscriptions);
+        else publishSource(source, message.data, { legacyType: message.type }, bus, subscriptions);
         if (message.type === 'dashboard_data') refreshHealth();
         return;
     }
     switch (message.type) {
+        case 'workspace_source':
+            if (typeof message.source_id === 'string' && message.source_id) {
+                publishSource(message.source_id, message.data, { legacyType: message.type }, bus, subscriptions);
+            }
+            break;
         case 'lyric':
-            bus.publish('media.lyric', message.data || {});
+            publishSource('media.lyric', message.data || {}, { legacyType: message.type }, bus, subscriptions);
             break;
         case 'reload':
             softReload();
@@ -132,18 +150,10 @@ function stopRestFallback() {
     state.websocket.fallbackTimer = null;
 }
 
-function sendWorkspaceState(socket, previousChannels = []) {
-    socket.send(JSON.stringify({ type: 'subscribe', sources: activeSources, replace: true }));
+function sendWorkspaceState(socket) {
+    activeSubscriptionClient.attach(socket, { replay: false });
+    activeSubscriptionClient.sendReplace();
     socket.send(JSON.stringify({ type: 'report', page: 'dashboard', workspace_id: activeWorkspaceId }));
-    const channelIds = new Set([...previousChannels, ...activeChannels]);
-    channelIds.forEach((channelId) => {
-        const channel = LEGACY_CHANNEL_BY_ID[channelId];
-        if (channel) socket.send(JSON.stringify({
-            type: 'subscribe',
-            channel,
-            active: activeChannels.includes(channelId),
-        }));
-    });
 }
 
 export function setWorkspaceUpdateHandler(handler) {
@@ -162,14 +172,13 @@ function reconcileWorkspace(reason, update = {}) {
 }
 
 export function updateWebSocketWorkspace(sources = [], channels = [], workspaceId = activeWorkspaceId) {
-    const previousChannels = activeChannels;
     activeSources = normalizeSources(sources);
     activeChannels = normalizeSources(channels);
     activeWorkspaceId = String(workspaceId || 'main');
     const socket = state.websocket.socket;
     if (socket?.readyState !== WebSocket.OPEN) return;
     try {
-        sendWorkspaceState(socket, previousChannels);
+        sendWorkspaceState(socket);
         socket.send(JSON.stringify({ type: 'init' }));
     } catch (_error) {}
 }
@@ -190,7 +199,10 @@ export function connectWebSocket(
         state.websocket.retry = 1000;
         stopRestFallback();
         noteAlive();
-        try { sendWorkspaceState(socket); } catch (_error) {}
+        try {
+            sendWorkspaceState(socket);
+            socket.send(JSON.stringify({ type: 'init' }));
+        } catch (_error) {}
         reconcileWorkspace('websocket_open');
         console.log('[ws] connected');
     };
@@ -200,6 +212,7 @@ export function connectWebSocket(
         catch (error) { console.error('[ws] parse error:', error); }
     };
     socket.onclose = () => {
+        activeSubscriptionClient.detach(socket);
         updateLatency(-1);
         console.log(`[ws] disconnected, retry in ${state.websocket.retry / 1000}s`);
         clearTimeout(state.websocket.reconnectTimer);
@@ -222,10 +235,12 @@ export function startWebSocket(
     channels = [],
     workspaceId = 'main',
     onWorkspaceUpdated = null,
+    subscriptions = dashboardSubscriptionClient,
 ) {
     activeSources = normalizeSources(sources);
     activeChannels = normalizeSources(channels);
     activeBus = bus;
+    activeSubscriptionClient = subscriptions || dashboardSubscriptionClient;
     activeWorkspaceId = String(workspaceId || 'main');
     setWorkspaceUpdateHandler(onWorkspaceUpdated);
     connectWebSocket();

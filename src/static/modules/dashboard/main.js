@@ -10,7 +10,9 @@ import { startWebSocket, updateWebSocketWorkspace } from './ws.js';
 import { dashboardDataBus } from './workspace/data-bus.js';
 import { DEFAULT_WORKSPACE_MANIFEST } from './workspace/default-manifest.js';
 import { createWorkspaceHost } from './workspace/host.js';
+import { loadRuntimeExtensions } from './workspace/extension-loader.js';
 import { componentRegistry } from './workspace/registry.js';
+import { dashboardSubscriptionClient } from './workspace/subscription-client.js';
 
 let workspaceRequestSequence = 0;
 let lyricsInitialized = false;
@@ -105,7 +107,16 @@ export async function bootstrapDashboard() {
     const root = document.getElementById('workspaceHost');
     if (!root) throw new Error('Dashboard workspace host is missing');
     const workspaceId = workspaceIdFromPath();
-    const host = createWorkspaceHost({ root, registry: componentRegistry, bus: dashboardDataBus });
+    const extensionSummary = await loadRuntimeExtensions({ registry: componentRegistry });
+    if (extensionSummary.catalogError || extensionSummary.failed.length) {
+        console.warn('[extensions] runtime loading completed with errors:', extensionSummary);
+    }
+    const host = createWorkspaceHost({
+        root,
+        registry: componentRegistry,
+        bus: dashboardDataBus,
+        subscriptions: dashboardSubscriptionClient,
+    });
     const summary = await reloadWorkspace(host, workspaceId);
 
     bindDashboardActions();
@@ -119,6 +130,7 @@ export async function bootstrapDashboard() {
         summary.channels,
         workspaceId,
         () => reloadWorkspace(host, workspaceId),
+        dashboardSubscriptionClient,
     );
     websocketStarted = true;
     window.addEventListener('pagehide', () => host.destroy(), { once: true });

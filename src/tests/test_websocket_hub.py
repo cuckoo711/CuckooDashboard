@@ -1,28 +1,90 @@
-"""WebSocket hub state and cleanup tests."""
+"""WebSocket facade compatibility and broker integration tests."""
 
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
+from typing import Any
 
+from contracts.workspace import DataSourceDescriptor
 from runtime import websocket as websocket_module
+from runtime.client_session import ClientSession
 from runtime.websocket import WebSocketHub, _clamp_spectrum_fps, _dashboard_media_payload
+from workspaces.data_sources import DataSourceDefinition
+from workspaces.registry import CORE_OWNER_ID, RegistryOwner, WorkspaceRegistry
 
 
-class _DeadSocket:
+class _Socket:
     connected = True
 
-    def send(self, _data):
-        raise OSError("closed")
+    def __init__(self):
+        self.messages: list[dict[str, Any]] = []
+        self.fail = False
+        self.close_calls = 0
+
+    def send(self, data):
+        if self.fail:
+            raise OSError("closed")
+        self.messages.append(json.loads(data))
+
+    def close(self):
+        self.close_calls += 1
+        self.connected = False
+
+
+def _definition(source_id, message_type, getter, interval=1, active_interval=None):
+    return DataSourceDefinition(
+        descriptor=DataSourceDescriptor(
+            id=source_id,
+            kind="snapshot",
+            legacy_message_type=message_type,
+            default_interval_seconds=interval,
+            active_interval_seconds=active_interval,
+        ),
+        getter=getter,
+    )
+
+
+def _registry(definitions):
+    registry = WorkspaceRegistry()
+    registry.register_owner(RegistryOwner(CORE_OWNER_ID, version="1.0.0", locked=True))
+    registry.register_owner(RegistryOwner("com.example.extension", version="1.0.0"))
+    core_types = {"dashboard_data", "github", "media", "system"}
+    for definition in definitions:
+        message_type = definition.descriptor.legacy_message_type
+        owner = (
+            CORE_OWNER_ID
+            if message_type in core_types
+            else "com.example.extension"
+            if message_type is None
+            else "cuckoo.legacy"
+        )
+        registry.register_data_source(definition, owner_id=owner)
+    return registry
+
+
+def _attach(hub, sock, *, sources=None, page="unknown", client_id="client-1"):
+    hub.transport.start()
+    session = ClientSession(socket=sock, client_id=client_id)
+    hub.transport._sessions_by_socket[sock] = session
+    hub.transport._sessions_by_id[client_id] = session
+    hub._on_open(session)
+    sock.messages.clear()
+    if page != "unknown":
+        hub._on_message(session, {"type": "report", "page": page})
+    if sources is not None:
+        hub._subscribe_sources(session, sources, replace=True)
+    sock.messages.clear()
+    return session
 
 
 def test_dead_client_releases_spectrum_exactly_once(monkeypatch):
     releases = []
     monkeypatch.setattr(websocket_module, "release_spectrum", lambda: releases.append(True))
     hub = WebSocketHub()
-    sock = _DeadSocket()
-    hub._clients.append(sock)
-    hub._states[sock] = {"spectrum": True, "page": "music", "vibe": False}
+    sock = _Socket()
+    session = _attach(hub, sock)
+    session.spectrum = True
+    sock.fail = True
 
     hub.broadcast({"type": "test"})
     hub.broadcast({"type": "test-again"})
@@ -47,7 +109,9 @@ def test_transport_compatibility_helpers_keep_existing_shapes():
     assert _clamp_spectrum_fps(120) == 60
     assert _clamp_spectrum_fps("bad") == 24
 
-    payload = _dashboard_media_payload({"title": "Song", "lyrics": [[0, "line"]], "cover_palette": {"x": 1}})
+    payload = _dashboard_media_payload(
+        {"title": "Song", "lyrics": [[0, "line"]], "cover_palette": {"x": 1}}
+    )
     assert payload["title"] == "Song"
     assert payload["media_slim"] is True
     assert payload["lyrics"] == []
@@ -55,70 +119,39 @@ def test_transport_compatibility_helpers_keep_existing_shapes():
     assert "cover_palette" not in payload
 
 
-class _Socket:
-    connected = True
+def test_connection_open_no_longer_activates_all_ordinary_sources():
+    calls = []
+    registry = _registry([
+        _definition("system.snapshot", "system", lambda: calls.append(True) or {}),
+    ])
+    hub = WebSocketHub(workspace_registry=registry)
+    sock = _Socket()
+    session = _attach(hub, sock)
 
-    def __init__(self):
-        self.messages = []
-
-    def send(self, data):
-        self.messages.append(json.loads(data))
-
-
-class _Registry:
-    def __init__(self, definitions):
-        self._definitions = {definition.descriptor.id: definition for definition in definitions}
-
-    def get_data_source(self, source_id):
-        return self._definitions[source_id]
-
-    def data_source_ids(self):
-        return tuple(self._definitions)
-
-    def iter_data_sources(self):
-        return iter(tuple(self._definitions.values()))
+    assert session.source_subscriptions is None
+    assert hub.subscription_broker.health()["subscriptions"] == 0
+    assert calls == []
 
 
-def _definition(source_id, message_type, getter, interval=1, active_interval=None):
-    return SimpleNamespace(
-        descriptor=SimpleNamespace(
-            id=source_id,
-            legacy_message_type=message_type,
-            default_interval_seconds=interval,
-            active_interval_seconds=active_interval,
-        ),
-        getter=getter,
-    )
-
-
-def _add_client(hub, sock, sources=None, page="unknown"):
-    hub._clients.append(sock)
-    hub._states[sock] = {
-        "id": f"client-{len(hub._clients)}",
-        "page": page,
-        "vibe": False,
-        "spectrum": False,
-        "lyric": False,
-        "source_subscriptions": sources,
-    }
-
-
-def test_legacy_initial_push_keeps_existing_wire_shape(monkeypatch):
+def test_legacy_init_keeps_wire_shape_and_order(monkeypatch):
+    calls = []
+    registry = _registry([
+        _definition("dashboard.aggregate", "dashboard_data", lambda: calls.append("dashboard") or {"dashboard": True}),
+        _definition("github.contributions", "github", lambda: calls.append("github") or {"github": True}),
+        _definition("media.playback", "media", lambda: calls.append("media") or {"media": True}),
+        _definition("system.snapshot", "system", lambda: calls.append("system") or {"system": True}),
+    ])
     monkeypatch.setattr(websocket_module, "_load_vibe_state", lambda: False)
-    monkeypatch.setattr(websocket_module, "get_dashboard_data", lambda: {"dashboard": True})
-    monkeypatch.setattr(websocket_module, "get_github_data", lambda: {"github": True})
-    monkeypatch.setattr(websocket_module, "get_media_info", lambda: {"media": True})
-    monkeypatch.setattr(websocket_module, "get_system_info", lambda: {"system": True})
     monkeypatch.setattr(websocket_module, "load_theme_index", lambda: {})
     monkeypatch.setattr(websocket_module, "theme_response", lambda _index: {"theme": True})
     monkeypatch.setattr(websocket_module, "get_font_payload", lambda: {"font": True})
-
-    hub = WebSocketHub()
+    hub = WebSocketHub(workspace_registry=registry)
     sock = _Socket()
-    _add_client(hub, sock)
+    session = _attach(hub, sock)
 
-    hub._send_all_data(sock)
+    hub._send_all_data(session)
 
+    assert calls == ["dashboard", "github", "media", "system"]
     assert [message["type"] for message in sock.messages] == [
         "vibe_state",
         "dashboard_data",
@@ -132,7 +165,7 @@ def test_legacy_initial_push_keeps_existing_wire_shape(monkeypatch):
 
 def test_explicit_initial_push_only_fetches_selected_sources(monkeypatch):
     calls = []
-    registry = _Registry([
+    registry = _registry([
         _definition("system.snapshot", "system", lambda: calls.append("system") or {"cpu": 1}),
         _definition("github.contributions", "github", lambda: calls.append("github") or {"days": []}),
     ])
@@ -142,9 +175,9 @@ def test_explicit_initial_push_only_fetches_selected_sources(monkeypatch):
     monkeypatch.setattr(websocket_module, "get_font_payload", lambda: {})
     hub = WebSocketHub(workspace_registry=registry)
     sock = _Socket()
-    _add_client(hub, sock, sources={"system.snapshot"})
+    session = _attach(hub, sock, sources={"system.snapshot"})
 
-    hub._send_all_data(sock)
+    hub._send_all_data(session)
 
     assert calls == ["system"]
     assert [message["type"] for message in sock.messages] == [
@@ -156,200 +189,195 @@ def test_explicit_initial_push_only_fetches_selected_sources(monkeypatch):
 
 
 def test_source_subscribe_replace_add_unsubscribe_and_unknown_are_nonfatal():
-    registry = _Registry([
+    registry = _registry([
         _definition("system.snapshot", "system", lambda: {}),
         _definition("github.contributions", "github", lambda: {}),
     ])
     hub = WebSocketHub(workspace_registry=registry)
     sock = _Socket()
-    _add_client(hub, sock)
+    session = _attach(hub, sock)
 
-    hub._handle_message(
-        sock,
-        "client-1",
-        json.dumps({"type": "subscribe", "sources": ["system.snapshot"], "replace": True}),
-    )
-    assert hub._states[sock]["source_subscriptions"] == {"system.snapshot"}
-
-    hub._handle_message(
-        sock,
-        "client-1",
-        json.dumps({"type": "subscribe", "sources": ["github.contributions"], "replace": False}),
-    )
-    assert hub._states[sock]["source_subscriptions"] == {
-        "system.snapshot",
-        "github.contributions",
-    }
-
-    hub._handle_message(
-        sock,
-        "client-1",
-        json.dumps({"type": "unsubscribe", "sources": ["system.snapshot"]}),
-    )
-    assert hub._states[sock]["source_subscriptions"] == {"github.contributions"}
-
-    hub._handle_message(
-        sock,
-        "client-1",
-        json.dumps({"type": "subscribe", "sources": ["missing.source"], "replace": False}),
-    )
-    hub._handle_message(
-        sock,
-        "client-1",
-        json.dumps({"type": "unsubscribe", "sources": ["missing.source"]}),
-    )
-    assert hub._states[sock]["source_subscriptions"] == {"github.contributions"}
-    assert sock in hub._clients
+    hub._on_message(session, {"type": "subscribe", "sources": ["system.snapshot"], "replace": True})
+    assert session.source_subscriptions == {"system.snapshot"}
+    hub._on_message(session, {"type": "subscribe", "sources": ["github.contributions"], "replace": False})
+    assert session.source_subscriptions == {"system.snapshot", "github.contributions"}
+    hub._on_message(session, {"type": "unsubscribe", "sources": ["system.snapshot"]})
+    assert session.source_subscriptions == {"github.contributions"}
+    hub._on_message(session, {"type": "subscribe", "sources": ["missing.source"], "replace": False})
+    hub._on_message(session, {"type": "unsubscribe", "sources": ["missing.source"]})
+    assert session.source_subscriptions == {"github.contributions"}
+    assert hub.transport.get_session(session.client_id) is session
 
 
-def test_explicit_dashboard_sources_do_not_force_optional_lyric_channel():
-    registry = _Registry([
-        _definition("system.snapshot", "system", lambda: {}),
+def test_card_subscriptions_accept_browser_camel_case_and_split_lyric_channel(monkeypatch):
+    registry = _registry([
+        _definition("system.snapshot", "system", lambda: {"cpu": 1}),
     ])
+    monkeypatch.setattr(websocket_module, "get_lyric_frame", lambda: {"lyric": "line"})
     hub = WebSocketHub(workspace_registry=registry)
-    modular = _Socket()
-    legacy = _Socket()
-    music = _Socket()
-    _add_client(hub, modular)
-    _add_client(hub, legacy)
-    _add_client(hub, music)
+    sock = _Socket()
+    session = _attach(hub, sock)
 
-    hub._handle_message(
-        modular,
-        "client-1",
-        json.dumps({"type": "subscribe", "sources": ["system.snapshot"], "replace": True}),
+    hub._on_message(
+        session,
+        {
+            "type": "subscribe",
+            "replace": True,
+            "subscriptions": [
+                {"id": "system-card", "channel": "system.snapshot", "deliveryIntervalMs": 1000},
+                {"id": "lyric-card", "channel": "media.lyric"},
+            ],
+        },
     )
-    hub._handle_message(modular, "client-1", json.dumps({"type": "report", "page": "dashboard"}))
-    hub._handle_message(legacy, "client-2", json.dumps({"type": "report", "page": "dashboard"}))
-    hub._handle_message(music, "client-3", json.dumps({"type": "report", "page": "music"}))
+    hub._on_message(session, {"type": "report", "page": "dashboard"})
+    hub._on_message(session, {"type": "init"})
 
-    assert hub._states[modular]["lyric"] is False
-    assert hub._states[legacy]["lyric"] is True
-    assert hub._states[music]["lyric"] is True
+    assert session.wire_mode == "snapshot"
+    assert session.source_subscriptions == {"system.snapshot"}
+    assert session.lyric is True
+    snapshots = [message for message in sock.messages if message["type"] == "data.snapshot"]
+    assert snapshots[-1]["subscriptionId"] == "system-card"
+    assert snapshots[-1]["channel"] == "system.snapshot"
+    assert any(message["type"] == "lyric" for message in sock.messages)
+
+
+def test_explicit_dashboard_sources_do_not_force_optional_lyric_channel(monkeypatch):
+    monkeypatch.setattr(websocket_module, "get_lyric_frame", lambda: {"lyric": "line"})
+    registry = _registry([_definition("system.snapshot", "system", lambda: {})])
+    hub = WebSocketHub(workspace_registry=registry)
+    modular = _attach(hub, _Socket(), client_id="modular")
+    legacy = _attach(hub, _Socket(), client_id="legacy")
+    music = _attach(hub, _Socket(), client_id="music")
+
+    hub._on_message(modular, {"type": "subscribe", "sources": ["system.snapshot"], "replace": True})
+    hub._on_message(modular, {"type": "report", "page": "dashboard"})
+    hub._on_message(legacy, {"type": "report", "page": "dashboard"})
+    hub._on_message(music, {"type": "report", "page": "music"})
+
+    assert modular.lyric is False
+    assert legacy.lyric is True
+    assert music.lyric is True
     assert hub._lyric_interest_count() == 2
 
-    assert hub.broadcast_lyric({"type": "lyric", "data": {"lyric": "line"}}) == 2
-    assert modular.messages == []
-    assert legacy.messages[-1]["type"] == "lyric"
-    assert music.messages[-1]["type"] == "lyric"
 
-
-def test_explicit_lyric_unsubscribe_overrides_dashboard_page_fallback():
+def test_explicit_lyric_unsubscribe_overrides_dashboard_page_fallback(monkeypatch):
+    monkeypatch.setattr(websocket_module, "get_lyric_frame", lambda: {})
     hub = WebSocketHub()
     sock = _Socket()
-    _add_client(hub, sock, page="dashboard")
+    session = _attach(hub, sock, page="dashboard")
+    sock.messages.clear()
 
-    hub._handle_message(
-        sock,
-        "client-1",
-        json.dumps({"type": "subscribe", "channel": "lyric", "active": False}),
-    )
+    hub._on_message(session, {"type": "subscribe", "channel": "lyric", "active": False})
 
-    assert hub._states[sock]["lyric_explicit"] is True
+    assert session.lyric_explicit is True
     assert hub._lyric_interest_count() == 0
     assert hub.broadcast_lyric({"type": "lyric", "data": {"lyric": "hidden"}}) == 0
     assert sock.messages == []
 
 
 def test_explicit_subscriptions_filter_legacy_message_types():
-    registry = _Registry([
+    registry = _registry([
         _definition("system.snapshot", "system", lambda: {}),
         _definition("github.contributions", "github", lambda: {}),
     ])
     hub = WebSocketHub(workspace_registry=registry)
-    legacy = _Socket()
-    system = _Socket()
-    github = _Socket()
-    _add_client(hub, legacy)
-    _add_client(hub, system, sources={"system.snapshot"})
-    _add_client(hub, github, sources={"github.contributions"})
+    legacy_sock, system_sock, github_sock = _Socket(), _Socket(), _Socket()
+    legacy = _attach(hub, legacy_sock, client_id="legacy")
+    system = _attach(hub, system_sock, sources={"system.snapshot"}, client_id="system")
+    github = _attach(hub, github_sock, sources={"github.contributions"}, client_id="github")
+    hub._ensure_legacy_all(legacy)
 
     hub.broadcast({"type": "system", "data": {"cpu": 1}})
     hub.broadcast({"type": "github", "data": {"days": []}})
     hub.broadcast({"type": "theme", "data": {"name": "default"}})
 
-    assert [message["type"] for message in legacy.messages] == ["system", "github", "theme"]
-    assert [message["type"] for message in system.messages] == ["system", "theme"]
-    assert [message["type"] for message in github.messages] == ["github", "theme"]
+    assert [message["type"] for message in legacy_sock.messages] == ["system", "github", "theme"]
+    assert [message["type"] for message in system_sock.messages] == ["system", "theme"]
+    assert [message["type"] for message in github_sock.messages] == ["github", "theme"]
 
 
 def test_due_source_getter_runs_once_then_fans_out_to_matching_clients():
     calls = []
-    registry = _Registry([
-        _definition(
-            "system.snapshot",
-            "system",
-            lambda: calls.append(True) or {"cpu": len(calls)},
-        ),
+    registry = _registry([
+        _definition("system.snapshot", "system", lambda: calls.append(True) or {"cpu": len(calls)}),
     ])
     hub = WebSocketHub(workspace_registry=registry)
-    first = _Socket()
-    second = _Socket()
-    _add_client(hub, first, sources={"system.snapshot"})
-    _add_client(hub, second, sources={"system.snapshot"})
+    first_sock, second_sock = _Socket(), _Socket()
+    _attach(hub, first_sock, sources={"system.snapshot"}, client_id="first")
+    _attach(hub, second_sock, sources={"system.snapshot"}, client_id="second")
 
-    hub._broadcast_due_sources(now=10)
-    hub._broadcast_due_sources(now=10.5)
+    hub._broadcast_due_sources()
+    hub._broadcast_due_sources()
 
     assert calls == [True]
-    assert first.messages == [{"type": "system", "data": {"cpu": 1}}]
-    assert second.messages == [{"type": "system", "data": {"cpu": 1}}]
+    assert first_sock.messages == [{"type": "system", "data": {"cpu": 1}}]
+    assert second_sock.messages == [{"type": "system", "data": {"cpu": 1}}]
+
+
+def test_generic_workspace_source_uses_source_id_envelope_for_legacy_clients():
+    registry = _registry([
+        _definition("com.example.health.snapshot", None, lambda: {"status": "ok"}),
+    ])
+    hub = WebSocketHub(workspace_registry=registry)
+    sock = _Socket()
+    _attach(hub, sock, sources={"com.example.health.snapshot"})
+
+    hub._broadcast_due_sources()
+
+    assert sock.messages == [
+        {
+            "type": "workspace_source",
+            "source_id": "com.example.health.snapshot",
+            "data": {"status": "ok"},
+        }
+    ]
 
 
 def test_media_broadcast_keeps_dashboard_slim_music_full_and_filters_sources():
-    registry = _Registry([
+    registry = _registry([
         _definition("media.playback", "media", lambda: {}),
         _definition("system.snapshot", "system", lambda: {}),
     ])
     hub = WebSocketHub(workspace_registry=registry)
-    dashboard = _Socket()
-    music = _Socket()
-    excluded = _Socket()
-    _add_client(hub, dashboard, page="dashboard")
-    _add_client(hub, music, sources={"media.playback"}, page="music")
-    _add_client(hub, excluded, sources={"system.snapshot"}, page="music")
+    dashboard_sock, music_sock, excluded_sock = _Socket(), _Socket(), _Socket()
+    _attach(hub, dashboard_sock, sources={"media.playback"}, page="dashboard", client_id="dashboard")
+    _attach(hub, music_sock, sources={"media.playback"}, page="music", client_id="music")
+    _attach(hub, excluded_sock, sources={"system.snapshot"}, page="music", client_id="excluded")
     frame = {"title": "Song", "lyrics": [[0, "line"]], "cover_palette": {"accent": "red"}}
 
     hub.broadcast_media(frame, source_id="media.playback")
 
-    dashboard_data = dashboard.messages[0]["data"]
-    music_data = music.messages[0]["data"]
+    dashboard_data = dashboard_sock.messages[0]["data"]
+    music_data = music_sock.messages[0]["data"]
     assert dashboard_data["media_slim"] is True
     assert dashboard_data["lyrics"] == []
     assert "cover_palette" not in dashboard_data
     assert music_data == frame
-    assert excluded.messages == []
+    assert excluded_sock.messages == []
 
 
 def test_dashboard_report_tracks_workspace_and_keeps_legacy_main_default():
     hub = WebSocketHub()
-    legacy = _Socket()
-    custom = _Socket()
-    music = _Socket()
-    _add_client(hub, legacy)
-    _add_client(hub, custom)
-    _add_client(hub, music)
+    legacy = _attach(hub, _Socket(), client_id="legacy")
+    custom = _attach(hub, _Socket(), client_id="custom")
+    music = _attach(hub, _Socket(), client_id="music")
 
-    hub._handle_message(legacy, "client-1", json.dumps({"type": "report", "page": "dashboard"}))
-    hub._handle_message(
-        custom,
-        "client-2",
-        json.dumps({"type": "report", "page": "dashboard", "workspace_id": "ws_demo"}),
-    )
-    hub._handle_message(music, "client-3", json.dumps({"type": "report", "page": "music"}))
+    hub._on_message(legacy, {"type": "report", "page": "dashboard"})
+    hub._on_message(custom, {"type": "report", "page": "dashboard", "workspace_id": "ws_demo"})
+    hub._on_message(music, {"type": "report", "page": "music"})
 
     clients = {item["id"]: item for item in hub.list_clients()}
-    assert clients["client-1"]["workspace_id"] == "main"
-    assert clients["client-2"]["workspace_id"] == "ws_demo"
-    assert clients["client-3"]["workspace_id"] is None
-    assert hub.workspace_client_ids("main") == ["client-1"]
-    assert hub.workspace_client_ids("ws_demo") == ["client-2"]
+    assert clients["legacy"]["workspace_id"] == "main"
+    assert clients["custom"]["workspace_id"] == "ws_demo"
+    assert clients["music"]["workspace_id"] is None
+    assert hub.workspace_client_ids("main") == ["legacy"]
+    assert hub.workspace_client_ids("ws_demo") == ["custom"]
 
 
 def test_workspace_navigation_extends_legacy_dashboard_and_music_messages():
     hub = WebSocketHub()
     sock = _Socket()
-    _add_client(hub, sock)
+    _attach(hub, sock)
 
     assert hub.navigate_client("client-1", "dashboard") is True
     assert sock.messages[-1] == {
@@ -358,7 +386,6 @@ def test_workspace_navigation_extends_legacy_dashboard_and_music_messages():
         "url": "/",
         "workspace_id": "main",
     }
-
     assert hub.navigate_client("client-1", workspace_id="ws demo") is True
     assert sock.messages[-1] == {
         "type": "navigate",
@@ -366,7 +393,6 @@ def test_workspace_navigation_extends_legacy_dashboard_and_music_messages():
         "url": "/workspaces/ws%20demo",
         "workspace_id": "ws demo",
     }
-
     assert hub.navigate_client("client-1", "music") is True
     assert sock.messages[-1] == {"type": "navigate", "page": "music", "url": "/music"}
     assert hub.navigate_client("missing", workspace_id="main") is False

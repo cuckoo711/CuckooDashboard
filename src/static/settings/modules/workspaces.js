@@ -57,6 +57,7 @@ function normalizeCatalogItem(item) {
         type,
         title: String(item?.title || item?.name || type),
         description: String(item?.description || ''),
+        owner: String(item?.owner || ''),
         singleInstance: !!(item?.single_instance ?? item?.singleInstance),
         defaultSize: {
             w: Number(defaultSize.w ?? defaultSize.width ?? item?.default_w ?? fallback.defaultSize.w),
@@ -140,6 +141,7 @@ function serializeWidget(widget) {
     return {
         id: widget.id,
         type: widget.type,
+        owner: widget.owner || definition?.owner || null,
         slot: widget.slot || 'main',
         layout: {x: rect.x, y: rect.y, width: rect.w, height: rect.h},
         constraints: clone(widget.constraints || definition?.constraints || {}),
@@ -201,12 +203,14 @@ function renderGrid() {
     preview.style.setProperty('--workspace-rows', grid.rows);
     workspaceState.draft.widgets.forEach((widget) => {
         const card = document.createElement('article');
-        card.className = 'workspace-widget-card';
+        const unavailable = widget.available === false || !workspaceState.catalog.some((item) => item.type === widget.type);
+        card.className = `workspace-widget-card${unavailable ? ' is-unavailable' : ''}`;
         card.dataset.widgetId = widget.id;
         card.tabIndex = 0;
         card.innerHTML = `<div class="workspace-widget-head"><strong>${escHtml(widgetTitle(widget))}</strong>`
             + `<button type="button" class="workspace-widget-remove" data-remove-widget="${escHtml(widget.id)}" title="移除组件" ${state.workspaceSaving ? 'disabled' : ''}>×</button></div>`
             + `<span class="workspace-widget-type">${escHtml(widget.type)}</span>`
+            + (unavailable ? `<span class="workspace-widget-unavailable">不可用 · ${escHtml(widget.unavailable_reason || '扩展缺失')}</span>` : '')
             + '<span class="workspace-resize-handle" title="拖动缩放"></span>';
         placeCard(card, normalizeRect(widget), grid);
         preview.appendChild(card);
@@ -397,6 +401,8 @@ function addWidget(type) {
         ...defaults,
         id: uniqueWidgetId(type),
         type,
+        owner: definition.owner || null,
+        available: true,
         slot: defaults.slot || 'main',
         constraints: clone(definition.constraints),
         ...rect,

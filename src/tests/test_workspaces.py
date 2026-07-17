@@ -7,8 +7,10 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from app.factory import create_app
+from contracts.extension import ExtensionContributions
 from contracts.workspace import (
     DataSourceDescriptor,
+    DataSourceRefreshPolicy,
     WidgetDefinition,
     WidgetInstance,
     WorkspaceDefinition,
@@ -19,7 +21,7 @@ from services.media_service import get_media_info
 from services.system_service import get_system_info
 from workspaces.builtins import create_builtin_workspace_registry
 from workspaces.data_sources import DataSourceDefinition
-from workspaces.registry import WorkspaceRegistry
+from workspaces.registry import RegistryOwner, WorkspaceRegistry
 
 
 def test_data_source_definition_is_immutable_and_registry_is_per_instance():
@@ -44,6 +46,138 @@ def test_data_source_definition_is_immutable_and_registry_is_per_instance():
         descriptor.kind = "push"
     with pytest.raises(FrozenInstanceError):
         definition.getter = lambda: None
+
+
+def test_refresh_policy_is_immutable_normalized_and_serialized_additively():
+    policy = DataSourceRefreshPolicy(
+        supports_push=True,
+        default_interval_ms=2500,
+        active_interval_ms=500,
+        minimum_interval_ms=250,
+        cache_ttl_ms=750,
+        pause_without_subscribers=False,
+        stale_if_error_ms=5000,
+        error_backoff_initial_ms=1000,
+        error_backoff_max_ms=8000,
+    )
+    descriptor = DataSourceDescriptor(
+        id="test.normalized",
+        kind="snapshot",
+        legacy_message_type=None,
+        default_interval_seconds=2.5,
+        active_interval_seconds=0.5,
+        refresh_policy=policy,
+    )
+
+    with pytest.raises(ValueError, match="legacy default interval differs"):
+        DataSourceDescriptor(
+            id="test.conflict",
+            kind="snapshot",
+            legacy_message_type=None,
+            default_interval_seconds=99,
+            active_interval_seconds=0.5,
+            refresh_policy=policy,
+        )
+
+    assert descriptor.default_interval_seconds == 2.5
+    assert descriptor.active_interval_seconds == 0.5
+    assert descriptor.to_payload()["refresh_policy"] == policy.to_payload()
+    assert DataSourceDescriptor.from_payload(descriptor.to_payload()) == descriptor
+    with pytest.raises(FrozenInstanceError):
+        policy.default_interval_ms = 10
+
+
+def test_registry_strictly_validates_refresh_policy_and_legacy_owner_rules():
+    invalid_registry = WorkspaceRegistry()
+    invalid = DataSourceDefinition(
+        descriptor=DataSourceDescriptor(
+            id="test.invalid-policy",
+            kind="snapshot",
+            legacy_message_type=None,
+            default_interval_seconds=1,
+            refresh_policy=DataSourceRefreshPolicy(
+                default_interval_ms=1000,
+                minimum_interval_ms=1001,
+            ),
+        ),
+        getter=lambda: {},
+    )
+    with pytest.raises(ValueError, match="minimum interval exceeds default"):
+        invalid_registry.register_data_source(invalid)
+
+    registry = WorkspaceRegistry()
+    with pytest.raises(ValueError, match="core legacy message type requires core owner"):
+        registry.register_data_source(
+            DataSourceDefinition(
+                descriptor=DataSourceDescriptor(
+                    id="extension.system",
+                    kind="snapshot",
+                    legacy_message_type="system",
+                    default_interval_seconds=1,
+                ),
+                getter=lambda: {},
+            )
+        )
+
+    registry.register_owner(RegistryOwner("com.example.extension"))
+    with pytest.raises(ValueError, match="must not declare legacy_message_type"):
+        registry.register_data_source(
+            DataSourceDefinition(
+                descriptor=DataSourceDescriptor(
+                    id="com.example.extension.source",
+                    kind="snapshot",
+                    legacy_message_type="custom",
+                    default_interval_seconds=1,
+                ),
+                getter=lambda: {},
+            ),
+            owner_id="com.example.extension",
+        )
+
+
+def test_owner_contributions_register_atomically_and_keep_owner_metadata():
+    registry = WorkspaceRegistry()
+    registry.register_data_source(
+        DataSourceDefinition(
+            descriptor=DataSourceDescriptor(
+                id="existing.source",
+                kind="snapshot",
+                legacy_message_type="existing",
+                default_interval_seconds=1,
+            ),
+            getter=lambda: {},
+        )
+    )
+    contributions = ExtensionContributions(
+        data_sources=(
+            DataSourceDefinition(
+                descriptor=DataSourceDescriptor(
+                    id="com.example.atomic.source",
+                    kind="snapshot",
+                    legacy_message_type=None,
+                    default_interval_seconds=1,
+                ),
+                getter=lambda: {},
+            ),
+        ),
+        widgets=(
+            WidgetDefinition(
+                type="com.example.atomic.widget",
+                title="Atomic",
+                sources=("missing.source",),
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="unknown data source"):
+        registry.register_contributions(
+            RegistryOwner("com.example.atomic", version="1.0.0"),
+            contributions,
+        )
+
+    assert "com.example.atomic.source" not in registry.data_source_ids()
+    with pytest.raises(KeyError):
+        registry.get_owner("com.example.atomic")
 
 
 def test_registry_serialization_returns_json_friendly_copies():
@@ -90,8 +224,19 @@ def test_registry_serialization_returns_json_friendly_copies():
                 "id": "test.source",
                 "kind": "snapshot",
                 "legacy_message_type": "test",
-                "default_interval_seconds": 5,
+                "default_interval_seconds": 5.0,
                 "active_interval_seconds": None,
+                "refresh_policy": {
+                    "supports_push": False,
+                    "default_interval_ms": 5000,
+                    "active_interval_ms": None,
+                    "minimum_interval_ms": 5000,
+                    "cache_ttl_ms": 5000,
+                    "pause_without_subscribers": True,
+                    "stale_if_error_ms": 0,
+                    "error_backoff_initial_ms": 5000,
+                    "error_backoff_max_ms": 60000,
+                },
             }
         ],
         "widgets": [
