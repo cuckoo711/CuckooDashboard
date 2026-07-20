@@ -67,29 +67,38 @@ class NUGClient:
             return self._login()
         return True
 
-    def _request_with_retry(self, method: str, url: str, **kwargs: Any):
-        """带 401 自动重登的请求；成功请求后回写服务端可能轮换的 session。"""
-        if not self._ensure_login():
-            return None
+    def _do_request(self, method: str, url: str, **kwargs: Any):
+        """执行一次请求，返回 response 或 None。"""
         try:
-            resp = getattr(self.session, method)(url, **kwargs)
+            return getattr(self.session, method)(url, **kwargs)
         except Exception as exc:
             logger.error("[nug] 请求异常: %s", exc)
             return None
-        if resp.status_code == 401:
-            self._logged_in = False
-            if self._login():
-                try:
-                    resp = getattr(self.session, method)(url, **kwargs)
-                except Exception as exc:
-                    logger.error("[nug] 重登后请求异常: %s", exc)
-                    return None
-            else:
-                return None
+
+    def _request_with_retry(self, method: str, url: str, **kwargs: Any):
+        """带自动重登的请求；非 200 时重登一次再重试。"""
+        if not self._ensure_login():
+            return None
+        resp = self._do_request(method, url, **kwargs)
+        if resp is None:
+            return None
         if resp.status_code == 200:
             self._persist_session()
             return resp
-        return None
+        # 非 200：重登后重试一次
+        logger.warning("[nug] 请求 %s 返回 %s，尝试重登", url, resp.status_code)
+        self._logged_in = False
+        if not self._login():
+            return None
+        # 重登成功后新 cookies 已由 _login() 持久化
+        resp = self._do_request(method, url, **kwargs)
+        if resp is None:
+            return None
+        if resp.status_code != 200:
+            logger.error("[nug] 重登后请求 %s 仍返回 %s", url, resp.status_code)
+            return None
+        self._persist_session()
+        return resp
 
     def get_balance(self) -> dict | None:
         try:
