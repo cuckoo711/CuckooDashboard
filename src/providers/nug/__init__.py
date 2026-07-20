@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -38,6 +39,7 @@ AUTH_DESCRIPTOR = {
 
 _CLIENT: NUGClient | None = None
 _CLIENT_ACCOUNT_ID = ""
+_CLIENT_LOCK = threading.Lock()
 _LAST_SUCCESS_AT: str | None = None
 _LAST_ERROR: str | None = None
 
@@ -170,17 +172,19 @@ def _get_client() -> NUGClient | None:
     account_id = str(account.get("_account_id") or "")
     if not account_id or not all([account.get("url"), account.get("username"), account.get("password")]):
         return None
-    if _CLIENT is not None and _CLIENT_ACCOUNT_ID == account_id:
+    # 刷新调度线程与请求线程可能并发进入；加锁避免创建两个各持独立会话的 client。
+    with _CLIENT_LOCK:
+        if _CLIENT is not None and _CLIENT_ACCOUNT_ID == account_id:
+            return _CLIENT
+        _CLIENT = NUGClient(
+            str(account["url"]),
+            str(account["username"]),
+            str(account["password"]),
+            session_cookies=account.get("session_cookies") if isinstance(account.get("session_cookies"), dict) else {},
+            on_session_update=lambda cookies: _persist_session(account_id, cookies),
+        )
+        _CLIENT_ACCOUNT_ID = account_id
         return _CLIENT
-    _CLIENT = NUGClient(
-        str(account["url"]),
-        str(account["username"]),
-        str(account["password"]),
-        session_cookies=account.get("session_cookies") if isinstance(account.get("session_cookies"), dict) else {},
-        on_session_update=lambda cookies: _persist_session(account_id, cookies),
-    )
-    _CLIENT_ACCOUNT_ID = account_id
-    return _CLIENT
 
 
 # ============================================================
@@ -206,12 +210,17 @@ def get_usage_summary() -> dict | None:
     return None
 
 
-def get_channel_breakdown(days: int = 7) -> list | None:
+def get_channel_breakdown(
+    days: int = 7,
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> list | None:
     global _LAST_SUCCESS_AT, _LAST_ERROR
     client = _get_client()
     if client is None:
         return None
-    rows = client.get_channel_breakdown(days=days)
+    rows = client.get_channel_breakdown(days=days, start=start, end=end)
     if rows is None:
         _LAST_ERROR = "获取 channel breakdown 失败"
         return None
@@ -221,8 +230,13 @@ def get_channel_breakdown(days: int = 7) -> list | None:
 
 
 def get_today_usage() -> dict[str, int | str] | None:
-    """在 NUG 插件内部解析渠道统计，向核心暴露统一今日用量。"""
-    rows = get_channel_breakdown(days=1)
+    """在 NUG 插件内部解析渠道统计，向核心暴露统一今日用量。
+
+    “今日”为 UTC 自然日（与 MiMo 的今日口径一致），而非过去 24 小时。
+    """
+    now = datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    rows = get_channel_breakdown(start=day_start, end=now)
     if not isinstance(rows, list):
         return None
     input_tokens = output_tokens = cached_input_tokens = total_tokens = 0
@@ -360,8 +374,9 @@ def delete_account(account_id: str) -> None:
 
 def reload_config() -> None:
     global _CLIENT, _CLIENT_ACCOUNT_ID, _LAST_SUCCESS_AT, _LAST_ERROR
-    _CLIENT = None
-    _CLIENT_ACCOUNT_ID = ""
+    with _CLIENT_LOCK:
+        _CLIENT = None
+        _CLIENT_ACCOUNT_ID = ""
     _LAST_SUCCESS_AT = None
     _LAST_ERROR = None
 

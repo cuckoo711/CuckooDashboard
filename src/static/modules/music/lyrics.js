@@ -85,8 +85,20 @@ export function currentEffPosSec() {
     return currentPosSec() + Number(state.lyricOffset || 0);
 }
 
+// updateLyricLine 以约 25fps 运行；缓存静态元素引用，避免每帧重复 getElementById。
+const domCache = new Map();
+
+function getEl(id) {
+    let element = domCache.get(id);
+    if (!element || !element.isConnected) {
+        element = document.getElementById(id);
+        domCache.set(id, element);
+    }
+    return element;
+}
+
 function lyricSlots() {
-    return [document.getElementById('lyricCurrent'), document.getElementById('lyricNext')];
+    return [getEl('lyricCurrent'), getEl('lyricNext')];
 }
 
 export function resetLyricSlots() {
@@ -314,17 +326,26 @@ function fadeSlotTo(slotIndex, lyricIndex, text) {
 // This is the single retained implementation: it matches the second, effective
 // updateLyricLine from the legacy script, including force-gated sentence pulse.
 export function updateLyricLine(force, frame = {}) {
-    const previous = document.getElementById('lyricPrev');
-    if (previous) previous.hidden = true;
+    const previous = getEl('lyricPrev');
+    if (previous && !previous.hidden) previous.hidden = true;
     let position = currentPosSec();
     const duration = state.mediaDuration || 0;
     if (duration > 0 && position > duration + 1) position %= Math.max(duration, 1);
-    const fill = document.getElementById('progressFill');
-    const positionText = document.getElementById('posText');
-    const durationText = document.getElementById('durText');
-    if (fill) fill.style.width = (duration > 0 ? Math.min(100, position / duration * 100) : 0).toFixed(2) + '%';
-    if (positionText) positionText.textContent = fmtTime(position);
-    if (durationText) durationText.textContent = fmtTime(duration);
+    const fill = getEl('progressFill');
+    const positionText = getEl('posText');
+    const durationText = getEl('durText');
+    if (fill) {
+        const width = (duration > 0 ? Math.min(100, position / duration * 100) : 0).toFixed(2) + '%';
+        if (fill.style.width !== width) fill.style.width = width;
+    }
+    if (positionText) {
+        const text = fmtTime(position);
+        if (positionText.textContent !== text) positionText.textContent = text;
+    }
+    if (durationText) {
+        const text = fmtTime(duration);
+        if (durationText.textContent !== text) durationText.textContent = text;
+    }
 
     const index = typeof state.mediaLyricIndex === 'number' ? state.mediaLyricIndex : -1;
     let nextIndex = typeof state.mediaNextLyricIndex === 'number' ? state.mediaNextLyricIndex : -1;
@@ -397,8 +418,8 @@ export function applyLyricFrame(data) {
         state.mediaTrackKey = data.track_key;
         state.lastLyricIdx = -1;
         resetLyricSlots();
-        const title = document.getElementById('trackTitle');
-        const artist = document.getElementById('trackArtist');
+        const title = getEl('trackTitle');
+        const artist = getEl('trackArtist');
         if (title) title.textContent = state.mediaTitle || '--';
         if (artist) artist.textContent = state.mediaArtist || '';
     }

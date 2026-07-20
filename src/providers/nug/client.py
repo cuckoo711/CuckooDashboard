@@ -11,6 +11,9 @@ import requests
 
 logger = logging.getLogger("cuckoo.providers.nug")
 
+# 仅这些状态码说明会话失效，值得重登重试；5xx/429 重登无济于事。
+_AUTH_RETRY_STATUS = frozenset({401, 403})
+
 
 class NUGClient:
     """NUG API 客户端，支持从 Vault 恢复并回写 session cookie。"""
@@ -36,12 +39,17 @@ class NUGClient:
             self.session.cookies.update({str(key): str(value) for key, value in session_cookies.items() if value})
         self._on_session_update = on_session_update
         self._logged_in = bool(session_cookies)
+        self._persisted_cookies: dict[str, str] = dict(self.session.cookies.get_dict())
 
     def _persist_session(self) -> None:
         if self._on_session_update is None:
             return
+        cookies = dict(self.session.cookies.get_dict())
+        if cookies == self._persisted_cookies:
+            return
         try:
-            self._on_session_update(dict(self.session.cookies.get_dict()))
+            self._on_session_update(cookies)
+            self._persisted_cookies = cookies
         except Exception:
             logger.warning("[nug] 无法持久化会话状态")
 
@@ -76,7 +84,7 @@ class NUGClient:
             return None
 
     def _request_with_retry(self, method: str, url: str, **kwargs: Any):
-        """带自动重登的请求；非 200 时重登一次再重试。"""
+        """带自动重登的请求；仅会话失效（401/403）时重登一次再重试。"""
         if not self._ensure_login():
             return None
         resp = self._do_request(method, url, **kwargs)
@@ -85,12 +93,13 @@ class NUGClient:
         if resp.status_code == 200:
             self._persist_session()
             return resp
-        # 非 200：重登后重试一次
-        logger.warning("[nug] 请求 %s 返回 %s，尝试重登", url, resp.status_code)
+        if resp.status_code not in _AUTH_RETRY_STATUS:
+            logger.warning("[nug] 请求 %s 返回 %s", url, resp.status_code)
+            return None
+        logger.warning("[nug] 请求 %s 返回 %s，会话可能已失效，尝试重登", url, resp.status_code)
         self._logged_in = False
         if not self._login():
             return None
-        # 重登成功后新 cookies 已由 _login() 持久化
         resp = self._do_request(method, url, **kwargs)
         if resp is None:
             return None
@@ -111,10 +120,16 @@ class NUGClient:
             logger.error("[nug] 获取余额异常: %s", exc)
             return None
 
-    def get_channel_breakdown(self, days: int = 7) -> list | None:
+    def get_channel_breakdown(
+        self,
+        days: int = 7,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list | None:
         try:
-            end = datetime.now(timezone.utc)
-            start = end - timedelta(days=days)
+            end = end or datetime.now(timezone.utc)
+            start = start or end - timedelta(days=days)
             params = {
                 "start": start.isoformat().replace("+00:00", "Z"),
                 "end": end.isoformat().replace("+00:00", "Z"),
