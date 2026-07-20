@@ -116,7 +116,7 @@ def test_discovery_warns_but_registers_incomplete_third_party_plugin(
 
 
 def test_builtin_provider_capability_methods_are_complete():
-    for provider_id in ("mimo", "nug", "local_platform"):
+    for provider_id in ("mimo", "nug", "nfk"):
         provider = importlib.import_module(f"providers.{provider_id}")
         assert callable(getattr(provider, "get_status", None))
         for capability in provider.CAPABILITIES:

@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 SRC = Path(__file__).resolve().parents[1]
-_BUILTIN_PROVIDERS = {"providers.mimo", "providers.nug", "providers.local_platform"}
+_BUILTIN_PROVIDERS = {"providers.mimo", "providers.nug", "providers.nfk"}
 
 
 def _imports(path: Path) -> set[str]:

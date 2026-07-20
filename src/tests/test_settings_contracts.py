@@ -21,7 +21,7 @@ def test_settings_contracts_do_not_fix_provider_specific_values():
         *SettingsOptions.__annotations__,
         *SettingsPayload.__annotations__,
     }
-    assert not {"mimo", "nug", "local_platform"} & contract_keys
+    assert not {"mimo", "nug", "nfk"} & contract_keys
 
 
 def test_provider_panel_keeps_dynamic_values_and_status_extensions(monkeypatch):

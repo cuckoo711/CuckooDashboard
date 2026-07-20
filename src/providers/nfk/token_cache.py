@@ -1,4 +1,4 @@
-"""本地平台 Provider：JWT token Vault 缓存。"""
+"""NFK Provider：JWT token Vault 缓存。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 
 from core.credentials import get_provider_state, update_provider_state
 
-_PROVIDER_ID = "local_platform"
+_PROVIDER_ID = "nfk"
 _TOKEN_TTL_SECONDS = 5 * 86400
 
 

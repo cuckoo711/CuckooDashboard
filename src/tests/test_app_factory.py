@@ -34,7 +34,7 @@ def test_factory_creates_isolated_apps_with_provider_routes():
     paths = {rule for rule, _ in _routes(first)}
     assert "/auth/mimo/" in paths
     assert "/auth/nug/" in paths
-    assert "/auth/local_platform/" in paths
+    assert "/auth/nfk/" in paths
 
 
 def test_factory_does_not_start_background_threads():

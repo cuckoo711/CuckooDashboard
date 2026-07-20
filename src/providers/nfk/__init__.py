@@ -1,4 +1,4 @@
-"""本地 MiMo 兼容平台 Provider：多账户、URL 凭据引用和 JWT Vault 缓存。"""
+"""NFK（本地 vibecoding 助手，MiMo 兼容）Provider：多账户、URL 凭据引用和 JWT Vault 缓存。"""
 
 from __future__ import annotations
 
@@ -12,17 +12,17 @@ from urllib.parse import urlparse
 from providers.runtime_config import get_provider_config, set_provider_config
 from core.credentials import VaultError, get_provider_state, update_provider_state
 from providers.auth import RefreshResult, auto_refresh, get_refresh_status
-from providers.local_platform.client import LocalMimoAPI
+from providers.nfk.client import LocalMimoAPI
 
-logger = logging.getLogger("cuckoo.providers.local_platform")
+logger = logging.getLogger("cuckoo.providers.nfk")
 
-PROVIDER_ID = "local_platform"
+PROVIDER_ID = "nfk"
 CAPABILITIES = ["token_plan", "daily_usage"]
 
 CONFIG_SCHEMA = {
-    "config_key": "local_platform",
-    "title": "本地平台",
-    "description": "MiMo 兼容本地实例。服务地址通过 credential_ref 引用 DPAPI Vault 中的账户。",
+    "config_key": "nfk",
+    "title": "NFK",
+    "description": "NFK 本地 vibecoding 助手实例（MiMo 兼容 API）。服务地址通过 credential_ref 引用 DPAPI Vault 中的账户。",
     "order": 20,
     "fields": [
         {"key": "enabled", "label": "启用", "type": "boolean", "default": False},
@@ -42,8 +42,8 @@ CONFIG_SCHEMA = {
 }
 
 AUTH_DESCRIPTOR = {
-    "title": "本地平台账户认证",
-    "auth_path": "/auth/local_platform/",
+    "title": "NFK 账户认证",
+    "auth_path": "/auth/nfk/",
     "custom_ui": True,
 }
 
@@ -63,11 +63,11 @@ def _normalise_state(value: object) -> dict[str, Any]:
 
 
 def _state() -> dict[str, Any]:
-    return _normalise_state(get_provider_state("local_platform", {}))
+    return _normalise_state(get_provider_state("nfk", {}))
 
 
 def _enabled() -> bool:
-    config = get_provider_config("local_platform", {})
+    config = get_provider_config("nfk", {})
     return bool(config.get("enabled")) if isinstance(config, dict) else False
 
 
@@ -109,7 +109,8 @@ def save_account(payload: dict[str, Any], account_id: str | None = None) -> str:
     label = str(payload.get("label") or "").strip()
     if not username or not password:
         raise ValueError("用户名和密码不能为空")
-    resolved = account_id or f"local-{uuid.uuid4().hex[:12]}"
+    # 历史账户 ID 使用 local- 前缀；ID 是不透明引用，旧账户无需迁移。
+    resolved = account_id or f"nfk-{uuid.uuid4().hex[:12]}"
 
     def apply(raw: dict[str, Any]) -> dict[str, Any]:
         state = _normalise_state(raw)
@@ -129,7 +130,7 @@ def save_account(payload: dict[str, Any], account_id: str | None = None) -> str:
             state["active_account_id"] = resolved
         return state
 
-    update_provider_state("local_platform", apply)
+    update_provider_state("nfk", apply)
     reload_config()
     return resolved
 
@@ -138,16 +139,16 @@ def set_active_account(account_id: str) -> None:
     def apply(raw: dict[str, Any]) -> dict[str, Any]:
         state = _normalise_state(raw)
         if account_id not in state["accounts"]:
-            raise KeyError("本地平台账户不存在")
+            raise KeyError("NFK 账户不存在")
         state["active_account_id"] = account_id
         return state
 
-    update_provider_state("local_platform", apply)
+    update_provider_state("nfk", apply)
     reload_config()
 
 
 def _config_urls() -> list[dict[str, str]]:
-    config = get_provider_config("local_platform", {})
+    config = get_provider_config("nfk", {})
     raw_urls = config.get("urls", []) if isinstance(config, dict) else []
     rows: list[dict[str, str]] = []
     for raw in raw_urls if isinstance(raw_urls, list) else []:
@@ -177,7 +178,7 @@ def save_url(url: str, credential_ref: str) -> None:
     url = _valid_url(str(url).strip())
     if not credential_ref or not get_local_account(credential_ref):
         raise ValueError("请选择存在的账户")
-    config = dict(get_provider_config("local_platform", {}) or {})
+    config = dict(get_provider_config("nfk", {}) or {})
     rows = _config_urls()
     replaced = False
     for row in rows:
@@ -188,15 +189,15 @@ def save_url(url: str, credential_ref: str) -> None:
     if not replaced:
         rows.append({"url": url, "credential_ref": credential_ref})
     config["urls"] = rows
-    set_provider_config("local_platform", config)
+    set_provider_config("nfk", config)
     reload_config()
 
 
 def delete_url(url: str) -> None:
     target = str(url).strip().rstrip("/")
-    config = dict(get_provider_config("local_platform", {}) or {})
+    config = dict(get_provider_config("nfk", {}) or {})
     config["urls"] = [row for row in _config_urls() if row["url"] != target]
-    set_provider_config("local_platform", config)
+    set_provider_config("nfk", config)
     reload_config()
 
 
@@ -219,7 +220,7 @@ def _get_apis() -> list[LocalMimoAPI]:
             str(account["password"]),
             account_id=str(account.get("_account_id") or ""),
         ))
-    logger.info("[local] 已配置 %s 个可用本地平台实例", len(_local_apis))
+    logger.info("[nfk] 已配置 %s 个可用 NFK 实例", len(_local_apis))
     return _local_apis
 
 
@@ -273,7 +274,7 @@ def aggregate_today_usage() -> dict | None:
             for key in usage:
                 usage[key] += today.get(key, 0)
         _last_available_count = available_count
-        _last_error = None if available_count else "未获取到本地平台数据"
+        _last_error = None if available_count else "未获取到 NFK 数据"
         if available_count:
             _last_success_at = str(time.time())
             return usage
@@ -317,7 +318,7 @@ def get_auth_status() -> dict[str, Any]:
         return {
             "status": "disabled", "authenticated": False, "active_account_id": "",
             "active_account_label": "", "last_error": None, "last_refresh_at": None,
-            "expires_at": None, "refresh_state": get_refresh_status("local_platform"),
+            "expires_at": None, "refresh_state": get_refresh_status("nfk"),
         }
     try:
         active = get_local_account()
@@ -335,7 +336,7 @@ def get_auth_status() -> dict[str, Any]:
         "last_error": error or _last_error,
         "last_refresh_at": _last_success_at,
         "expires_at": None,
-        "refresh_state": get_refresh_status("local_platform"),
+        "refresh_state": get_refresh_status("nfk"),
     }
 
 
@@ -346,20 +347,20 @@ def test_connection(account_id: str | None = None, url: str | None = None) -> di
         return {"ok": False, "status": "needs_login", "message": "请选择已绑定 URL 的完整账户"}
     api = LocalMimoAPI(target_url, str(account["username"]), str(account["password"]), account_id=str(account.get("_account_id") or ""))
     ok = api._ensure_token()
-    return {"ok": ok, "status": "ok" if ok else "error", "message": "连接成功" if ok else "无法登录本地平台"}
+    return {"ok": ok, "status": "ok" if ok else "error", "message": "连接成功" if ok else "无法登录 NFK"}
 
 
 @auto_refresh(interval_seconds=300, mode="on_demand")
 def refresh_credentials() -> RefreshResult:
     if not _enabled():
-        return RefreshResult.skipped("本地平台 Provider 已禁用")
+        return RefreshResult.skipped("NFK Provider 已禁用")
     apis = _get_apis()
     if not apis:
         return RefreshResult.needs_login("请配置服务 URL 并绑定账户")
     successes = sum(1 for api in apis if api._ensure_token())
     if not successes:
-        return RefreshResult.needs_login("本地平台 JWT 无法刷新，请检查账户")
-    return RefreshResult.unchanged(f"已验证 {successes}/{len(apis)} 个本地平台会话")
+        return RefreshResult.needs_login("NFK JWT 无法刷新，请检查账户")
+    return RefreshResult.unchanged(f"已验证 {successes}/{len(apis)} 个 NFK 会话")
 
 
 def logout(account_id: str | None = None) -> dict[str, Any]:
@@ -377,7 +378,7 @@ def logout(account_id: str | None = None) -> dict[str, Any]:
         state["accounts"][target] = account
         return state
 
-    update_provider_state("local_platform", apply)
+    update_provider_state("nfk", apply)
     reload_config()
     return {"ok": True, "message": "已登出；再次使用请重新输入密码"}
 
@@ -404,7 +405,7 @@ def delete_account(account_id: str) -> None:
             state["active_account_id"] = next(iter(state["accounts"]), "")
         return state
 
-    update_provider_state("local_platform", apply)
+    update_provider_state("nfk", apply)
     reload_config()
 
 
@@ -494,11 +495,11 @@ def register_auth_routes(router: Any) -> None:
         return jsonify({"ok": True})
 
 
-_AUTH_PAGE = """<!doctype html><html lang='zh-CN'><meta charset='utf-8'><title>本地平台认证</title>
+_AUTH_PAGE = """<!doctype html><html lang='zh-CN'><meta charset='utf-8'><title>NFK 认证</title>
 <style>body{font:14px system-ui;margin:28px;background:#111827;color:#e5e7eb;max-width:1000px}input,select,button{padding:8px;margin:4px;border-radius:6px;border:1px solid #4b5563;background:#1f2937;color:inherit}button{cursor:pointer}.card{border:1px solid #374151;padding:12px;margin:10px 0;border-radius:8px}.muted{color:#9ca3af}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}</style>
-<h1>本地平台账户与实例</h1><p id='status' class='muted'>正在读取…</p><h2>添加账户</h2><div class=grid><input id=label placeholder='显示名'><input id=username placeholder='用户名'><input id=password type=password placeholder='密码'></div><button onclick='createAccount()'>保存账户</button><h2>绑定实例 URL</h2><div class=grid><input id=url placeholder='http://host:7778'><select id=ref></select></div><button onclick='saveUrl()'>保存 URL 绑定</button><h2>账户</h2><div id=accounts></div><h2>实例 URL</h2><div id=urls></div>
+<h1>NFK 账户与实例</h1><p id='status' class='muted'>正在读取…</p><h2>添加账户</h2><div class=grid><input id=label placeholder='显示名'><input id=username placeholder='用户名'><input id=password type=password placeholder='密码'></div><button onclick='createAccount()'>保存账户</button><h2>绑定实例 URL</h2><div class=grid><input id=url placeholder='http://host:7778'><select id=ref></select></div><button onclick='saveUrl()'>保存 URL 绑定</button><h2>账户</h2><div id=accounts></div><h2>实例 URL</h2><div id=urls></div>
 <script>
-const api='/auth/local_platform/api/';let state={};async function call(p,o={}){const r=await fetch(api+p,{headers:{'Content-Type':'application/json'},...o});return r.json()}function e(v){return String(v||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}async function load(){state=await call('state');document.querySelector('#status').textContent='状态：'+(state.status?.status||'unknown')+(state.status?.active_account_label?' · '+state.status.active_account_label:'');ref.innerHTML=(state.accounts||[]).map(a=>`<option value='${a.id}'>${e(a.label)}${a.active?'（活动）':''}</option>`).join('');accounts.innerHTML=(state.accounts||[]).map(a=>`<div class=card><b>${e(a.label)}</b>${a.active?'（活动）':''}<div class=muted>${e(a.username)} · ${a.token_count||0} 个 JWT 缓存</div><button onclick="act('${a.id}')">设为活动</button><button onclick="test('${a.id}')">测试</button><button onclick="refresh('${a.id}')">刷新</button><button onclick="logout('${a.id}')">登出</button><button onclick="del('${a.id}')">删除</button></div>`).join('')||'<p class=muted>暂无账户</p>';urls.innerHTML=(state.urls||[]).map(x=>`<div class=card><b>${e(x.url)}</b><div class=muted>账户：${e(x.credential_label||x.credential_ref)}</div><button onclick="removeUrl('${x.url}')">解绑 URL</button></div>`).join('')||'<p class=muted>暂无实例 URL</p>'}async function createAccount(){const d=await call('accounts',{method:'POST',body:JSON.stringify({label:label.value,username:username.value,password:password.value})});if(d.error)alert(d.error);else{password.value='';load()}}async function saveUrl(){const d=await call('urls',{method:'POST',body:JSON.stringify({url:url.value,credential_ref:ref.value})});if(d.error)alert(d.error);else load()}async function act(id){await call(`accounts/${id}/activate`,{method:'POST'});load()}async function test(id){alert((await call(`accounts/${id}/test`,{method:'POST'})).message||'完成')}async function refresh(id){const d=await call(`accounts/${id}/refresh`,{method:'POST'});alert(d.error||d.result?.message||'完成');load()}async function logout(id){const d=await call(`accounts/${id}/logout`,{method:'POST'});alert(d.error||d.message||'完成');load()}async function del(id){if(confirm('删除该账户？')){const d=await call(`accounts/${id}/delete`,{method:'POST'});if(d.error)alert(d.error);load()}}async function removeUrl(u){await call('urls/delete',{method:'POST',body:JSON.stringify({url:u})});load()}load();
+const api='/auth/nfk/api/';let state={};async function call(p,o={}){const r=await fetch(api+p,{headers:{'Content-Type':'application/json'},...o});return r.json()}function e(v){return String(v||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}async function load(){state=await call('state');document.querySelector('#status').textContent='状态：'+(state.status?.status||'unknown')+(state.status?.active_account_label?' · '+state.status.active_account_label:'');ref.innerHTML=(state.accounts||[]).map(a=>`<option value='${a.id}'>${e(a.label)}${a.active?'（活动）':''}</option>`).join('');accounts.innerHTML=(state.accounts||[]).map(a=>`<div class=card><b>${e(a.label)}</b>${a.active?'（活动）':''}<div class=muted>${e(a.username)} · ${a.token_count||0} 个 JWT 缓存</div><button onclick="act('${a.id}')">设为活动</button><button onclick="test('${a.id}')">测试</button><button onclick="refresh('${a.id}')">刷新</button><button onclick="logout('${a.id}')">登出</button><button onclick="del('${a.id}')">删除</button></div>`).join('')||'<p class=muted>暂无账户</p>';urls.innerHTML=(state.urls||[]).map(x=>`<div class=card><b>${e(x.url)}</b><div class=muted>账户：${e(x.credential_label||x.credential_ref)}</div><button onclick="removeUrl('${x.url}')">解绑 URL</button></div>`).join('')||'<p class=muted>暂无实例 URL</p>'}async function createAccount(){const d=await call('accounts',{method:'POST',body:JSON.stringify({label:label.value,username:username.value,password:password.value})});if(d.error)alert(d.error);else{password.value='';load()}}async function saveUrl(){const d=await call('urls',{method:'POST',body:JSON.stringify({url:url.value,credential_ref:ref.value})});if(d.error)alert(d.error);else load()}async function act(id){await call(`accounts/${id}/activate`,{method:'POST'});load()}async function test(id){alert((await call(`accounts/${id}/test`,{method:'POST'})).message||'完成')}async function refresh(id){const d=await call(`accounts/${id}/refresh`,{method:'POST'});alert(d.error||d.result?.message||'完成');load()}async function logout(id){const d=await call(`accounts/${id}/logout`,{method:'POST'});alert(d.error||d.message||'完成');load()}async function del(id){if(confirm('删除该账户？')){const d=await call(`accounts/${id}/delete`,{method:'POST'});if(d.error)alert(d.error);load()}}async function removeUrl(u){await call('urls/delete',{method:'POST',body:JSON.stringify({url:u})});load()}load();
 </script>"""
 
 

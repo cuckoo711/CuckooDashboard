@@ -355,7 +355,7 @@ dashboard:
 │   │   ├── runtime_config.py
 │   │   ├── mimo/
 │   │   ├── nug/
-│   │   └── local_platform/
+│   │   └── nfk/
 │   ├── services/                 # Domain collectors and external integrations
 │   │   ├── dashboard_data_service.py
 │   │   ├── health_service.py

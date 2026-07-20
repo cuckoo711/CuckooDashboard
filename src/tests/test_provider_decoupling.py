@@ -12,7 +12,7 @@ SRC = Path(__file__).resolve().parents[1]
 _BUILTIN_PROVIDER_MODULES = {
     "providers.mimo",
     "providers.nug",
-    "providers.local_platform",
+    "providers.nfk",
 }
 
 

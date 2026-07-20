@@ -40,7 +40,7 @@ def base_config():
         },
         "providers": {
             "mimo": {"enabled": True},
-            "local_platform": {"enabled": True, "urls": [{"url": "http://one.example", "credential_ref": "local-one"}]},
+            "nfk": {"enabled": True, "urls": [{"url": "http://one.example", "credential_ref": "local-one"}]},
             "nug": {"enabled": False},
         },
         "hardware_overrides": {

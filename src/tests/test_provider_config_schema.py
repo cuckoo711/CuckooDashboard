@@ -12,14 +12,14 @@ def test_builtin_provider_schemas_are_discovered():
     schemas = get_provider_config_schemas()
     by_key = {schema["config_key"]: schema for schema in schemas}
 
-    assert {"mimo", "local_platform", "nug"}.issubset(by_key)
+    assert {"mimo", "nfk", "nug"}.issubset(by_key)
     # 内置 Provider 的认证字段已迁入自定义 DPAPI Vault 认证页，不再出现在 YAML Schema。
     assert all(field["type"] != "secret" for field in by_key["nug"]["fields"])
-    local_urls = next(field for field in by_key["local_platform"]["fields"] if field["key"] == "urls")
+    local_urls = next(field for field in by_key["nfk"]["fields"] if field["key"] == "urls")
     assert local_urls["type"] == "object_list"
     assert local_urls["identity_key"] == "url"
     assert any(field["key"] == "credential_ref" for field in local_urls["item_fields"])
-    assert {"mimo", "local_platform", "nug"}.issubset(get_auth_providers())
+    assert {"mimo", "nfk", "nug"}.issubset(get_auth_providers())
 
 
 def test_invalid_schema_field_types_are_rejected():
