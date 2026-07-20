@@ -41,7 +41,8 @@ def require_device_access(workspace_id: str | None = None) -> tuple[bool, dict[s
     try:
         device = service.get(device_id)
     except DeviceValidationError as exc:
-        return False, {"error": {**exc.as_dict(), "code": "device_required"}}, 400
+        # 与“缺少设备标识”保持同一 error code 和同一状态码，客户端只需处理一种契约。
+        return False, {"error": {**exc.as_dict(), "code": "device_required"}}, 403
     if device is None:
         return False, {
             "error": {

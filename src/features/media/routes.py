@@ -84,4 +84,8 @@ def api_player_control(action):
     if action not in ALLOWED_PLAYER_ACTIONS:
         return jsonify({"error": "unknown action"}), 400
     result = control_player(action)
-    return jsonify(result), 200 if result.get("ok") else 500
+    if result.get("ok"):
+        return jsonify(result)
+    # “当前没有活动媒体会话”是正常运行状态而不是服务器故障，不应报 500。
+    status = 409 if result.get("error") == "no active session" else 500
+    return jsonify(result), status
