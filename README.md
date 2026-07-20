@@ -63,8 +63,7 @@
 - Optional system-audio spectrum via true WASAPI loopback (`soundcard`) with Stereo Mix fallback
 - Capture device can be chosen manually in `/settings` → **Music / 频谱采集**
 - SMTC cover art + client-side palette extraction for ambient color grading
-- Visual offset knobs: `music.spectrum_offset_ms` and `music.beat_lead_ms`
-- One-tap beat calibration (`/api/music/calibrate`) that writes `beat_lead_ms`
+- Visual offset knob: `music.spectrum_offset_ms`
 - Spectrum capture starts only while a client subscribes (dashboard stays light)
 - Dashboard player card has a direct stage entry button
 
@@ -188,10 +187,9 @@ The desktop app reads `data/monitor.json` to determine which display to use, the
 | `/api/media/cover` | GET | Current track cover art (SMTC thumbnail) |
 | `/api/media/reload` | POST | Clear lyrics cache and refetch |
 | `/api/media/offset` | GET/POST | Read or update lyric offset (supports delta or absolute) |
-| `/api/music/offset` | GET/POST | Spectrum / beat visual offsets (`spectrum_offset_ms`, `beat_lead_ms`) |
+| `/api/music/offset` | GET/POST | Spectrum visual offset (`spectrum_offset_ms`) and stage orbit persistence |
 | `/api/music/spectrum` | GET | Latest spectrum frame (REST fallback; WS is preferred) |
 | `/api/music/spectrum/status` | GET | Loopback stack status and subscriber count |
-| `/api/music/calibrate` | GET/POST | Beat tap calibration (`start` / `tap` / `apply` / `cancel`) |
 | `/api/player/<action>` | POST | Media controls: `play`, `pause`, `next`, `prev`, `toggle` |
 | `/api/vibe` | GET/POST | Read or set Vibe Coding mode |
 | `/api/theme` | GET/POST | Read or set the active theme by name |

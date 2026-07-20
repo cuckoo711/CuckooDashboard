@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -18,9 +19,28 @@ from workspaces.service import WorkspaceInUseError, WorkspaceValidationError
 
 blueprint = Blueprint("settings_workspaces", __name__)
 
+logger = logging.getLogger("cuckoo.settings.workspaces")
+
 
 def _service():
     return current_app.extensions["workspace_service"]
+
+
+def _reassign_devices_to_main(workspace_id: str) -> None:
+    """把仍指向已删除工作区的终端改派回 main。
+
+    否则这些终端下次连接时会因 workspace_not_found 卡在错误页，
+    只能等管理员手动改派。
+    """
+    device_service = current_app.extensions.get("device_service")
+    if device_service is None:
+        return
+    try:
+        for device in device_service.list_devices():
+            if str(device.get("workspace_id") or "main") == workspace_id:
+                device_service.update(device["id"], {"workspace_id": "main"})
+    except Exception as exc:
+        logger.warning("[workspaces] 删除后改派终端失败: %s", exc)
 
 
 def _error(code: str, message: str, **details: Any):
@@ -195,6 +215,7 @@ def settings_workspace_item(workspace_id: str):
             _broadcast("updated", workspace.id, workspace.revision)
             return jsonify(service.serialize(workspace))
         deleted = service.delete(workspace_id, expected_revision=revision)
+        _reassign_devices_to_main(workspace_id)
         _broadcast("deleted", deleted.id, deleted.revision)
         return jsonify({"ok": True, "workspace": service.serialize_summary(deleted)})
     except (

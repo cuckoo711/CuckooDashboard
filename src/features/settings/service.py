@@ -394,15 +394,18 @@ def save_settings_payload(
             dashboard["font"] = _validate_font(dashboard_input["font"])
         if "font_size" in dashboard_input:
             dashboard["font_size"] = _validate_font_size(dashboard_input["font_size"])
-        if "dashboard.token" in secrets and persistence.secret_changed(
-            secrets.get("dashboard.token"), "secrets.dashboard.token"
-        ):
-            vault_globals["dashboard_token"] = persistence.global_secret_update(
-                secrets,
-                "dashboard.token",
-                persistence.global_vault_secret("dashboard_token"),
-            )
         dashboard.pop("token", None)
+
+    # dashboard.token 的处理不依赖 config.dashboard 是否出现在请求里；
+    # 否则只带 secrets 的部分保存会返回 ok 却静默丢弃 token 更新。
+    if "dashboard.token" in secrets and persistence.secret_changed(
+        secrets.get("dashboard.token"), "secrets.dashboard.token"
+    ):
+        vault_globals["dashboard_token"] = persistence.global_secret_update(
+            secrets,
+            "dashboard.token",
+            persistence.global_vault_secret("dashboard_token"),
+        )
 
     if "github_token" in secrets and persistence.secret_changed(
         secrets.get("github_token"), "secrets.github_token"
@@ -436,7 +439,11 @@ def save_settings_payload(
     if "music" in incoming:
         validated_music = _validate_music(incoming["music"])
         old_music = load_music_offsets()
-        next_config["music"] = validated_music
+        # 合并而不是整体替换：music 段还保存设置页不管理的运行时键
+        # （如 orbit_yaw / orbit_pitch），整体替换会把它们抹掉。
+        merged_music = dict(next_config.get("music") or {}) if isinstance(next_config.get("music"), dict) else {}
+        merged_music.update(validated_music)
+        next_config["music"] = merged_music
         music_changed = (
             old_music.get("capture_device") != validated_music.get("capture_device")
             or old_music.get("spectrum_enabled") != validated_music.get("spectrum_enabled")
@@ -471,9 +478,13 @@ def save_settings_payload(
         # Provider configs always carry secret runtime values for validation, but
         # the DPAPI vault should only be rewritten when the client actually
         # sets/clears a secret. Keep actions must not bump credential_revision.
+        # 例外：object_list 行改名（keep + 新 identity）会让 secret 的存储键
+        # 变化——此时即使没有 set/clear，也必须把重新按新 identity 键控的
+        # secret_state 写回 Vault，否则 secret 留在旧 identity 下不可达。
+        vault_state = persistence.current_provider_secret_state(provider_name)
         if persistence.provider_secret_updates_requested(
             provider_schema, secrets, config_key=config_key
-        ):
+        ) or (vault_state is not None and secret_state != vault_state):
             vault_provider_secrets[provider_name] = secret_state
         providers_config[config_key] = built
 

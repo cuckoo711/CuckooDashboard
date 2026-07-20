@@ -278,10 +278,6 @@
                             <input id="musicSpectrumOffset" type="number" step="5">
                         </div>
                         <div class="field">
-                            <label for="musicBeatLead">鼓点提前（ms）</label>
-                            <input id="musicBeatLead" type="number" step="5">
-                        </div>
-                        <div class="field">
                             <label for="musicBins">采集频段数量</label>
                             <input id="musicBins" type="number" min="16" max="96" step="1">
                             <div class="field-help">后端分析数量；弱设备建议 32</div>
@@ -297,7 +293,6 @@
                             <div class="field-help">0=自动；弱 ARM 自动为 24 根</div>
                         </div>
                     </div>
-                    <div class="check-line"><label class="switch"><input id="musicAutoCalibrate" type="checkbox"><span></span></label><span>允许一键鼓点校准写入 beat_lead</span></div>
                     <div class="field-help" id="musicDeviceStatus"></div>
                 </section>
 </section>

@@ -86,6 +86,16 @@ def provider_secret_updates_requested(
     return False
 
 
+def current_provider_secret_state(provider_name: str) -> dict[str, Any] | None:
+    """读取 Vault 中该 Provider 当前的 config_secrets；Vault 不可用时返回 None。"""
+    try:
+        state = vault.get_provider_state(provider_name, {}) or {}
+    except VaultError:
+        return None
+    value = state.get("config_secrets") if isinstance(state, Mapping) else None
+    return copy.deepcopy(value) if isinstance(value, dict) else {}
+
+
 def apply_secret_update(update: Any, current: Any, field: str) -> str:
     action, value = secret_action(update, field)
     if action == "keep":

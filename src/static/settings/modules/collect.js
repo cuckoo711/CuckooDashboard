@@ -81,10 +81,8 @@ function collectGlobalConfig() {
         vibe_active: $('#vibeActive').checked,
         music: {
             spectrum_enabled: $('#musicSpectrumEnabled') ? $('#musicSpectrumEnabled').checked : true,
-            auto_calibrate: $('#musicAutoCalibrate') ? $('#musicAutoCalibrate').checked : true,
             capture_device: $('#musicCaptureDevice') ? ($('#musicCaptureDevice').value || 'auto') : 'auto',
             spectrum_offset_ms: numberValue('#musicSpectrumOffset', 40),
-            beat_lead_ms: numberValue('#musicBeatLead', 20),
             bins: numberValue('#musicBins', 48),
             render_fps: numberValue('#musicRenderFps', 0),
             render_bars: numberValue('#musicRenderBars', 0),

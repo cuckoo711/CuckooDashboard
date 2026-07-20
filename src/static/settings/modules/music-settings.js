@@ -78,9 +78,7 @@ export function renderMusicPanel(music = {}, options = {}) {
     const devices = options.capture_devices || [];
     const loopCount = fillCaptureDeviceSelect(devices, music.capture_device || 'auto');
     setChecked('musicSpectrumEnabled', music.spectrum_enabled !== false);
-    setChecked('musicAutoCalibrate', music.auto_calibrate !== false);
     setValue('musicSpectrumOffset', music.spectrum_offset_ms === undefined ? 40 : music.spectrum_offset_ms);
-    setValue('musicBeatLead', music.beat_lead_ms === undefined ? 20 : music.beat_lead_ms);
     setValue('musicBins', music.bins === undefined ? 48 : music.bins);
     setValue('musicRenderFps', music.render_fps === undefined ? 0 : music.render_fps);
     setValue('musicRenderBars', music.render_bars === undefined ? 0 : music.render_bars);
