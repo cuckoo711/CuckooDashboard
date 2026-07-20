@@ -231,6 +231,11 @@ function setLyricSlot(slotIndex, lyricIndex, role, force, options = {}) {
     slot.classList.add(slotIndex === 0 ? 'lyric-slot-a' : 'lyric-slot-b');
 
     if (changed) {
+        // A slot being authoritatively rewritten can no longer be mid-fade.
+        // If fadeSlotTo's timeout got token-invalidated before it could clean
+        // up, its 'is-fading' class would otherwise stick around forever and
+        // leave this slot's text permanently opacity:0.
+        slot.classList.remove('is-fading');
         state.lyricSlotState[slotIndex] = { idx: lyricIndex, role, raw: rawText };
         slot.dataset.rawLyric = rawText;
         inner.style.transition = 'none';
