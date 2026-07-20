@@ -34,7 +34,6 @@ _EXPECTED = {
     ("/api/music/spectrum/status", frozenset({"GET"})),
     ("/api/music/spectrum/acquire", frozenset({"POST"})),
     ("/api/music/spectrum/release", frozenset({"POST"})),
-    ("/api/music/calibrate", frozenset({"GET", "POST"})),
     ("/api/player/<action>", frozenset({"POST"})),
     ("/api/providers", frozenset({"GET"})),
     ("/api/providers/<provider_id>/<resource>", frozenset({"GET"})),

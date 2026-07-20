@@ -229,11 +229,9 @@ def _validate_music(value: Any) -> dict[str, Any]:
         raise SettingsValidationError("render_bars 必须为 0（自动）或 12-96", "music.render_bars")
     return {
         "spectrum_enabled": schema.boolean(value.get("spectrum_enabled", True), "music.spectrum_enabled"),
-        "auto_calibrate": schema.boolean(value.get("auto_calibrate", True), "music.auto_calibrate"),
         "spectrum_offset_ms": int(
             schema.finite_number(value.get("spectrum_offset_ms", 40), "music.spectrum_offset_ms")
         ),
-        "beat_lead_ms": int(schema.finite_number(value.get("beat_lead_ms", 20), "music.beat_lead_ms")),
         "bins": bins,
         "render_fps": render_fps,
         "render_bars": render_bars,

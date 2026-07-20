@@ -453,7 +453,7 @@ def _build_ambient_cover(data: bytes, mime: str) -> tuple[bytes, str, dict]:
             ambient = img.convert("RGB")
         ambient.thumbnail((240, 240), resample)
         # Heavy blur — generalized ambient wash, no recognizable edges.
-        ambient = ambient.filter(ImageFilter.GaussianBlur(radius=18))
+        ambient = ambient.filter(ImageFilter.GaussianBlur(radius=10))
         ambient = ImageEnhance.Color(ambient).enhance(1.2)
         ambient = ImageEnhance.Contrast(ambient).enhance(1.1)
         ambient = ImageEnhance.Brightness(ambient).enhance(1.1)

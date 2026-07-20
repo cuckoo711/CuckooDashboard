@@ -1,4 +1,4 @@
-"""Music-stage page, spectrum, offset, and calibration routes."""
+"""Music-stage page, spectrum, and offset routes."""
 
 from __future__ import annotations
 
@@ -8,18 +8,13 @@ from app.security import require_loopback_access, require_post_protection
 from runtime.lifecycle import get_runtime
 from services.spectrum_service import (
     acquire_spectrum,
-    apply_calibration_suggestion,
-    cancel_beat_calibration,
-    get_calibration_status,
     get_spectrum_frame,
     get_spectrum_status,
     list_capture_devices,
     load_music_offsets,
-    record_calibration_tap,
     release_spectrum,
     request_capture_restart,
     save_music_offsets,
-    start_beat_calibration,
 )
 
 blueprint = Blueprint("music", __name__)
@@ -119,31 +114,3 @@ def api_music_spectrum_release():
     """无 token 地安全减少频谱兴趣计数，供 sendBeacon 使用。"""
     release_spectrum()
     return jsonify({"ok": True})
-
-
-@blueprint.route("/api/music/calibrate", methods=["GET", "POST"])
-def api_music_calibrate():
-    """读取或执行鼓点一键校准。"""
-    if request.method == "GET":
-        return jsonify(get_calibration_status())
-
-    require_post_protection()
-    payload = request.get_json(silent=True) or {}
-    action = str(payload.get("action") or "start").lower()
-    if action == "start":
-        result = start_beat_calibration(float(payload.get("duration_s") or 6))
-        _broadcast_music_offset(load_music_offsets())
-        return jsonify(result)
-    if action == "tap":
-        result = record_calibration_tap(payload.get("client_ts"))
-        if result.get("applied"):
-            _broadcast_music_offset(load_music_offsets())
-        return jsonify(result)
-    if action == "apply":
-        result = apply_calibration_suggestion()
-        if result.get("ok"):
-            _broadcast_music_offset(load_music_offsets())
-        return jsonify(result)
-    if action == "cancel":
-        return jsonify(cancel_beat_calibration())
-    return jsonify({"ok": False, "error": "unknown action"}), 400

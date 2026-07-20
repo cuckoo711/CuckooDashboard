@@ -82,9 +82,7 @@ export function tickOrbit() {
     state.orbitPitch += (state.orbitTargetPitch - state.orbitPitch) * ease;
     if (Math.abs(state.orbitTargetYaw - state.orbitYaw) < 0.02) state.orbitYaw = state.orbitTargetYaw;
     if (Math.abs(state.orbitTargetPitch - state.orbitPitch) < 0.02) state.orbitPitch = state.orbitTargetPitch;
-    state.cameraPunch *= 0.88;
-    if (state.cameraPunch < 0.01) state.cameraPunch = 0;
-    if (!state.visualProfile || !state.visualProfile.lite || moving || state.cameraPunch > 0) applySceneOrbit(false);
+    applySceneOrbit(false);
 }
 
 export function loadOrbit() {

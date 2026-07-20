@@ -6,6 +6,8 @@
     --faint: rgba(224, 230, 240, 0.22);
     --hairline: rgba(232, 238, 248, 0.12);
     --cover-rgb: 146, 162, 224;
+    --spectrum-rgb: 89, 98, 130;
+    --spectrum-lyric-rgb: 186, 198, 236;
     --cover-1: rgba(112, 132, 204, 0.14);
     --cover-2: rgba(72, 96, 164, 0.1);
     --cover-3: rgba(202, 214, 244, 0.12);
@@ -24,7 +26,7 @@ body {
     margin: 0;
     overflow: hidden;
 }
-html { background: #fff; }
+html { background: var(--bg); }
 body {
     padding-bottom: 20px;
     color: var(--ink);
@@ -48,108 +50,54 @@ body {
 
 .cover-bg {
     position: fixed;
-    inset: -12%;
+    /* Make the element square (long edge = short edge) so that:
+       - background-size: cover fills the square symmetrically
+       - rotation only needs scale(√2) to cover the viewport diagonal
+       No rectangular edge gap is possible. */
+    top: 50%;
+    left: 50%;
+    width: max(100vw, 100vh);
+    height: max(100vw, 100vh);
+    margin-top: calc(-0.5 * max(100vw, 100vh));
+    margin-left: calc(-0.5 * max(100vw, 100vh));
     z-index: 0;
     overflow: hidden;
     pointer-events: none;
     background-repeat: no-repeat;
     background-position: center;
     background-size: cover;
-    filter: brightness(0.3);
+    filter: none;
     opacity: 0;
-    transform: scale(1.12);
     transition: opacity 0.6s ease;
+    transform-origin: center;
     animation: bg-rotate 90s linear infinite;
 }
 @keyframes bg-rotate {
-    from { transform: scale(1.12) rotate(0deg); }
-    to { transform: scale(1.12) rotate(360deg); }
+    from { transform: rotate(0deg) scale(1.45); }
+    to { transform: rotate(360deg) scale(1.45); }
 }
 .cover-bg::after {
     position: absolute;
     inset: 0;
     content: "";
-    /* Very light veil — keep the album color readable, not buried. */
-    background:
-        linear-gradient(160deg, rgba(4, 7, 13, 0.18), rgba(6, 10, 16, 0.12) 46%, rgba(2, 4, 9, 0.22)),
-        radial-gradient(ellipse at 50% 42%, transparent 42%, rgba(0, 0, 0, 0.18) 100%);
+    background: rgba(5, 8, 13, 0.12);
 }
-.cover-bg.on { opacity: 0.28; }
-
-.galaxy {
-    position: fixed;
-    inset: 0;
-    z-index: 0;
-    overflow: hidden;
-    pointer-events: none;
-    opacity: 0.06;
-    background:
-        radial-gradient(1px 1px at 11% 22%, rgba(232, 238, 255, 0.36), transparent 1.4px),
-        radial-gradient(1px 1px at 24% 70%, rgba(214, 226, 255, 0.24), transparent 1.4px),
-        radial-gradient(1.2px 1.2px at 67% 17%, rgba(235, 243, 255, 0.35), transparent 1.6px),
-        radial-gradient(1px 1px at 83% 64%, rgba(202, 216, 255, 0.28), transparent 1.4px),
-        radial-gradient(1px 1px at 91% 31%, rgba(246, 248, 255, 0.25), transparent 1.4px),
-        radial-gradient(900px 620px at 50% 4%, rgba(154, 174, 246, 0.055), transparent 68%);
-}
-.galaxy::before {
-    position: absolute;
-    inset: -20%;
-    content: "";
-    opacity: 0.44;
-    background-image:
-        linear-gradient(rgba(220, 232, 255, 0.025) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(220, 232, 255, 0.025) 1px, transparent 1px);
-    background-size: 84px 84px;
-    transform: perspective(1100px) rotateX(61deg) translateY(34%);
-    transform-origin: center bottom;
-    mask-image: linear-gradient(to bottom, transparent 0%, #000 38%, transparent 93%);
-}
+.cover-bg.on { opacity: 0.72; }
 body.has-cover {
     background:
         radial-gradient(1000px 640px at 50% 28%, rgba(var(--cover-rgb), 0.03), transparent 68%),
         linear-gradient(160deg, rgba(7, 9, 12, 0.015), rgba(5, 6, 7, 0.01) 48%, rgba(2, 3, 4, 0.02));
 }
 
-.galaxy::after {
-    position: absolute;
-    inset: 0;
-    content: "";
-    opacity: 0.24;
-    background:
-        linear-gradient(104deg, transparent 0 28%, rgba(221, 231, 255, 0.035) 28.06%, transparent 28.16% 61%, rgba(221, 231, 255, 0.025) 61.06%, transparent 61.16%),
-        linear-gradient(76deg, transparent 0 36%, rgba(181, 200, 255, 0.026) 36.06%, transparent 36.16% 74%, rgba(181, 200, 255, 0.022) 74.06%, transparent 74.16%);
-    animation: sky-drift 32s ease-in-out infinite alternate;
-}
-@keyframes sky-drift {
-    from { transform: translate3d(-0.5%, -0.35%, 0) scale(1); }
-    to { transform: translate3d(0.7%, 0.45%, 0) scale(1.025); }
-}
-
-.glow {
-    position: fixed;
-    inset: -18%;
-    z-index: 0;
-    pointer-events: none;
-    background:
-        radial-gradient(ellipse at 50% 37%, rgba(var(--cover-rgb), 0.22), transparent 31%),
-        radial-gradient(ellipse at 22% 76%, var(--cover-1), transparent 42%),
-        radial-gradient(ellipse at 81% 35%, var(--cover-2), transparent 43%);
-    filter: blur(20px);
-    opacity: 0.08;
-    transition: opacity 0.3s ease, transform 0.2s ease;
-}
-
-.beam {
-    position: fixed;
-    inset: 0;
-    z-index: 1;
-    pointer-events: none;
-    opacity: 0.02;
-    mix-blend-mode: screen;
-    background:
-        linear-gradient(90deg, transparent 0%, rgba(239, 244, 255, 0.015) 42%, rgba(239, 244, 255, 0.07) 50%, rgba(239, 244, 255, 0.015) 58%, transparent 100%),
-        radial-gradient(ellipse 65% 18% at 50% 59%, rgba(var(--cover-rgb), 0.08), transparent 72%);
-    transition: opacity 0.2s ease, transform 0.2s ease;
+/* Single stage path: no dual high-end layers. */
+.galaxy,
+.glow,
+.beam,
+.film-grain,
+#fxCanvas,
+#ringCanvas,
+.core-flare {
+    display: none;
 }
 
 .vignette {
@@ -160,24 +108,6 @@ body.has-cover {
     background:
         radial-gradient(ellipse at 50% 43%, transparent 28%, rgba(0, 0, 0, 0.12) 66%, rgba(0, 0, 0, 0.32) 125%),
         linear-gradient(180deg, rgba(0, 0, 0, 0.2), transparent 19%, transparent 74%, rgba(0, 0, 0, 0.24));
-}
-
-.film-grain {
-    position: fixed;
-    inset: -20%;
-    z-index: 4;
-    pointer-events: none;
-    opacity: 0.018;
-    mix-blend-mode: soft-light;
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.72' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.55'/%3E%3C/svg%3E");
-    animation: grain-shift 0.7s steps(2) infinite;
-}
-@keyframes grain-shift {
-    0% { transform: translate3d(0, 0, 0); }
-    25% { transform: translate3d(-1%, 1%, 0); }
-    50% { transform: translate3d(1%, -1%, 0); }
-    75% { transform: translate3d(-1%, -1%, 0); }
-    100% { transform: translate3d(0, 0, 0); }
 }
 
 .stage {
@@ -271,7 +201,7 @@ body.has-cover {
     height: 100%;
     transform: rotateX(14deg) rotateY(0deg);
     transform-style: preserve-3d;
-    will-change: transform;
+    will-change: auto;
 }
 
 .stage-floor {
@@ -321,6 +251,7 @@ body.has-cover {
     padding-left: 60px;
     justify-content: flex-start;
     transform: translateZ(132px);
+    transform-style: preserve-3d;
 }
 /* Screen-fixed spectrum: outside the 3D scene tree, never inherits orbit.
    Height follows the viewport proportionally, with a floor but NO ceiling —
@@ -333,7 +264,7 @@ body.has-cover {
     z-index: 5;
     display: flex;
     width: 100%;
-    height: max(140px, 24vh);
+    height: max(120px, 22vh);
     min-height: 0;
     max-height: none;
     padding: 0;
@@ -359,10 +290,10 @@ body.has-cover {
     border-radius: 50%;
     content: "";
     pointer-events: none;
+    box-shadow: none;
 }
 .visual-core::before {
     inset: 8%;
-    box-shadow: inset 0 0 28px rgba(var(--cover-rgb), 0.08);
 }
 .visual-core::after {
     inset: -11%;
@@ -374,46 +305,22 @@ body.has-cover {
     border: 1px solid rgba(231, 238, 255, 0.12);
     border-radius: 50%;
     pointer-events: none;
+    animation: none;
 }
 .orbital-mark-a {
     width: 114%;
     height: 54%;
     transform: rotate(-19deg) rotateX(64deg);
-    animation: orbit-drift-a 16s linear infinite;
 }
 .orbital-mark-b {
     width: 92%;
     height: 132%;
     border-color: rgba(var(--cover-rgb), 0.12);
     transform: rotate(38deg) rotateX(72deg);
-    animation: orbit-drift-b 22s linear infinite reverse;
 }
-@keyframes orbit-drift-a {
-    from { transform: rotate(-19deg) rotateX(64deg); }
-    to { transform: rotate(341deg) rotateX(64deg); }
-}
-@keyframes orbit-drift-b {
-    from { transform: rotate(38deg) rotateX(72deg); }
-    to { transform: rotate(398deg) rotateX(72deg); }
-}
-#ringCanvas {
-    position: absolute;
-    inset: -22%;
-    width: 144%;
-    height: 144%;
-    pointer-events: none;
-    filter: drop-shadow(0 0 18px rgba(var(--cover-rgb), 0.16));
-    transform: translateZ(0);
-}
+#ringCanvas,
 .core-flare {
-    position: absolute;
-    inset: 19%;
-    border-radius: 50%;
-    pointer-events: none;
-    opacity: 0.3;
-    background: radial-gradient(circle, rgba(244, 247, 255, 0.13), rgba(var(--cover-rgb), 0.08) 34%, transparent 71%);
-    filter: blur(12px);
-    transform: translateZ(0);
+    display: none;
 }
 
 .cover-disc {
@@ -425,12 +332,8 @@ body.has-cover {
     border: 1px solid rgba(248, 250, 255, 0.22);
     border-radius: 50%;
     background: rgba(5, 7, 11, 0.92);
-    box-shadow:
-        0 18px 50px rgba(0, 0, 0, 0.58),
-        0 0 0 7px rgba(243, 247, 255, 0.025),
-        0 0 36px rgba(var(--cover-rgb), 0.16);
-    animation: cover-spin 30s linear infinite;
-    animation-play-state: paused;
+    box-shadow: none;
+    animation: none;
     transform: translateZ(0);
     transform-style: flat;
 }
@@ -447,7 +350,6 @@ body.has-cover {
     box-shadow: 0 0 0 3px rgba(5, 7, 11, 0.6);
     transform: translate(-50%, -50%);
 }
-.cover-disc.playing { animation-play-state: running; }
 .cover-disc img {
     display: block;
     width: 100%;
@@ -455,10 +357,6 @@ body.has-cover {
     opacity: 0.9;
     object-fit: cover;
     transform: none !important;
-}
-@keyframes cover-spin {
-    from { transform: translateZ(0) rotate(0deg); }
-    to { transform: translateZ(0) rotate(360deg); }
 }
 
 .cinema-lyric {
@@ -469,6 +367,7 @@ body.has-cover {
     text-align: left;
     /* Stage offset: down 20px, left 5px, slight 3D depth. */
     transform: translate3d(-5px, 20px, 24px);
+    transform-style: preserve-3d;
     overflow: visible;
 }
 /* Dual-line track: a fixed horizontal midline anchors both rows so active
@@ -482,6 +381,7 @@ body.has-cover {
     margin: 0;
     /* Let soft lyric glow bleed past the track box. */
     overflow: visible;
+    transform-style: preserve-3d;
 }
 /* Remove the right-side cover core and let lyrics own the stage. */
 body.cinema .layer-visual {
@@ -507,6 +407,8 @@ body.cinema .layer-lyric {
 .lyric-prev { display: none; }
 .lyric-slot {
     --lyric-scale: 1;
+    --lyric-extrude-depth: 1.4px;
+    --lyric-extrude-layers: 12;
     position: absolute;
     left: 0;
     right: 0;
@@ -525,8 +427,10 @@ body.cinema .layer-lyric {
     text-wrap: nowrap;
     text-overflow: clip;
     white-space: nowrap;
-    transition: opacity 0.34s cubic-bezier(0.22, 0.61, 0.36, 1), filter 0.34s ease;
-    will-change: opacity;
+    transform-style: preserve-3d;
+    /* Avoid opacity/filter on this 3D host — they flatten nested transforms. */
+    transition: color 0.34s ease;
+    will-change: transform;
 }
 .lyric-slot-a {
     bottom: calc(50% + (var(--lyric-mid-gap) / 2));
@@ -541,60 +445,111 @@ body.cinema .layer-lyric {
     align-items: flex-start;
 }
 .lyric-slot.is-active {
+	--lyric-extrude-depth: 1.7px;
 	font-size: clamp(50px, calc(7.55vw * var(--lyric-scale)), 112px);
 	font-weight: 650;
 	letter-spacing: 0.016em;
-	opacity: 1;
-	filter: none;
-	background: linear-gradient(111deg, rgba(var(--spectrum-lyric-rgb), 0.95), rgb(var(--spectrum-lyric-rgb)) 47%, rgba(var(--spectrum-lyric-rgb), 0.88));
-	-webkit-background-clip: text;
-	background-clip: text;
-	-webkit-text-fill-color: transparent;
-	/* Spectrum-colored ground shadow — contrast with background. */
-	text-shadow: 0 8px 32px rgba(var(--spectrum-rgb), 0.6);
+	color: rgb(var(--spectrum-lyric-rgb));
+	background: none;
+	-webkit-text-fill-color: rgb(var(--spectrum-lyric-rgb));
+	text-shadow: none;
 }
 .lyric-slot.is-next {
+	--lyric-extrude-depth: 1.1px;
 	font-size: clamp(32px, 3.75vw, 52px);
 	font-weight: 520;
 	letter-spacing: 0.055em;
-	color: rgba(var(--spectrum-lyric-rgb), 0.62);
-	opacity: 0.78;
-	text-shadow: 0 5px 22px rgba(var(--spectrum-rgb), 0.5);
+	color: rgba(var(--spectrum-lyric-rgb), 0.78);
+	text-shadow: none;
 }
 .lyric-slot.is-fading {
+    /* Soft opacity-only settle is applied on faces, not the 3D host. */
+}
+.lyric-slot.is-fading .lyric-face {
     opacity: 0;
-    /* Soft opacity-only settle; no blur (blur made lines look out-of-focus). */
-    filter: none;
+    transition: opacity 0.16s ease;
 }
 .lyric-scroll-inner {
     display: inline-block;
     max-width: none;
     white-space: pre; /* keep trailing marquee pads used to clear the fade mask */
     transform: translate3d(0, 0, 0);
+    transform-style: preserve-3d;
     /* Only animate marquee progress; never animate resets when a slot reuses. */
     transition: none;
     will-change: transform;
 }
+.lyric-extrude {
+    position: relative;
+    display: inline-block;
+    white-space: inherit;
+    transform-style: preserve-3d;
+}
+.lyric-face {
+    display: block;
+    white-space: inherit;
+    color: inherit;
+    -webkit-text-fill-color: inherit;
+    /* Real extrusion along the lyric plane normal (Z). */
+    transform: translate3d(0, 0, calc(var(--layer, 0) * var(--lyric-extrude-depth) * -1));
+    transform-style: preserve-3d;
+    backface-visibility: visible;
+}
+.lyric-face-front {
+    position: relative;
+    z-index: 2;
+    color: inherit;
+    -webkit-text-fill-color: inherit;
+    text-shadow: none;
+    filter: none;
+}
+.lyric-face-side {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 1;
+    /* Side stack fades into depth: near solid, far transparent + shaded darker. */
+    color: rgba(var(--spectrum-rgb), calc(0.78 - (var(--layer) - 1) * 0.055));
+    -webkit-text-fill-color: rgba(var(--spectrum-rgb), calc(0.78 - (var(--layer) - 1) * 0.055));
+    opacity: calc(0.92 - (var(--layer) - 1) * 0.07);
+    pointer-events: none;
+    /* Keep side shading free of front lighting blur. */
+    filter: none;
+    text-shadow: none;
+}
+.lyric-slot.is-next .lyric-face-front {
+    text-shadow: none;
+    filter: none;
+}
+.lyric-slot.is-next .lyric-face-side {
+    color: rgba(var(--spectrum-rgb), calc(0.55 - (var(--layer) - 1) * 0.04));
+    -webkit-text-fill-color: rgba(var(--spectrum-rgb), calc(0.55 - (var(--layer) - 1) * 0.04));
+    opacity: calc(0.72 - (var(--layer) - 1) * 0.055);
+}
 .lyric-slot.marquee.is-active .lyric-scroll-inner {
     transition: transform 0.12s linear;
 }
-/* Active long lines: put the residual glow on the moving span so the outer
-   mask only clips text overflow, not a large soft halo hard-cut. */
 .lyric-slot.is-active .lyric-scroll-inner {
-    filter: drop-shadow(0 0 20px rgba(var(--spectrum-rgb), 0.5));
+    filter: none;
 }
 .lyric-slot.marquee {
     width: min(100%, 10.8em);
-    padding: 10px 14px;
-    margin-left: -14px;
-    margin-right: -14px;
-    /* Extra pad keeps residual shadow soft inside the fade mask. */
+    padding: 10px 18px;
+    margin-left: -18px;
+    margin-right: -18px;
     contain: none;
     justify-content: flex-start;
     text-align: left;
-    overflow: hidden;
-    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 12%, #000 88%, transparent 100%);
-    mask-image: linear-gradient(90deg, transparent 0, #000 12%, #000 88%, transparent 100%);
+    /* Clip scrolling text without flattening preserve-3d. */
+    overflow: clip;
+    -webkit-mask-image: none;
+    mask-image: none;
+    transform-style: preserve-3d;
+}
+.lyric-slot.marquee::before,
+.lyric-slot.marquee::after {
+    display: none;
+    content: none;
 }
 /* Right-side row keeps its right-align even while marqueeing; only the inner
    span scrolls left, and the container itself still sits on the right half. */
@@ -608,29 +563,25 @@ body.cinema .layer-lyric {
 .lyric-slot.pulse {
     animation: lyric-settle 0.38s cubic-bezier(0.22, 0.68, 0.28, 1) both;
 }
-/* Gentle rise + fade when a line becomes active. No horizontal travel, so a
-   reused marquee slot never looks like it is sliding in from the left. */
+/* Gentle rise + fade when a line becomes active. Keep Z-stack intact. */
 @keyframes lyric-settle {
     0% {
-        opacity: 0.18;
         transform: translate3d(0, 10px, 0);
     }
     58% {
-        opacity: 0.92;
         transform: translate3d(0, -1px, 0);
     }
     100% {
-        opacity: 1;
         transform: translate3d(0, 0, 0);
     }
 }
 /* Soft opacify for the secondary line when it swaps content mid-hold. */
-.lyric-slot.next-settle {
+.lyric-slot.next-settle .lyric-face {
     animation: lyric-next-settle 0.28s ease-out both;
 }
 @keyframes lyric-next-settle {
     0% { opacity: 0.16; }
-    100% { opacity: 0.78; }
+    100% { opacity: 1; }
 }
 
 .spectrum-wrap {
@@ -642,9 +593,9 @@ body.cinema .layer-lyric {
     overflow: hidden;
     transform: none;
     transform-style: flat;
-    background: linear-gradient(to top, rgba(6, 10, 18, 0.22), rgba(6, 10, 18, 0.04) 58%, transparent);
-    -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 5%, #000 95%, transparent 100%);
-    mask-image: linear-gradient(90deg, transparent 0%, #000 5%, #000 95%, transparent 100%);
+    background: transparent;
+    -webkit-mask-image: none;
+    mask-image: none;
 }
 .spectrum-wrap.soft.aurora {
     border: 0;
@@ -653,14 +604,7 @@ body.cinema .layer-lyric {
     backdrop-filter: none;
 }
 .spectrum-wrap::before {
-    position: absolute;
-    right: 4%;
-    bottom: 7.5%;
-    left: 4%;
-    height: 1px;
-    content: "";
-    background: linear-gradient(90deg, transparent, rgba(84, 104, 142, 0.34) 16%, rgba(var(--cover-rgb), 0.58) 50%, rgba(84, 104, 142, 0.34) 84%, transparent);
-    box-shadow: 0 0 16px rgba(var(--cover-rgb), 0.18);
+    display: none;
 }
 .spectrum-caption {
     position: absolute;
@@ -686,6 +630,8 @@ body.cinema .layer-lyric {
     width: 100%;
     height: 100%;
     mix-blend-mode: normal;
+    will-change: transform;
+    transform: translateZ(0);
 }
 
 .bottom.minimal.cinema-footer { display: none; }
@@ -877,77 +823,6 @@ body.cinema .layer-lyric {
 }
 .menu-link:hover { color: #fff; }
 
-body.beat .lyric-slot.is-active {
-	text-shadow: 0 8px 36px rgba(var(--spectrum-rgb), 0.7);
-}
-body.beat .lyric-slot.is-active .lyric-scroll-inner {
-    filter: drop-shadow(0 0 26px rgba(var(--spectrum-rgb), 0.65));
-}
-
-/* Low-power render path: H618/Panfrost gets one small spectrum canvas only. */
-body.performance-lite .cover-bg {
-    /* Still cheaper than CSS blur, but keep the album color readable. */
-    filter: none;
-    opacity: 0.72;
-    transform: none;
-    animation: none;
-}
-body.performance-lite .cover-bg::after {
-    background: rgba(5, 8, 13, 0.12);
-}
-body.performance-lite .galaxy,
-body.performance-lite .glow,
-body.performance-lite .beam,
-body.performance-lite .film-grain,
-body.performance-lite #fxCanvas,
-body.performance-lite #ringCanvas,
-body.performance-lite .core-flare {
-    display: none;
-}
-body.performance-lite .orbital-mark,
-body.performance-lite .cover-disc {
-    animation: none;
-}
-body.performance-lite .visual-core::before,
-body.performance-lite .cover-disc {
-    box-shadow: none;
-}
-body.performance-lite .scene {
-    will-change: auto;
-}
-body.performance-lite .layer-spectrum {
-    transform: none;
-    bottom: 0;
-    height: max(120px, 22vh);
-    max-height: none;
-}
-body.performance-lite .spectrum-wrap {
-    background: transparent;
-    -webkit-mask-image: none;
-    mask-image: none;
-}
-body.performance-lite .spectrum-wrap::before {
-    display: none;
-}
-body.performance-lite #specCanvas {
-    /* The single intentional compositing hint; no per-bar DOM layers exist. */
-    will-change: transform;
-    transform: translateZ(0);
-}
-/* Solid text avoids the low-contrast clipped gradient on a bright flat cover. */
-body.performance-lite .lyric-slot.is-active {
-    color: rgb(var(--spectrum-lyric-rgb));
-    background: none;
-    -webkit-text-fill-color: rgb(var(--spectrum-lyric-rgb));
-    text-shadow: 0 4px 16px rgba(var(--spectrum-rgb), 0.85);
-}
-body.performance-lite .lyric-slot.is-active .lyric-scroll-inner {
-    filter: none;
-}
-body.performance-lite .lyric-slot.is-next {
-    color: rgba(var(--spectrum-lyric-rgb), 0.72);
-    text-shadow: 0 3px 12px rgba(var(--spectrum-rgb), 0.75);
-}
 
 @media (max-width: 820px) {
     .stage { padding: 13px 13px 0; }

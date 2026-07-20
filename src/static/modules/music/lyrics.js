@@ -138,19 +138,77 @@ function setLyricDensity(text) {
     return compact;
 }
 
+const LYRIC_EXTRUDE_LAYERS = 12;
+
 function ensureLyricInner(slot) {
     let inner = slot.querySelector('.lyric-scroll-inner');
     if (!inner) {
         inner = document.createElement('span');
         inner.className = 'lyric-scroll-inner';
+        const extrude = document.createElement('span');
+        extrude.className = 'lyric-extrude';
+        extrude.setAttribute('aria-hidden', 'true');
+        for (let layer = 0; layer < LYRIC_EXTRUDE_LAYERS; layer += 1) {
+            const face = document.createElement('span');
+            face.className = layer === 0 ? 'lyric-face lyric-face-front' : 'lyric-face lyric-face-side';
+            face.style.setProperty('--layer', String(layer));
+            extrude.appendChild(face);
+        }
+        inner.appendChild(extrude);
         slot.textContent = '';
         slot.appendChild(inner);
+        return inner;
+    }
+
+    let extrude = inner.querySelector('.lyric-extrude');
+    if (!extrude) {
+        // Migrate any legacy single-text inner into the 3D extrude stack.
+        const previous = inner.textContent || '';
+        inner.textContent = '';
+        extrude = document.createElement('span');
+        extrude.className = 'lyric-extrude';
+        extrude.setAttribute('aria-hidden', 'true');
+        for (let layer = 0; layer < LYRIC_EXTRUDE_LAYERS; layer += 1) {
+            const face = document.createElement('span');
+            face.className = layer === 0 ? 'lyric-face lyric-face-front' : 'lyric-face lyric-face-side';
+            face.style.setProperty('--layer', String(layer));
+            face.textContent = previous;
+            extrude.appendChild(face);
+        }
+        inner.appendChild(extrude);
+        return inner;
+    }
+
+    // Keep marquee/static slots at the exact layer count (old cached DOM may lag).
+    const faces = Array.from(extrude.querySelectorAll('.lyric-face'));
+    if (faces.length !== LYRIC_EXTRUDE_LAYERS) {
+        const sample = (faces[0] && faces[0].textContent) || '';
+        extrude.textContent = '';
+        for (let layer = 0; layer < LYRIC_EXTRUDE_LAYERS; layer += 1) {
+            const face = document.createElement('span');
+            face.className = layer === 0 ? 'lyric-face lyric-face-front' : 'lyric-face lyric-face-side';
+            face.style.setProperty('--layer', String(layer));
+            face.textContent = sample;
+            extrude.appendChild(face);
+        }
     }
     return inner;
 }
 
+function setLyricFaceText(inner, displayText) {
+    const faces = inner.querySelectorAll('.lyric-face');
+    if (!faces.length) {
+        inner.textContent = displayText;
+        return;
+    }
+    faces.forEach((face) => {
+        if (face.textContent !== displayText) face.textContent = displayText;
+    });
+}
+
 function measureLyricScroll(slot, inner) {
-    const distance = Math.max(0, Math.ceil(inner.scrollWidth - slot.clientWidth));
+    const front = inner.querySelector('.lyric-face-front') || inner;
+    const distance = Math.max(0, Math.ceil(front.scrollWidth - slot.clientWidth));
     slot.dataset.scrollDistance = String(distance);
     return distance;
 }
@@ -177,7 +235,7 @@ function setLyricSlot(slotIndex, lyricIndex, role, force, options = {}) {
         slot.dataset.rawLyric = rawText;
         inner.style.transition = 'none';
         inner.style.transform = 'translate3d(0,0,0)';
-        inner.textContent = displayText;
+        setLyricFaceText(inner, displayText);
         fitLyricText(slot, rawText, role);
         measureLyricScroll(slot, inner);
         slot.classList.remove('marquee-done');
@@ -186,7 +244,7 @@ function setLyricSlot(slotIndex, lyricIndex, role, force, options = {}) {
             slot.dataset.measureToken = measureToken;
             requestAnimationFrame(() => {
                 if (slot.dataset.measureToken !== measureToken) return;
-                if (inner.textContent !== displayText) inner.textContent = displayText;
+                setLyricFaceText(inner, displayText);
                 measureLyricScroll(slot, inner);
                 if (slot.classList.contains('marquee') && slot.classList.contains('is-active')) inner.style.transition = '';
             });
@@ -199,7 +257,7 @@ function setLyricSlot(slotIndex, lyricIndex, role, force, options = {}) {
     }
 
     if (longLine && Number(slot.dataset.scrollDistance || 0) <= 0) {
-        if (inner.textContent !== displayText) inner.textContent = displayText;
+        setLyricFaceText(inner, displayText);
         measureLyricScroll(slot, inner);
     }
     if (!longLine) {
@@ -210,9 +268,10 @@ function setLyricSlot(slotIndex, lyricIndex, role, force, options = {}) {
         slot.classList.remove('marquee-done');
         return;
     }
-    if (inner.textContent !== displayText) {
+    const front = inner.querySelector('.lyric-face-front');
+    if (!front || front.textContent !== displayText) {
         const keepTransform = inner.style.transform;
-        inner.textContent = displayText;
+        setLyricFaceText(inner, displayText);
         measureLyricScroll(slot, inner);
         if (keepTransform) inner.style.transform = keepTransform;
     }

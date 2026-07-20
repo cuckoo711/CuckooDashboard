@@ -17,17 +17,13 @@ function fmtMs(ms) {
 export function renderOffsets() {
     const lyric = document.getElementById('lyricOffsetVal');
     const spectrum = document.getElementById('spectrumOffsetVal');
-    const beat = document.getElementById('beatLeadVal');
     if (lyric) lyric.textContent = state.lyricOffset.toFixed(1) + 's';
     if (spectrum) spectrum.textContent = fmtMs(state.spectrumOffsetMs);
-    if (beat) beat.textContent = fmtMs(state.beatLeadMs);
 }
 
 export function applyMusicOffsetData(data) {
     if (!data) return;
     if (typeof data.spectrum_offset_ms === 'number') state.spectrumOffsetMs = data.spectrum_offset_ms;
-    if (typeof data.beat_lead_ms === 'number') state.beatLeadMs = data.beat_lead_ms;
-    if (typeof data.auto_calibrate === 'boolean') state.autoCalibrate = data.auto_calibrate;
 
     const nextFps = typeof data.render_fps === 'number' ? data.render_fps : state.spectrumRenderFps;
     const nextBars = typeof data.render_bars === 'number' ? data.render_bars : state.spectrumRenderBars;
@@ -76,7 +72,6 @@ export function bindActionControls() {
             const delta = Number(button.dataset.delta || 0);
             if (button.dataset.action === 'lyric-offset') adjustLyric(delta);
             else if (button.dataset.action === 'spectrum-offset') pushMusicOffsets({ delta_spectrum_offset_ms: delta });
-            else if (button.dataset.action === 'beat-lead') pushMusicOffsets({ delta_beat_lead_ms: delta });
         });
     });
 }

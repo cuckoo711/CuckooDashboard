@@ -9,8 +9,6 @@ export const ORBIT = Object.freeze({
 export const state = {
     lyricOffset: 0,
     spectrumOffsetMs: 40,
-    beatLeadMs: 20,
-    autoCalibrate: true,
     spectrumRenderFps: 0,
     spectrumRenderBars: 0,
 
@@ -65,12 +63,8 @@ export const state = {
     specRawRms: 0,
     specSilent: true,
     specAvailable: false,
-    pendingBeats: [],
-    lastBeatAt: 0,
     smoothDisplayBins: [],
     smoothDisplayPeaks: [],
-    pulse: 0,
-    cameraPunch: 0,
     lastSpecBadgeKey: '',
 
     visualProfile: null,

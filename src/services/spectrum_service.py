@@ -29,7 +29,6 @@ _CHANNELS = 2
 _OFFSET_MS_MIN = -200
 _OFFSET_MS_MAX = 200
 _SPECTRUM_OFFSET_DEFAULT = 40
-_BEAT_LEAD_DEFAULT = 20
 _ORBIT_YAW_MAX = 45.0
 _ORBIT_PITCH_MAX = 30.0
 _ORBIT_PITCH_DEFAULT = 14.0
@@ -108,7 +107,6 @@ _state = {
     "mid": 0.0,
     "high": 0.0,
     "onset": 0.0,
-    "beat": False,
     "ts": 0.0,
     "available": False,
     "enabled": True,
@@ -133,7 +131,6 @@ def _capture_should_continue() -> bool:
 
 _prev_flux = 0.0
 _prev_mags: Any = None
-_beat_cooldown_until = 0.0
 _smooth_bins: Any = None
 _peak_hold: Any = None
 _noise_floor_rms = 1e-4
@@ -211,14 +208,12 @@ def load_music_offsets() -> dict:
     device = str(cfg.get("capture_device") or "auto").strip() or "auto"
     return {
         "spectrum_offset_ms": _clamp_offset_ms(cfg.get("spectrum_offset_ms", _SPECTRUM_OFFSET_DEFAULT)),
-        "beat_lead_ms": _clamp_offset_ms(cfg.get("beat_lead_ms", _BEAT_LEAD_DEFAULT)),
         "spectrum_enabled": bool(cfg.get("spectrum_enabled", True)),
         "bins": int(cfg.get("bins", _BINS_DEFAULT) or _BINS_DEFAULT),
         # Rendering options are consumed by the browser. 0 keeps the automatic
         # low-power profile, while manual values are sent with the subscription.
         "render_fps": _clamp_render_fps(cfg.get("render_fps", 0)),
         "render_bars": _clamp_render_bars(cfg.get("render_bars", 0)),
-        "auto_calibrate": bool(cfg.get("auto_calibrate", True)),
         "capture_device": device,
         "orbit_yaw": _clamp_orbit_yaw(cfg.get("orbit_yaw", 0)),
         "orbit_pitch": _clamp_orbit_pitch(cfg.get("orbit_pitch", _ORBIT_PITCH_DEFAULT)),
@@ -237,17 +232,8 @@ def save_music_offsets(payload: dict) -> dict:
     elif "spectrum_offset_ms" in payload:
         current["spectrum_offset_ms"] = _clamp_offset_ms(payload["spectrum_offset_ms"])
 
-    if "delta_beat_lead_ms" in payload:
-        current["beat_lead_ms"] = _clamp_offset_ms(
-            current["beat_lead_ms"] + float(payload["delta_beat_lead_ms"])
-        )
-    elif "beat_lead_ms" in payload:
-        current["beat_lead_ms"] = _clamp_offset_ms(payload["beat_lead_ms"])
-
     if "spectrum_enabled" in payload:
         current["spectrum_enabled"] = bool(payload["spectrum_enabled"])
-    if "auto_calibrate" in payload:
-        current["auto_calibrate"] = bool(payload["auto_calibrate"])
     if "capture_device" in payload:
         new_device = str(payload.get("capture_device") or "auto").strip() or "auto"
         if new_device != current.get("capture_device"):
@@ -274,166 +260,6 @@ def save_music_offsets(payload: dict) -> dict:
     return current
 
 
-# ── Beat auto-calibration ──────────────────────────────────────────
-# Frontend taps on the downbeat; we measure delta against recent onsets
-# and fold it into beat_lead_ms / spectrum_offset_ms.
-
-_calib_lock = threading.Lock()
-_calib_state = {
-    "active": False,
-    "started_at": 0.0,
-    "samples": [],          # list[int] measured lag ms (positive = visual late)
-    "last_onsets": [],      # list[float] recent onset timestamps
-    "suggested_beat_lead_ms": None,
-    "message": "",
-}
-_CALIB_WINDOW_S = 8.0
-_CALIB_MAX_SAMPLES = 8
-
-
-def _note_onset_for_calib(is_beat: bool, onset: float):
-    """Record strong onset times for later tap alignment."""
-    if not is_beat and onset < 0.25:
-        return
-    now = time.time()
-    with _calib_lock:
-        arr = _calib_state["last_onsets"]
-        arr.append(now)
-        # keep ~2 seconds
-        cutoff = now - 2.0
-        _calib_state["last_onsets"] = [t for t in arr if t >= cutoff]
-
-
-def start_beat_calibration(duration_s: float = 6.0) -> dict:
-    """Begin collecting user taps for beat alignment."""
-    with _calib_lock:
-        _calib_state["active"] = True
-        _calib_state["started_at"] = time.time()
-        _calib_state["samples"] = []
-        _calib_state["suggested_beat_lead_ms"] = None
-        _calib_state["message"] = "请跟随鼓点连点 4~6 次"
-    return get_calibration_status(duration_s=duration_s)
-
-
-def cancel_beat_calibration() -> dict:
-    with _calib_lock:
-        _calib_state["active"] = False
-        _calib_state["message"] = "已取消"
-    return get_calibration_status()
-
-
-def record_calibration_tap(client_ts: float | None = None) -> dict:
-    """User heard a downbeat and tapped now.
-
-    Positive sample means analysis/visual lags the ear → raise beat lead.
-    """
-    now = time.time()
-    tap_ts = float(client_ts) if client_ts else now
-    # Clamp absurd client clocks to server now
-    if abs(tap_ts - now) > 2.0:
-        tap_ts = now
-
-    with _calib_lock:
-        if not _calib_state["active"]:
-            return {"ok": False, "error": "calibration not active", **get_calibration_status()}
-
-        onsets = list(_calib_state["last_onsets"])
-        if not onsets:
-            _calib_state["message"] = "尚未检测到鼓点，再试一次"
-            return {"ok": False, "error": "no recent onset", **get_calibration_status()}
-
-        # nearest onset to this tap
-        nearest = min(onsets, key=lambda t: abs(t - tap_ts))
-        # lag_ms > 0: onset arrived later than ear/tap → need more lead
-        lag_ms = int(round((nearest - tap_ts) * 1000.0))
-        # Keep only sensible deltas
-        if abs(lag_ms) > 250:
-            _calib_state["message"] = "这次偏差过大，已忽略"
-            return {"ok": False, "error": "outlier", "lag_ms": lag_ms, **get_calibration_status()}
-
-        samples = _calib_state["samples"]
-        samples.append(lag_ms)
-        if len(samples) > _CALIB_MAX_SAMPLES:
-            del samples[:-_CALIB_MAX_SAMPLES]
-
-        # median is robust enough for few taps
-        ordered = sorted(samples)
-        mid = len(ordered) // 2
-        if len(ordered) % 2:
-            median = ordered[mid]
-        else:
-            median = int(round((ordered[mid - 1] + ordered[mid]) / 2))
-
-        # Convert lag → additional lead. If onset late by +40ms, add ~40 lead.
-        suggested = _clamp_offset_ms(median)
-        _calib_state["suggested_beat_lead_ms"] = suggested
-        _calib_state["message"] = f"已采集 {len(samples)} 次，建议鼓点提前 {suggested:+d}ms"
-
-        enough = len(samples) >= 4
-        if enough:
-            # Auto-apply: blend into existing beat_lead instead of hard overwrite
-            current = load_music_offsets()
-            # suggested here is absolute lag estimate; map into beat_lead absolute
-            # Prefer using spectrum_offset base + beat_lead fine tune
-            blended = _clamp_offset_ms(int(round(current["beat_lead_ms"] * 0.25 + suggested * 0.75)))
-            save_music_offsets({"beat_lead_ms": blended})
-            _calib_state["active"] = False
-            _calib_state["message"] = f"校准完成，鼓点提前已设为 {blended:+d}ms"
-            return {
-                "ok": True,
-                "applied": True,
-                "lag_ms": lag_ms,
-                "suggested_beat_lead_ms": blended,
-                **get_calibration_status(),
-            }
-
-        return {
-            "ok": True,
-            "applied": False,
-            "lag_ms": lag_ms,
-            "suggested_beat_lead_ms": suggested,
-            **get_calibration_status(),
-        }
-
-
-def apply_calibration_suggestion() -> dict:
-    """Manually apply current suggested lead even with fewer samples."""
-    with _calib_lock:
-        suggested = _calib_state.get("suggested_beat_lead_ms")
-        samples = list(_calib_state.get("samples") or [])
-    if suggested is None or not samples:
-        return {"ok": False, "error": "no suggestion", **get_calibration_status()}
-    offsets = save_music_offsets({"beat_lead_ms": int(suggested)})
-    with _calib_lock:
-        _calib_state["active"] = False
-        _calib_state["message"] = f"已应用鼓点提前 {int(suggested):+d}ms"
-    return {"ok": True, "applied": True, "offsets": offsets, **get_calibration_status()}
-
-
-def get_calibration_status(duration_s: float = 6.0) -> dict:
-    with _calib_lock:
-        active = bool(_calib_state["active"])
-        samples = list(_calib_state["samples"])
-        suggested = _calib_state.get("suggested_beat_lead_ms")
-        message = _calib_state.get("message") or ""
-        started = float(_calib_state.get("started_at") or 0)
-    # Auto timeout
-    if active and started and (time.time() - started) > max(3.0, float(duration_s) + 4.0):
-        with _calib_lock:
-            _calib_state["active"] = False
-            if not _calib_state.get("message"):
-                _calib_state["message"] = "校准超时"
-            active = False
-            message = _calib_state["message"]
-    return {
-        "active": active,
-        "samples": len(samples),
-        "sample_values_ms": samples[-6:],
-        "suggested_beat_lead_ms": suggested,
-        "message": message,
-        "offsets": load_music_offsets(),
-    }
-
 
 def _quiet_frame(error: str | None = None, available: bool = False) -> dict:
     bins = int(load_music_offsets().get("bins") or _BINS_DEFAULT)
@@ -448,7 +274,6 @@ def _quiet_frame(error: str | None = None, available: bool = False) -> dict:
         "mid": 0.0,
         "high": 0.0,
         "onset": 0.0,
-        "beat": False,
         "ts": time.time(),
         "error": error,
         "device": "",
@@ -955,8 +780,6 @@ def _capture_with_soundcard_in_com(n_bins: int, device_key: str = "auto") -> boo
                 mono = np.asarray(mono, dtype=np.float64)
 
                 analyzed = _analyze_block(mono, n_bins, sample_rate=float(samplerate))
-                _note_onset_for_calib(bool(analyzed.get("beat")), float(analyzed.get("onset") or 0))
-                calib = get_calibration_status()
                 frame = {
                     "ok": True,
                     "available": True,
@@ -965,11 +788,6 @@ def _capture_with_soundcard_in_com(n_bins: int, device_key: str = "auto") -> boo
                     "error": None,
                     "ts": capture_ts,
                     "offsets": load_music_offsets(),
-                    "calibration": {
-                        "active": calib.get("active"),
-                        "samples": calib.get("samples"),
-                        "message": calib.get("message"),
-                    },
                     **analyzed,
                 }
                 with _lock:
@@ -1054,8 +872,6 @@ def _capture_with_sounddevice(n_bins: int, device_key: str = "auto") -> bool:
                             break
                     else:
                         silent_frames = 0
-                    _note_onset_for_calib(bool(analyzed.get("beat")), float(analyzed.get("onset") or 0))
-                    calib = get_calibration_status()
                     frame = {
                         "ok": True,
                         "available": True,
@@ -1064,11 +880,6 @@ def _capture_with_sounddevice(n_bins: int, device_key: str = "auto") -> bool:
                         "error": None,
                         "ts": time.time(),
                         "offsets": load_music_offsets(),
-                        "calibration": {
-                            "active": calib.get("active"),
-                            "samples": calib.get("samples"),
-                            "message": calib.get("message"),
-                        },
                         **analyzed,
                     }
                     with _lock:
@@ -1141,7 +952,7 @@ def _capture_loop():
 
 
 def _analyze_block(mono: Any, n_bins: int, sample_rate: float | None = None) -> dict:
-    global _prev_flux, _prev_mags, _beat_cooldown_until, _smooth_bins, _peak_hold
+    global _prev_flux, _prev_mags, _smooth_bins, _peak_hold
     global _noise_floor_rms, _display_gain
 
     rate = float(sample_rate or _SAMPLE_RATE)
@@ -1178,7 +989,6 @@ def _analyze_block(mono: Any, n_bins: int, sample_rate: float | None = None) -> 
             "mid": 0.0,
             "high": 0.0,
             "onset": 0.0,
-            "beat": False,
             "energy": 0.0,
             "raw_rms": round(rms, 6),
             "silent": True,
@@ -1200,7 +1010,6 @@ def _analyze_block(mono: Any, n_bins: int, sample_rate: float | None = None) -> 
             "mid": 0.0,
             "high": 0.0,
             "onset": 0.0,
-            "beat": False,
             "energy": 0.0,
             "raw_rms": round(rms, 6),
             "silent": False,
@@ -1292,15 +1101,6 @@ def _analyze_block(mono: Any, n_bins: int, sample_rate: float | None = None) -> 
         rising_flux = flux > _prev_flux * 1.08 and flux > 0.02 and rms > _ACTIVE_RMS
     _prev_flux = flux * 0.65 + _prev_flux * 0.35
 
-    now = time.time()
-    beat = False
-    if rising_flux and bass > 0.16 and onset > 0.12 and now >= _beat_cooldown_until:
-        beat = True
-        _beat_cooldown_until = now + 0.13
-    elif rising_flux and energy > 0.25 and onset > 0.2 and now >= _beat_cooldown_until:
-        beat = True
-        _beat_cooldown_until = now + 0.12
-
     return {
         "bins": [round(float(x), 4) for x in _smooth_bins.tolist()],
         "peaks": [round(float(x), 4) for x in _peak_hold.tolist()],
@@ -1309,7 +1109,6 @@ def _analyze_block(mono: Any, n_bins: int, sample_rate: float | None = None) -> 
         "mid": round(mid, 4),
         "high": round(high, 4),
         "onset": round(onset, 4),
-        "beat": beat,
         "energy": round(energy, 4),
         "raw_rms": round(rms, 6),
         "silent": False,
@@ -1404,15 +1203,6 @@ def _analyze_block(mono: Any, n_bins: int, sample_rate: float | None = None) -> 
         rising_flux = flux > _prev_flux * 1.08 and flux > 0.015 and rms > _ACTIVE_RMS
     _prev_flux = flux * 0.65 + _prev_flux * 0.35
 
-    now = time.time()
-    beat = False
-    if rising_flux and bass > 0.16 and onset > 0.12 and now >= _beat_cooldown_until:
-        beat = True
-        _beat_cooldown_until = now + 0.13
-    elif rising_flux and energy > 0.25 and onset > 0.2 and now >= _beat_cooldown_until:
-        beat = True
-        _beat_cooldown_until = now + 0.12
-
     return {
         "bins": [round(float(x), 4) for x in _smooth_bins.tolist()],
         "peaks": [round(float(x), 4) for x in _peak_hold.tolist()],
@@ -1421,7 +1211,6 @@ def _analyze_block(mono: Any, n_bins: int, sample_rate: float | None = None) -> 
         "mid": round(mid, 4),
         "high": round(high, 4),
         "onset": round(onset, 4),
-        "beat": beat,
         "energy": round(energy, 4),
         "raw_rms": round(rms, 6),
         "silent": False,
