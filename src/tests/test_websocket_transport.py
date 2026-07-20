@@ -242,6 +242,9 @@ def test_session_metadata_and_list_payload_support_legacy_mirroring():
     assert metadata["subscriptions"] == {"custom": {"active": True}}
     assert listing == {
         "id": "metadata",
+        "session_id": "metadata",
+        "device_id": None,
+        "device_status": None,
         "page": "dashboard",
         "workspace_id": "main",
         "viewport_width": None,

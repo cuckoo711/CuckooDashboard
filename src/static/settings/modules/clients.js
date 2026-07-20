@@ -25,10 +25,29 @@ function isDisplayClient(client) {
     return page !== 'settings';
 }
 
+let lastClientsRenderKey = '';
+
+function clientsRenderKey(clients) {
+    return JSON.stringify([
+        clientWorkspaces,
+        clients.map((client) => [
+            client.id, client.session_id, client.device_id, client.device_status,
+            client.page, client.workspace_id, client.connected,
+        ]),
+    ]);
+}
+
 function renderClientsList(clients) {
     latestClients = (Array.isArray(clients) ? clients : []).filter(isDisplayClient);
     const container = $('#clientsList');
     if (!container) return;
+    // 5 秒自动刷新会整体重建 innerHTML，把操作者选到一半的目标下拉框和
+    // "等待响应…"的截图按钮状态一并清掉；数据没变时直接跳过重建。
+    const renderKey = clientsRenderKey(latestClients);
+    if (renderKey === lastClientsRenderKey) return;
+    // 用户正在下拉框里选目标时不要在脚下重建 DOM，等下一轮刷新。
+    if (document.activeElement && container.contains(document.activeElement)) return;
+    lastClientsRenderKey = renderKey;
     if (!latestClients.length) {
         container.innerHTML = '<div class="empty-row">暂无在线客户端</div>';
         return;
@@ -78,6 +97,7 @@ export async function refreshClientsList({quiet = false} = {}) {
         if (!quiet) {
             const container = $('#clientsList');
             if (container) container.innerHTML = `<div class="empty-row state-error">获取失败：${escHtml(error.message)}</div>`;
+            lastClientsRenderKey = '';
         }
     } finally {
         if (button && !quiet) button.disabled = false;

@@ -808,6 +808,7 @@ def _capture_with_sounddevice(n_bins: int, device_key: str = "auto") -> bool:
     if not candidates:
         return False
 
+    start_token = _current_restart_token()
     for device_idx, device_name, channels, samplerate in candidates:
         if _stop_event.is_set() or not _capture_should_continue():
             break
@@ -843,8 +844,17 @@ def _capture_with_sounddevice(n_bins: int, device_key: str = "auto") -> bool:
                     _state["device"] = capture_label
                 local_rate = float(samplerate or _SAMPLE_RATE)
                 silent_frames = 0
+                device_silent = False
                 while not _stop_event.is_set() and _capture_should_continue():
-                    if not load_music_offsets().get("spectrum_enabled", True):
+                    offsets_now = load_music_offsets()
+                    if not offsets_now.get("spectrum_enabled", True):
+                        break
+                    # Mirror the soundcard path: honor restart requests and
+                    # capture-device changes from Settings while running.
+                    if _current_restart_token() != start_token:
+                        logger.info("[spectrum] sounddevice reopen after restart token change")
+                        break
+                    if (offsets_now.get("capture_device") or "auto") != (device_key or "auto"):
                         break
                     block = None
                     with ring_lock:
@@ -869,6 +879,7 @@ def _capture_with_sounddevice(n_bins: int, device_key: str = "auto") -> bool:
                                     error=f"silent capture device: {device_name}",
                                     available=False,
                                 ))
+                            device_silent = True
                             break
                     else:
                         silent_frames = 0
@@ -884,7 +895,11 @@ def _capture_with_sounddevice(n_bins: int, device_key: str = "auto") -> bool:
                     }
                     with _lock:
                         _state.update(frame)
-                return True
+            if device_silent:
+                # This endpoint produces no signal; try the next candidate
+                # instead of reporting success and reopening the same device.
+                continue
+            return True
         except Exception as exc:
             logger.warning("[spectrum] sounddevice failed on %s: %s", device_name, exc)
             continue
@@ -1099,108 +1114,6 @@ def _analyze_block(mono: Any, n_bins: int, sample_rate: float | None = None) -> 
     if gate > 0.25 and level > 0.04:
         onset = max(0.0, min(1.0, flux * 2.2))
         rising_flux = flux > _prev_flux * 1.08 and flux > 0.02 and rms > _ACTIVE_RMS
-    _prev_flux = flux * 0.65 + _prev_flux * 0.35
-
-    return {
-        "bins": [round(float(x), 4) for x in _smooth_bins.tolist()],
-        "peaks": [round(float(x), 4) for x in _peak_hold.tolist()],
-        "rms": round(rms_n, 4),
-        "bass": round(bass, 4),
-        "mid": round(mid, 4),
-        "high": round(high, 4),
-        "onset": round(onset, 4),
-        "energy": round(energy, 4),
-        "raw_rms": round(rms, 6),
-        "silent": False,
-    }
-
-    mags = mags[1:]
-    power = np.square(mags)
-    freqs = np.fft.rfftfreq(len(mono), d=1.0 / rate)[1:]
-
-    f_min, f_max = 50.0, min(11000.0, rate / 2.0 - 1.0)
-    edges = np.geomspace(f_min, f_max, n_bins + 1)
-    # Efficient geometric binning via searchsorted (no empty-band neighbor fill).
-    idx = np.searchsorted(freqs, edges)
-    raw_bins = np.zeros(n_bins, dtype=np.float64)
-    for i in range(n_bins):
-        a = int(idx[i])
-        b = int(idx[i + 1])
-        if b <= a:
-            # ensure at least one FFT bin when resolution is coarse
-            b = min(len(power), a + 1)
-        if a >= len(power):
-            continue
-        band = power[a:b]
-        if band.size:
-            raw_bins[i] = float(np.sqrt(np.mean(band)))
-
-    # very light local smooth only (keep spectral contrast)
-    if n_bins >= 3:
-        sm = raw_bins.copy()
-        sm[1:-1] = raw_bins[1:-1] * 0.70 + raw_bins[:-2] * 0.15 + raw_bins[2:] * 0.15
-        raw_bins = sm
-
-    eps = 1e-12
-    db = 20.0 * np.log10(raw_bins + eps)
-    # gentle loudness tilt (not flattening)
-    if n_bins > 0:
-        db = db + np.linspace(3.0, 0.0, n_bins)
-
-    # map absolute dB -> 0..1
-    norm = (db - _DB_FLOOR) / max(1e-6, (_DB_CEIL - _DB_FLOOR))
-    norm = np.clip(norm, 0.0, 1.0)
-    norm = np.power(norm, 1.15)  # punchy peaks, lower body
-
-    loud = max(0.0, rms - noise * 2.0)
-    level = max(0.0, min(1.0, loud / _LOUD_RMS_REF))
-    if rms <= _SILENCE_RMS:
-        gate = 0.0
-    elif rms >= _ACTIVE_RMS * 2.0:
-        gate = 1.0
-    else:
-        gate = (rms - _SILENCE_RMS) / max(1e-6, (_ACTIVE_RMS * 2.0 - _SILENCE_RMS))
-        gate = max(0.0, min(1.0, gate))
-
-    # Amplitude follows real volume; do NOT renormalize frame peak to 1.
-    norm = norm * (0.20 + 0.80 * (level ** 0.9)) * gate
-
-    if _smooth_bins is None or len(_smooth_bins) != n_bins:
-        _smooth_bins = norm.copy()
-        _peak_hold = norm.copy()
-    else:
-        rising = norm > _smooth_bins
-        _smooth_bins = np.where(
-            rising,
-            _smooth_bins * 0.25 + norm * 0.75,
-            _smooth_bins * 0.68 + norm * 0.32,
-        )
-        _peak_hold = np.maximum(_peak_hold * 0.84, _smooth_bins)
-        _smooth_bins[_smooth_bins < 0.01] = 0.0
-        _peak_hold[_peak_hold < 0.012] = 0.0
-
-    rms_n = max(0.0, min(1.0, level)) * gate
-
-    bass = float(np.mean(_smooth_bins[: max(1, n_bins // 4)]))
-    mid = float(np.mean(_smooth_bins[n_bins // 3: (2 * n_bins) // 3]))
-    high = float(np.mean(_smooth_bins[(2 * n_bins) // 3:]))
-    energy = float(np.mean(_smooth_bins))
-
-    if _prev_mags is None or len(_prev_mags) != len(mags):
-        flux = 0.0
-    else:
-        prev = np.log1p(_prev_mags * 800.0)
-        cur = np.log1p(mags * 800.0)
-        diff = cur - prev
-        w = np.linspace(1.4, 0.6, num=len(diff))
-        flux = float(np.mean(np.clip(diff, 0.0, None) * w))
-    _prev_mags = mags
-
-    onset = 0.0
-    rising_flux = False
-    if gate > 0.25 and level > 0.04:
-        onset = max(0.0, min(1.0, flux * 2.8))
-        rising_flux = flux > _prev_flux * 1.08 and flux > 0.015 and rms > _ACTIVE_RMS
     _prev_flux = flux * 0.65 + _prev_flux * 0.35
 
     return {

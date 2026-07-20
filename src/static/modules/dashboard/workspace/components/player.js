@@ -1,4 +1,4 @@
-import { applyLyricFrame, drawLyric } from '../../lyrics.js';
+import { applyLyricFrame, drawLyric, resetMediaRenderState } from '../../lyrics.js';
 
 export const PLAYER_SINGLE_INSTANCE = true;
 
@@ -25,6 +25,9 @@ export function createPlayerComponent() {
                 + '<button class="lyric-offset-btn" data-action="adjust-lyric-offset" data-delta="0.5">+</button></span>'
                 + '<span class="card-foot-r" id="lyricArtist">--</span></div>';
             context.root.appendChild(root);
+            // DOM 是新建的，必须同步清掉模块级渲染缓存，否则重放的快照会被
+            // 判定为"无变化"而跳过渲染。
+            resetMediaRenderState();
             context.subscribe('media.playback', (data, meta) => this.update(data, meta));
             context.subscribe('media.lyric', (data, meta) => this.update(data, meta));
             return root;

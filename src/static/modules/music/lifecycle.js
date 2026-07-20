@@ -28,9 +28,18 @@ function finishStageBoot() {
 function handleStageVisibilityChange() {
     if (document.hidden) {
         stopFrameLoop();
+        // 通知服务端暂停频谱推流（updateSpectrumSubscription 内部处理 hidden 分支），
+        // 否则隐藏的标签页会让服务端持续以 ~24fps 推帧并保持采集器活跃。
+        updateSpectrumSubscription();
         return;
     }
-    if (state.heavyStageReady) startFrameLoop();
+    if (!state.heavyStageReady) {
+        // 首次 finishStageBoot 定时器触发时若标签页正好隐藏，它会提前返回且
+        // 不再有任何重试；这里在可见时补跑，否则页面永远停在 stage-booting。
+        finishStageBoot();
+        return;
+    }
+    startFrameLoop();
     if (state.ws && state.ws.readyState === WebSocket.OPEN) updateSpectrumSubscription(true);
     else connectWs();
 }

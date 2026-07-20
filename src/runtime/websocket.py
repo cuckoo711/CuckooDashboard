@@ -139,8 +139,19 @@ class WebSocketHub:
             if self._owns_scheduler:
                 changed = self.refresh_scheduler.start() or changed
             changed = self.transport.start() or changed
-            if any(thread.is_alive() for thread in self._threads.values()):
-                return changed
+            alive = [thread for thread in self._threads.values() if thread.is_alive()]
+            if alive:
+                if not self._stop_event.is_set():
+                    return changed
+                # 上一次 stop() 超时后残留的 worker 还在退出中。必须等它们
+                # 真正退出再清 stop 事件，否则旧线程会跟着新事件继续跑
+                # （重复 worker），或者提前返回让 stop 事件泄漏进新状态
+                # （realtime 永远起不来）。
+                for thread in alive:
+                    thread.join(timeout=5.0)
+                if any(thread.is_alive() for thread in alive):
+                    logger.warning("[ws] previous realtime workers still draining; start deferred")
+                    return changed
             self._threads = {}
             self._stop_event.clear()
             for name, target in {
@@ -577,7 +588,7 @@ class WebSocketHub:
         raw = payload.get("subscriptions", ())
         if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
             ids = tuple(ids) + tuple(
-                str(item.get("id") or item.get("subscriptionId") or "")
+                str(item.get("id") or item.get("subscription_id") or item.get("subscriptionId") or "")
                 for item in raw
                 if isinstance(item, Mapping)
             )

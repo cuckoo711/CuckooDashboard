@@ -202,6 +202,16 @@ class SubscriptionBroker:
                 subscription.source_id,
                 interval_ms=subscription.interval_ms,
             )
+        # close_session 可能在上面重建 demand 期间从别的线程移除了本会话；
+        # 它先弹出会话再清 demand，所以这里复查一次即可覆盖所有交错：
+        # 要么它的清理发生在我们 set_demand 之后（它清掉），要么我们在这里
+        # 看到会话已关闭（我们清掉），demand 不会永久泄漏。
+        with self._lock:
+            state = self._sessions.get(session_key)
+            session_open = state is not None and not state.closed
+        if not session_open:
+            self.scheduler.remove_demands_with_prefix(demand_prefix)
+            return ()
         if replay:
             for subscription in normalized:
                 if subscription.replay:
@@ -515,7 +525,7 @@ class SubscriptionBroker:
                     "subscriptions must be an array",
                 )
             subscription_ids = tuple(subscription_ids) + tuple(
-                str(item.get("id") or item.get("subscription_id") or "")
+                str(item.get("id") or item.get("subscription_id") or item.get("subscriptionId") or "")
                 for item in raw_subscriptions
                 if isinstance(item, Mapping)
             )

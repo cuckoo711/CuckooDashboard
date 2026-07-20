@@ -207,9 +207,3 @@ def call_one(provider_id: str, method: str, *args: Any, **kwargs: Any) -> Any:
     """调用一个 Provider 的公开方法；失败返回 ``None``。"""
     outcome = _invoke(provider_id, get_provider(provider_id), method, *args, **kwargs)
     return outcome.data if outcome.ok else None
-
-    try:
-        return fn(*args, **kwargs)
-    except Exception as exc:
-        logger.warning("[providers] %s.%s() 调用失败: %s", provider_id, method, exc)
-        return None

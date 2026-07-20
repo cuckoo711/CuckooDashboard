@@ -890,6 +890,10 @@ _lyrics_cache = {}
 _lyrics_cache_lock = threading.Lock()
 _LYRICS_CACHE_MAX = 20
 _lyrics_cache_order = []
+# 查不到歌词的曲目也要记下来（带 TTL），否则 0.12s 的歌词轮询会对同一首歌
+# 反复执行完整的网易云 + QQ 搜索，每次阻塞数秒并拖住所有客户端的歌词推送。
+_lyrics_negative: dict = {}
+_LYRICS_NEG_TTL_S = 300.0
 
 
 def _load_lyrics_by_netease_id(song_id: int, duration_sec: float) -> dict:
@@ -930,8 +934,11 @@ def _get_lyrics_for(title: str, artist: str, song_id: int = 0) -> dict:
 
     with _lyrics_cache_lock:
         cached = _lyrics_cache.get(key)
+        negative_at = _lyrics_negative.get(key)
     if cached is not None:
         return cached
+    if negative_at is not None and time.time() - negative_at < _LYRICS_NEG_TTL_S:
+        return {"song_id": None, "duration": 0.0, "lyrics": [], "manual": False}
 
     result = None
 
@@ -944,6 +951,12 @@ def _get_lyrics_for(title: str, artist: str, song_id: int = 0) -> dict:
         result = _search_and_fetch(title, artist)
 
     if not result:
+        with _lyrics_cache_lock:
+            now = time.time()
+            _lyrics_negative[key] = now
+            if len(_lyrics_negative) > 50:
+                for stale_key in [k for k, ts in _lyrics_negative.items() if now - ts >= _LYRICS_NEG_TTL_S]:
+                    _lyrics_negative.pop(stale_key, None)
         return {"song_id": None, "duration": 0.0, "lyrics": [], "manual": False}
 
     if result["lyrics"]:
@@ -1243,6 +1256,7 @@ def reload_current_media() -> dict:
         key = (title, artist)
         with _lyrics_cache_lock:
             _lyrics_cache.pop(key, None)
+            _lyrics_negative.pop(key, None)
             try:
                 _lyrics_cache_order.remove(key)
             except ValueError:

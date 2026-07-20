@@ -88,14 +88,33 @@ def _cleanup_old_logs(log_dir: Path, keep_days: int):
             pass
 
 
+class _DailyRotatingHandler(TimedRotatingFileHandler):
+    """按天轮转并在每次轮转后清理过期文件。
+
+    自定义 namer 生成 app.2026-07-14.log，而基类的 backupCount 清理只匹配
+    app.log.* 前缀，永远删不到重命名后的文件；必须自己在轮转时清理，
+    否则长期运行的进程日志会无限累积（启动时的清理只跑一次）。
+    """
+
+    def __init__(self, *args: Any, cleanup_dir: Path, keep_days: int, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self._cleanup_dir = cleanup_dir
+        self._keep_days = keep_days
+
+    def doRollover(self) -> None:
+        super().doRollover()
+        _cleanup_old_logs(self._cleanup_dir, self._keep_days)
+
+
 def _create_daily_handler(
     log_path: Path, level: int, keep_days: int
 ) -> TimedRotatingFileHandler:
-    handler = TimedRotatingFileHandler(
+    handler = _DailyRotatingHandler(
         filename=str(log_path),
         when="midnight",
-        backupCount=keep_days,
         encoding="utf-8",
+        cleanup_dir=log_path.parent,
+        keep_days=keep_days,
     )
     handler.namer = _daily_namer
     handler.rotator = _daily_rotator

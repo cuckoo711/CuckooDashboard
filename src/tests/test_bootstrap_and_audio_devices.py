@@ -79,7 +79,10 @@ def test_dashboard_bootstrap_static_order_handshakes_before_workspace_mount():
     assert handshake_at < gate_at < mount_at < ws_at
     assert "approvedWorkspaceId = String(session.workspace_id" in main
     assert "/api/device/session" in device
-    assert "cuckoo.dashboard.device_id" in device
+    # 设备标识持久化实现在 shared/device-id.js；device.js 从那里转发导出。
+    shared_identity = (STATIC / "modules" / "shared" / "device-id.js").read_text(encoding="utf-8")
+    assert "cuckoo.dashboard.device_id" in shared_identity
+    assert "../shared/device-id.js" in device
 
 
 def test_music_capture_devices_route_enumerates_loopbacks_and_current_status():

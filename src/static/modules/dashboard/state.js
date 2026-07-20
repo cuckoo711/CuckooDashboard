@@ -3,7 +3,9 @@ export const state = {
         online: true,
         lastAliveTs: Date.now(),
         restFailStreak: 0,
-        staleMs: 4000,
+        // 必须大于 ping 周期（5s）：稀疏工作区上 pong 可能是唯一的存活信号，
+        // 阈值比它小会让离线横幅每 5 秒闪烁一次。取两个周期加余量。
+        staleMs: 12000,
         failStreak: 2,
     },
     health: {

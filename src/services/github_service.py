@@ -172,8 +172,9 @@ def get_github_data() -> dict:
     """
     global _last_error, _last_success_at, _use_api
 
+    # 空 dict 是合法缓存值（该窗口内零贡献），必须与「缓存未命中」区分开。
     cached = _cache.get()
-    if cached:
+    if cached is not None:
         return _github_payload(cached, error=_last_error, estimated=not _use_api)
 
     disk_fresh = _read_disk_cache(max_age=GITHUB_DISK_CACHE_TTL)
@@ -209,6 +210,9 @@ def get_github_data() -> dict:
     stale = _cache.data if isinstance(_cache.data, dict) else None
     if stale is None:
         stale = _read_disk_cache(max_age=None)
+    # 失败结果也写入内存缓存：调用方以 1s 频率轮询，若不缓存，每次调用都会
+    # 重复整个 3 次重试 + 睡眠的网络流程，阻塞数据聚合数十秒。
+    _cache.set(stale or {})
     return _github_payload(stale or {}, stale=bool(stale), error=_last_error, estimated=not _use_api)
 
 
@@ -224,8 +228,6 @@ def get_github_status() -> dict:
         status = "error"
     elif has_data:
         status = "stale" if stale else "ok"
-    elif GITHUB_DISK_CACHE.exists():
-        status = "unknown"
     else:
         status = "unknown"
     return {

@@ -151,7 +151,9 @@ class CredentialVault:
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + self.lock_timeout
         with open(self.lock_path, "a+b") as handle:
-            handle.seek(0)
+            # 锁定字节 0 前确保文件非空；a+ 模式写入总是追加，
+            # 所以必须按实际大小判断，否则每次加锁都会让锁文件增长一字节。
+            handle.seek(0, os.SEEK_END)
             if handle.tell() == 0:
                 handle.write(b"0")
                 handle.flush()

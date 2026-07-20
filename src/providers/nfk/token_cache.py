@@ -19,8 +19,12 @@ def _normalise_state(value: object) -> dict[str, Any]:
     return state
 
 
-def load_cached_token(cache_key: str, account_id: str | None = None) -> str | None:
-    """读取账户下指定 URL 的 JWT，保持旧版 5 天有效期语义。"""
+def load_cached_token(cache_key: str, account_id: str | None = None) -> tuple[str, float] | None:
+    """读取账户下指定 URL 的 (JWT, 签发时间戳)，保持旧版 5 天有效期语义。
+
+    必须把 Vault 里的原始签发时间一并返回：调用方若用“加载时刻”重置内存
+    TTL，一个已签发 4.9 天的 token 会被再当作有效 5 天。
+    """
     state = _normalise_state(get_provider_state(_PROVIDER_ID, {}))
     resolved = account_id or state["active_account_id"]
     account = state["accounts"].get(resolved)
@@ -32,9 +36,10 @@ def load_cached_token(cache_key: str, account_id: str | None = None) -> str | No
     entry = tokens.get(cache_key)
     if not isinstance(entry, dict) or not entry.get("token"):
         return None
-    if (time.time() - float(entry.get("ts") or 0)) >= _TOKEN_TTL_SECONDS:
+    issued_at = float(entry.get("ts") or 0)
+    if (time.time() - issued_at) >= _TOKEN_TTL_SECONDS:
         return None
-    return str(entry["token"])
+    return str(entry["token"]), issued_at
 
 
 def save_cached_token(cache_key: str, token: str, account_id: str | None = None) -> None:

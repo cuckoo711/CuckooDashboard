@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 
@@ -131,6 +132,12 @@ def _async_dynamic_loop():
                 static = _collect_system_info._static
                 s = static.get("data")
 
+                # 刷新 GPU/磁盘时先深拷贝、改完再整体替换引用：已发布的快照
+                # （Flask/WS 正在序列化的对象）永远不会被原地修改，避免
+                # "dictionary changed size during iteration" 崩溃和撕裂数据。
+                gpus_copy = copy.deepcopy(s["gpus"]) if s and s.get("gpus") is not None else None
+                disks_copy = copy.deepcopy(s["disks"]) if s and s.get("disks") is not None else None
+
                 # ── CPU 实时频率：优先使用常驻 PDH query，缺失时兼容旧 PS 路径 ──
                 freq_mhz = get_cpu_actual_frequency_mhz()
                 if freq_mhz is None:
@@ -146,11 +153,15 @@ $c = Get-Counter '\Processor Information(_Total)\Actual Frequency' -ErrorAction 
                     with _dynamic_refresh_lock:
                         _dynamic_cpu_freq_mhz = freq_mhz
 
-                if s and s.get("gpus") is not None:
-                    _refresh_dynamic(s["gpus"], s["disks"])
+                if gpus_copy is not None:
+                    _refresh_dynamic(gpus_copy, disks_copy if disks_copy is not None else [])
                 # 磁盘插拔检测（每30秒）
-                if s and s.get("disks") is not None:
-                    _check_disk_changes(s["disks"])
+                if disks_copy is not None:
+                    _check_disk_changes(disks_copy)
+                if gpus_copy is not None:
+                    s["gpus"] = gpus_copy
+                if disks_copy is not None:
+                    s["disks"] = disks_copy
             except Exception as e:
                 logger.error(f"[sys] async dynamic refresh error: {e}")
             if _service_stop_event.wait(2):
@@ -264,6 +275,10 @@ def _collect_system_info() -> dict:
             logger.info("[sys] static info refreshed (1 PS call)")
 
     s = static["data"]
+    if s is None:
+        # 首次 PowerShell 静态采集失败时给出明确错误，而不是让下面的
+        # 下标访问抛出误导性的 TypeError('NoneType' is not subscriptable)。
+        raise RuntimeError("静态硬件信息采集失败（PowerShell 查询无输出或超时）")
 
     # ── 动态数据（每次都采集，很快）──
     cpu_percent = psutil.cpu_percent(interval=None)

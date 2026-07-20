@@ -17,7 +17,6 @@ logger = logging.getLogger("cuckoo.dashboard_data")
 
 _CACHE_TTL = 55
 _cache = TTLCache(_CACHE_TTL)
-_last_result: DashboardAggregate | None = None
 
 
 def _provider_status(provider: Any) -> ProviderStatus:
@@ -132,12 +131,10 @@ def build_dashboard_data(*, providers: Mapping[str, Any] | None = None) -> dict[
 
 def fetch_dashboard_aggregate() -> DashboardAggregate:
     """返回带 TTL 缓存的内部类型化 Dashboard aggregate。"""
-    global _last_result
     cached = _cache.get()
     if isinstance(cached, DashboardAggregate):
         return copy.deepcopy(cached)
     result = build_dashboard_aggregate()
-    _last_result = copy.deepcopy(result)
     _cache.set(copy.deepcopy(result))
     return result
 
@@ -149,9 +146,7 @@ def fetch_dashboard_data() -> dict[str, Any]:
 
 def invalidate_dashboard_data_cache() -> None:
     """设置/认证变更后清除聚合缓存。"""
-    global _last_result
     _cache.clear()
-    _last_result = None
 
 
 def get_provider_public_data(provider_id: str, resource: str, *, days: int = 7) -> Any:

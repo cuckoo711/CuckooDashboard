@@ -1,4 +1,5 @@
 import { handleDashboardData } from '../../render-dashboard.js';
+import { state } from '../../state.js';
 
 export const VIBE_SINGLE_INSTANCE = true;
 
@@ -37,6 +38,9 @@ export function createVibeComponent() {
                 + '<div class="leg-row"><span class="leg-dot" style="background:var(--crimson)"></span>输出<b id="todayOut">--</b><span class="leg-pct" id="todayOutPct"></span></div>'
                 + '</div></div><div class="card-foot vibe-balances" id="vibeBalances" hidden></div>';
             context.root.appendChild(root);
+            // #modelBars 是带骨架屏的新 DOM；清掉模块级渲染 key，否则重放的
+            // 相同 aggregate 会命中缓存早退，骨架屏一直留到数据真正变化。
+            state.dashboard.lastModelsKey = '';
             context.subscribe('dashboard.aggregate', (data, meta) => this.update(data, meta));
             return root;
         },

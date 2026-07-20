@@ -350,7 +350,15 @@ def start_qr_login(label: str = "") -> dict[str, Any]:
     if not qr.get_qr_code():
         raise XiaomiLoginError("无法获取 MiMo 二维码")
     login_id = uuid.uuid4().hex
+    now = time.time()
     with _qr_lock:
+        # 清理终态/过期的历史会话，长驻进程中该字典不能只增不减。
+        for stale_id in [
+            key for key, value in _qr_sessions.items()
+            if value.get("state") in ("success", "failed")
+            or now > float(value.get("expires_at") or 0) + 600
+        ]:
+            del _qr_sessions[stale_id]
         _qr_sessions[login_id] = {
             "state": "pending",
             "qr_image_url": qr._qr_image_url,

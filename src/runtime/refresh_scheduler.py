@@ -305,8 +305,9 @@ class RefreshScheduler:
             if source_id not in self._definitions:
                 raise KeyError(source_id)
             state = self._states[source_id]
-            if state.in_flight and state.future is not None:
-                future = state.future
+            existing = self._inflight_future_locked(source_id)
+            if existing is not None:
+                future = existing
             else:
                 state.in_flight = True
                 state.last_started = self._clock()
@@ -331,8 +332,9 @@ class RefreshScheduler:
             if source_id not in self._definitions:
                 raise KeyError(source_id)
             state = self._states[source_id]
-            if state.in_flight and state.future is not None:
-                future = state.future
+            existing = self._inflight_future_locked(source_id)
+            if existing is not None:
+                future = existing
             else:
                 now = self._clock()
                 if self._effective_interval_ms_locked(source_id) is None:
@@ -352,6 +354,22 @@ class RefreshScheduler:
                 pass
             self.wait_for_idle((source_id,))
         return future
+
+    def _inflight_future_locked(self, source_id: str) -> Future[Any] | None:
+        """Return the running future for an in-flight source, or None.
+
+        ``_collect_due_locked`` 先置位 ``in_flight``，而 ``future`` 要等
+        ``_run_loop`` 在锁外调用 ``_submit`` 后才赋值。这个窗口内如果只检查
+        ``in_flight and future is not None``，并发的 refresh_now/refresh_if_due
+        会误判为空闲并提交同一 getter 的第二次执行，破坏单飞不变量。
+        这里在条件变量上等待窗口结束。
+        """
+        state = self._states[source_id]
+        while state.in_flight and state.future is None:
+            self._condition.wait(0.05)
+        if state.in_flight and state.future is not None:
+            return state.future
+        return None
 
     def wait_for_idle(self, source_ids: Iterable[str] | None = None) -> None:
         """Wait until completion callbacks have committed all selected source state."""
@@ -488,6 +506,7 @@ class RefreshScheduler:
             raise
         with self._condition:
             self._states[source_id].future = future
+            self._condition.notify_all()
         future.add_done_callback(
             lambda completed, sid=source_id, temp=executor if temporary else None: self._completed(
                 sid, completed, temp

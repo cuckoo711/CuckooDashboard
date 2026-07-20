@@ -155,7 +155,10 @@ export function applyLyricFrame(data = {}) {
     if (typeof data.playing === 'boolean') setMediaPlaying(data.playing);
     else if (data.status) setMediaPlaying(data.status === 'playing');
     const incomingTrackKey = trackKey(data);
-    const trackChanged = incomingTrackKey && state.media.trackKey && incomingTrackKey !== state.media.trackKey;
+    // 首帧就是 lyric 帧（歌词推送可能先于 playback 快照到达）时也要走完整的
+    // 新歌引导：若只记 trackKey 不请求水合，随后的 slim playback 快照会因
+    // trackKey 相同而不再渲染/水合，整首歌都没有歌词。
+    const trackChanged = Boolean(incomingTrackKey) && incomingTrackKey !== state.media.trackKey;
     if (trackChanged) {
         state.media.trackKey = incomingTrackKey;
         state.media.title = data.title || '';
@@ -169,8 +172,6 @@ export function applyLyricFrame(data = {}) {
             idle.style.display = 'block';
         }
         requestMediaHydration();
-    } else if (incomingTrackKey && !state.media.trackKey) {
-        state.media.trackKey = incomingTrackKey;
     }
     if (data.title) {
         const title = document.getElementById('lyricTitle');
@@ -399,7 +400,10 @@ export function updateLyricLine(force = false) {
     if (!state.media.lyrics.length && (typeof state.media.lyricIndex !== 'number' || state.media.lyricIndex < 0)) return;
     const position = (state.media.playing ? Date.now() / 1000 - state.media.startTime : state.media.position) + state.media.lyricOffset;
     let index = -1;
-    if (typeof state.media.lyricIndex === 'number') {
+    // lyricIndex 初始为 -1（也是 number），typeof 判断永真会把兜底扫描变成死代码；
+    // 只有后端给出了有效行号（>= 0）才视为后端驱动。
+    const backendDriven = typeof state.media.lyricIndex === 'number' && state.media.lyricIndex >= 0;
+    if (backendDriven) {
         index = state.media.lyricIndex;
     } else {
         for (let line = 0; line < state.media.lyrics.length; line += 1) {
@@ -415,7 +419,6 @@ export function updateLyricLine(force = false) {
         }
         const settled = now - state.media.pendingSince >= state.media.debounceMs;
         const bigJump = Math.abs(index - state.media.lastLyricIdx) > 1;
-        const backendDriven = typeof state.media.lyricIndex === 'number';
         if (settled || force || bigJump || backendDriven) {
             if (index >= 0 && index !== state.media.lineIndex) {
                 bindLyricTiming({ lyric_index: index, lyric: lyricTextForIndex(index) }, { force: true });
@@ -431,6 +434,21 @@ export function updateLyricLine(force = false) {
 export async function refreshMedia() {
     try { drawLyric(await fetchMedia()); }
     catch (error) { console.error('Media error:', error); }
+}
+
+export function resetMediaRenderState() {
+    // 播放器卡片重挂载（工作区编辑等）后 DOM 是全新的，而模块级 state.media
+    // 仍记着上一次渲染的 trackKey/lyricsKey；不清掉的话，重放的 slim 快照
+    // 会被当作"没有变化"，卡片永远停在"未在播放"。
+    Object.assign(state.media, {
+        title: '',
+        trackKey: '',
+        lyricsKey: '',
+        lyrics: [],
+        lyricIndex: -1,
+        hydrateRequestedAt: 0,
+    });
+    resetLyricState();
 }
 
 function setOffsetUi(offset) {

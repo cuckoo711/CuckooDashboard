@@ -1291,7 +1291,7 @@ def get_cookie_interactively() -> tuple:
         if not cookie_str:
             print("Cookie 不能为空")
             sys.exit(1)
-        return cookie_str, "manual"
+        return cookie_str, "manual", {}
 
 
 # ============================================================
