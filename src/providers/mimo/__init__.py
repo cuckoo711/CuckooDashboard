@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from providers.runtime_config import get_provider_config
@@ -87,7 +87,7 @@ def get_daily_detail(year: int | None = None, month: int | None = None) -> dict 
     if api is None:
         return None
     try:
-        utc_now = datetime.utcnow()
+        utc_now = datetime.now(timezone.utc)
         year = year or utc_now.year
         month = month or utc_now.month
         return api.session.get(
@@ -164,7 +164,7 @@ def get_today_usage() -> dict[str, int | str] | None:
     rows = daily_data.get("tokenUsage") if isinstance(daily_data, dict) else None
     if not isinstance(rows, list):
         return None
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     target_key = f"{now.month:02d}-{now.day:02d}"
     for row in rows:
         if not isinstance(row, (list, tuple)) or len(row) < 5 or str(row[0]) != target_key:
@@ -276,7 +276,7 @@ def refresh_credentials() -> RefreshResult:
         return RefreshResult.unchanged("当前未能验证 MiMo 会话")
     if probe.get("code") != 401:
         _last_error = None
-        _last_success_at = datetime.utcnow().isoformat()
+        _last_success_at = datetime.now(timezone.utc).isoformat()
         return RefreshResult.unchanged("MiMo 会话有效")
     try:
         new_cookie = refresh_mimo_cookie(cookie)
@@ -294,7 +294,7 @@ def refresh_credentials() -> RefreshResult:
     )
     reload_api_config()
     _last_error = None
-    _last_success_at = datetime.utcnow().isoformat()
+    _last_success_at = datetime.now(timezone.utc).isoformat()
     return RefreshResult.refreshed("MiMo Cookie 已刷新")
 
 

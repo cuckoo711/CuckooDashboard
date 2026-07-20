@@ -89,7 +89,7 @@ class LocalMimoAPI:
             if not points:
                 return None
             # 本地平台时间戳是 UTC，MiMo 日界线也是 UTC 0:00，直接用当前 UTC 日期
-            target_str = datetime.utcnow().strftime("%Y-%m-%d")
+            target_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             for p in points:
                 ts = p.get("timestamp", "")
                 if ts.startswith(target_str) and (p.get("requestCount") or 0) > 0:
