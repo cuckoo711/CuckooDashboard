@@ -1172,14 +1172,16 @@ def _lyric_line_window(lyrics: list, index: int) -> tuple[float, float, float]:
 
 
 def _lyric_progress_pair(start: float, duration: float, pos_eff: float) -> tuple[float, float]:
-    """Return (scroll_progress, line_progress) from line timing + effective position."""
+    """Return (scroll_progress, line_progress) from line timing + effective position.
+
+    滚动节奏与行时长成比例：前 1/3 停住看句首，中间 4/9（剩余 2/3 的前 2/3）
+    匀速滚完，最后 2/9 停在句尾——保证下一行到来前句尾已经完整可读。
+    """
     span = max(0.18, float(duration or 0.0))
     elapsed = max(0.0, float(pos_eff) - float(start or 0.0))
     line_prog = max(0.0, min(1.0, elapsed / span))
-    # Hold for the first third of the line (capped at 3s total scroll window), then scroll.
-    scroll_duration = min(3.0, span)
-    hold = scroll_duration / 3.0
-    move_duration = max(0.12, scroll_duration - hold)
+    hold = span / 3.0
+    move_duration = max(0.12, span * 4.0 / 9.0)
     scroll = max(0.0, min(1.0, (elapsed - hold) / move_duration))
     return scroll, line_prog
 

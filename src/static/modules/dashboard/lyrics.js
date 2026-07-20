@@ -127,11 +127,11 @@ function currentLineElapsed() {
 }
 
 function lyricScrollProgress(elapsed = currentLineElapsed()) {
+    // 与音乐舞台一致：停 1/3 行时长 → 4/9 匀速滚完 → 末尾 2/9 停在句尾。
     const span = Math.max(0.18, state.media.lineDuration || 0.18);
-    const scrollDuration = Math.min(3, span);
-    const hold = scrollDuration / 3;
+    const hold = span / 3;
     if (elapsed <= hold) return 0;
-    return Math.max(0, Math.min(1, (elapsed - hold) / Math.max(0.12, scrollDuration - hold)));
+    return Math.max(0, Math.min(1, (elapsed - hold) / Math.max(0.12, span * 4 / 9)));
 }
 
 function syncMediaClock(data) {

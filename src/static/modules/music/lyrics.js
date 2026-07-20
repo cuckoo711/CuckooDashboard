@@ -67,12 +67,13 @@ function localLineProgress(elapsed) {
 }
 
 function localScrollProgress(elapsed) {
+    // 与后端 _lyric_progress_pair 一致：前 1/3 行时长停住看句首，
+    // 中间 4/9（剩余 2/3 的前 2/3）匀速滚完，最后 2/9 停在句尾。
     const span = Math.max(0.18, state.lyricLineDuration || 0.18);
     const value = elapsed == null ? currentLineElapsed() : elapsed;
-    const scrollDuration = Math.min(3, span);
-    const hold = scrollDuration / 3;
+    const hold = span / 3;
     if (value <= hold) return 0;
-    const moveDuration = Math.max(0.12, scrollDuration - hold);
+    const moveDuration = Math.max(0.12, span * 4 / 9);
     return Math.max(0, Math.min(1, (value - hold) / moveDuration));
 }
 

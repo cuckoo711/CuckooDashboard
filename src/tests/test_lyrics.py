@@ -7,6 +7,7 @@ import pytest
 from services.media_service import (
     _has_extra_junk,
     _is_fake_artist_variant,
+    _lyric_progress_pair,
     _parse_lrc,
     _strip_paren,
 )
@@ -98,3 +99,33 @@ class TestHasExtraJunk:
 
     def test_dj(self):
         assert _has_extra_junk("xxx DJ Remix", "xxx") is True
+
+
+# ── _lyric_progress_pair ──
+
+
+class TestLyricScrollTiming:
+    """滚动节奏：停 1/3 → 4/9 匀速滚完 → 末尾 2/9 保持在句尾。"""
+
+    def test_holds_during_first_third(self):
+        scroll, _ = _lyric_progress_pair(0.0, 9.0, 2.9)
+        assert scroll == 0.0
+
+    def test_scrolls_linearly_in_middle_window(self):
+        # 9 秒行：hold 3s，move 4s；elapsed 5s → (5-3)/4 = 0.5
+        scroll, line_prog = _lyric_progress_pair(0.0, 9.0, 5.0)
+        assert abs(scroll - 0.5) < 1e-6
+        assert abs(line_prog - 5.0 / 9.0) < 1e-6
+
+    def test_finishes_before_line_end_and_holds(self):
+        # hold + move = 7/9 行时长；之后到行尾都保持 1.0
+        scroll_at_done, _ = _lyric_progress_pair(0.0, 9.0, 7.0)
+        scroll_at_end, line_prog = _lyric_progress_pair(0.0, 9.0, 9.0)
+        assert scroll_at_done == 1.0
+        assert scroll_at_end == 1.0
+        assert line_prog == 1.0
+
+    def test_no_fixed_cap_for_long_lines(self):
+        # 旧实现 3 秒封顶：12 秒行在 3 秒时就滚完；新实现此刻还没开始滚。
+        scroll, _ = _lyric_progress_pair(0.0, 12.0, 3.0)
+        assert scroll == 0.0
