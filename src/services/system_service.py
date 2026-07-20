@@ -7,7 +7,6 @@ import logging
 import threading
 
 import json
-import os
 import platform
 import re
 import time

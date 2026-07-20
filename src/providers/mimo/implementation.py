@@ -324,7 +324,6 @@ def try_browser_cookies() -> str | None:
     # 常见浏览器 Cookie 数据库路径 (Windows)
     browser_paths = {}
     local = os.environ.get("LOCALAPPDATA", "")
-    appdata = os.environ.get("APPDATA", "")
 
     if local:
         browser_paths["Chrome"] = Path(local) / "Google" / "Chrome" / "User Data" / "Default" / "Network" / "Cookies"

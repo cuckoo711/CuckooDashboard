@@ -11,11 +11,9 @@ import re
 import subprocess as _media_sp
 import threading
 import time
-from pathlib import Path
-
 import requests as _requests
 
-from core.config import CONFIG_DIR, SRC_DIR, PROJECT_ROOT
+from core.config import SRC_DIR, PROJECT_ROOT
 from core.proc import popen_hidden
 
 logger = logging.getLogger("cuckoo.media")

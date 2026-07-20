@@ -198,14 +198,15 @@ class WorkspaceGridCalibration:
     density: str = "normal"
 
     def __post_init__(self) -> None:
-        for field, value in (
+        # 注意不要用 `field` 作循环变量名，会遮蔽 dataclasses.field 导入。
+        for field_name, value in (
             ("reference_width", self.reference_width),
             ("reference_height", self.reference_height),
             ("target_cell_width", self.target_cell_width),
             ("target_cell_height", self.target_cell_height),
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > 16384:
-                raise ValueError(f"calibration {field} must be an integer between 1 and 16384")
+                raise ValueError(f"calibration {field_name} must be an integer between 1 and 16384")
         if self.target_cell_width > self.reference_width:
             raise ValueError("calibration target_cell_width cannot exceed reference_width")
         if self.target_cell_height > self.reference_height:

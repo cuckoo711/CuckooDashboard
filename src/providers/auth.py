@@ -236,7 +236,6 @@ class AuthRefreshScheduler:
                 for fn in tasks:
                     if self._stop_event.is_set():
                         break
-                    spec: AutoRefreshSpec = getattr(fn, "__auto_refresh_spec__")
                     key = _task_key(fn)
                     with _runtime_lock:
                         runtime = _runtime.setdefault(key, _RefreshRuntime())

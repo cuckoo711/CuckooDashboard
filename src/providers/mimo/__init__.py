@@ -18,7 +18,6 @@ from providers.mimo.implementation import (
     delete_mimo_account,
     get_mimo_account,
     list_mimo_accounts,
-    load_cookies,
     refresh_mimo_cookie,
     save_cookies,
     set_active_mimo_account,
@@ -272,7 +271,10 @@ def refresh_credentials() -> RefreshResult:
         return RefreshResult.needs_login("请先登录 MiMo")
     try:
         probe = MiMoAPI(cookie).get_user_profile()
-    except Exception:
+    except Exception as exc:
+        # 瞬时网络故障不登出账户，但要把错误暴露到状态页；
+        # 否则持续断网时状态永远显示"会话有效"。
+        _last_error = f"MiMo 会话验证失败: {exc}"
         return RefreshResult.unchanged("当前未能验证 MiMo 会话")
     if probe.get("code") != 401:
         _last_error = None

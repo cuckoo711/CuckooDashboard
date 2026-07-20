@@ -11,7 +11,6 @@ and returns a quiet spectrum frame so the UI can degrade gracefully.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
 from typing import Any
@@ -968,7 +967,7 @@ def _capture_loop():
 
 def _analyze_block(mono: Any, n_bins: int, sample_rate: float | None = None) -> dict:
     global _prev_flux, _prev_mags, _smooth_bins, _peak_hold
-    global _noise_floor_rms, _display_gain
+    global _noise_floor_rms
 
     rate = float(sample_rate or _SAMPLE_RATE)
     if rate <= 0:
@@ -1110,10 +1109,8 @@ def _analyze_block(mono: Any, n_bins: int, sample_rate: float | None = None) -> 
     _prev_mags = mags
 
     onset = 0.0
-    rising_flux = False
     if gate > 0.25 and level > 0.04:
         onset = max(0.0, min(1.0, flux * 2.2))
-        rising_flux = flux > _prev_flux * 1.08 and flux > 0.02 and rms > _ACTIVE_RMS
     _prev_flux = flux * 0.65 + _prev_flux * 0.35
 
     return {

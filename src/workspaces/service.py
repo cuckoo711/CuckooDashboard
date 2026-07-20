@@ -274,7 +274,6 @@ class WorkspaceService:
         grid = workspace.grid
         if grid is None:
             raise WorkspaceValidationError("grid is required", "grid")
-        calibration = grid.calibration
 
         current_widgets = {item.id: item for item in (current.widgets if current else ())}
         widget_ids: set[str] = set()

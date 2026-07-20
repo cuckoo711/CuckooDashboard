@@ -143,8 +143,6 @@ class ProviderPublicRouter:
         return values or ["GET"]
 
     def _guard(self, fn: Callable[..., Any], methods: Iterable[str]) -> Callable[..., Any]:
-        method_values = self._methods(methods)
-
         @functools.wraps(fn)
         def guarded(*args: Any, **kwargs: Any):
             from flask import request

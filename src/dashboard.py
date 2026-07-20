@@ -15,11 +15,6 @@ from core.logging_config import setup_logging
 setup_logging(load_config())
 
 from app.factory import create_app  # noqa: E402
-from app.security import (  # noqa: E402
-    get_dashboard_token,
-    require_loopback_access,
-    require_post_protection,
-)
 from runtime.lifecycle import get_runtime  # noqa: E402
 
 logger = logging.getLogger("cuckoo.dashboard")
